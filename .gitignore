@@ -1,0 +1,13 @@
+# build artifacts
+/mcme
+*.o
+*.d
+/nob
+build/
+
+# runtime state, not source
+mcme.config.json
+
+# macOS
+.DS_Store
+*.dSYM
