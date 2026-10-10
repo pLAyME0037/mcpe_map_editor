@@ -11,3 +11,6 @@ mcme.config.json
 # macOS
 .DS_Store
 *.dSYM
+
+# python bytecode from the tools/ generators
+__pycache__/

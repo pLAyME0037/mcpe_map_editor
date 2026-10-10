@@ -28,6 +28,7 @@ const char *mcme_compression_name(McmeCompression c)
     case MCME_COMPRESS_ZLIB:    return "zlib";
     case MCME_COMPRESS_LZ4:     return "lz4";
     case MCME_COMPRESS_UNKNOWN: return "unknown";
+    case MCME_COMPRESS_RAW_DEFLATE: return "deflate";
     }
     return "unknown";
 }
@@ -173,6 +174,13 @@ bool mcme_decompress(McmeCompression c,
 
     case MCME_COMPRESS_ZLIB:
         return inflate_stream(15, (const uint8_t *)src, src_len, out, max_out);
+
+    case MCME_COMPRESS_RAW_DEFLATE:
+        /* No zlib header, no gzip header, no trailing checksum — just DEFLATE.
+           -15 is what tells zlib to expect exactly that. Nothing in the format
+           states the output size either, so the output grows lazily rather
+           than being sized up front. */
+        return inflate_stream(-15, (const uint8_t *)src, src_len, out, max_out);
 
     case MCME_COMPRESS_LZ4: {
         /* The LZ4 *block* format carries no size header, so the only way to
@@ -321,8 +329,10 @@ size_t mcme_compress_bound(McmeCompression c, size_t src_len)
         return src_len;
     case MCME_COMPRESS_GZIP:
     case MCME_COMPRESS_ZLIB:
+    case MCME_COMPRESS_RAW_DEFLATE:
         /* compressBound covers the DEFLATE stream; a few dozen more bytes
-           cover the gzip or zlib container header and checksum. */
+           cover the gzip or zlib container header and checksum. Bare DEFLATE
+           has neither, but the slack is harmless and keeps one bound. */
         return (size_t)compressBound((uLong)src_len) + 64u;
     case MCME_COMPRESS_LZ4: {
         if (src_len > (size_t)INT_MAX) return 0;
@@ -357,6 +367,9 @@ bool mcme_compress(McmeCompression c,
 
     case MCME_COMPRESS_ZLIB:
         return deflate_stream(15, (const uint8_t *)src, src_len, out);
+
+    case MCME_COMPRESS_RAW_DEFLATE:
+        return deflate_stream(-15, (const uint8_t *)src, src_len, out);
 
     case MCME_COMPRESS_LZ4: {
         if (src_len > (size_t)INT_MAX) {

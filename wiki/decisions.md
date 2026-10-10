@@ -119,6 +119,87 @@ Then we write a C implementation behind the same header.
 
 ---
 
+## D9 — Pure-C LevelDB, written here
+
+**Chosen.** Implement the LevelDB on-disk format in C, behind
+`include/mcme/leveldb.h`. No C++, no cmake, nothing to link.
+
+**Why.** D5 assumed leveldb would be system-linked. It is not packaged on the
+build machine, so that assumption failed, and the two ways out were: vendor
+google/leveldb and build it with cmake, or write it.
+
+Writing it wins on the constraint that actually governs this project. The brief
+is **strictly C11/C17**, and "C++ behind a C API" was only ever acceptable as a
+*system* dependency — something that lives outside our tree and outside our
+build. Building ~40k lines of C++ in-tree, from a cmake sub-build, inside a
+project whose entire premise is a hand-written C toolchain, is not that. It also
+reintroduces the packaging weight simplexity argues against.
+
+D5 already named this exact outcome as its own reversal condition, so this is
+the documented path rather than a new invention.
+
+**Scope.** Read first: log records, SSTable blocks, the index block, the footer
+and the bloom filter, enough to enumerate and fetch every key. Write support
+comes after, and the intended shape is appending to a log file — LevelDB
+replays a log on open and compacts it later — rather than implementing
+compaction ourselves.
+
+**Rejected.**
+- *Vendored google/leveldb + cmake*: battle-tested and much faster to land, but
+  puts a C++ build step inside a strictly-C project. Right answer for a
+  product; wrong answer for this brief.
+- *Reusing `amulet-leveldb`'s extension module*: it is a CPython object, not a
+  library with a C API we could call.
+- *A LevelDB-compatible store of our own (write our own format)*: would not be
+  readable by Minecraft, which is the entire point.
+
+**Cost accepted.** We own the correctness of a storage format that can corrupt a
+user's world if we get writing wrong. Mitigations, in order of weight: reads are
+validated against the Python `leveldb` binding as an oracle; the reader refuses
+anything it does not recognise rather than guessing; and writing lands only after
+reads have been proven, so a bug in the writer is never also a bug in the reader
+that would have to un-read it.
+
+**Reverses if:** the reader proves too large to get right, or write support
+turns out to need compaction after all. At that point vendoring upstream and
+accepting the cmake step is the honest fallback, and `mc_leveldb.h` exists
+precisely so that swap is local.
+
+**What writing it found.** Implementing D9 turned up four things about the
+format that no description of it led us to expect, each of which would have
+made the reader silently wrong rather than loudly broken. They are recorded
+here because they change what "read support" costs:
+
+1. **Minecraft's fork is not stock LevelDB.** Table blocks are compressed with
+   *bare DEFLATE* — no zlib header, no gzip header, no trailing checksum —
+   and the block trailer labels it type 4. Stock LevelDB knows types 0 (none)
+   and 1 (snappy). Every real Bedrock world writes type 4, so a reader built
+   from the upstream format description reads none of them, and reports the
+   failure as "unsupported compression", which reads like an optional feature
+   being absent rather than the whole store being unreadable. This is now
+   `MCME_COMPRESS_RAW_DEFLATE` in `compress.h`, and the block trailer is the
+   only place that names it.
+2. **The block trailer is not in the block.** A block handle's size counts the
+   contents only; five bytes of `type + masked CRC32C` follow and are excluded.
+   Reading the handle's size as the whole block puts the restart array at the
+   wrong offset and mis-detects the block's end — and, because the trailer then
+   lands on real data, it usually surfaces as a bogus compression type rather
+   than as an off-by-five.
+3. **The checksum covers the *stored* bytes.** The masked CRC32C is taken over
+   the contents as they appear in the file, plus the type byte. For a
+   compressed block that is the compressed form, so checksumming what the block
+   decompresses to produces a block that decodes perfectly and still fails
+   verification.
+4. **Data blocks are about 100 KiB here.** Upstream targets 4 KiB. A world with
+   a few thousand keys therefore has one data block and one index entry, which
+   means a fixture built by driving Minecraft's own LevelDB never exercises the
+   index walk's second iteration or resumption from a mid-block restart point.
+   `tools/ref_leveldb_table.py` forges a small store with eight blocks and short
+   restart runs specifically to cover that, and validates the forgery by reading
+   it back with the reference library before any golden data is written.
+
+---
+
 ## D6 — Threading model: workers produce data, only the main thread touches GL
 
 **Chosen.** Mirrors the original's contract exactly, because the original got it

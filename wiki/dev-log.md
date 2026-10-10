@@ -9,6 +9,98 @@ Status vocabulary:
 
 ---
 
+## 2026-10-11 — LevelDB reader: real stores, and what they hid
+
+**Status: done.** `mcme_leveldb_open` reads a Bedrock store end to end —
+log records, SSTables, the MANIFEST's live set, and a merge by internal key
+across all of them. Three fixtures pass byte-for-byte against the Python
+`leveldb` binding: 15 keys from a log-only world, 3775 from a compacted one,
+44 from a forged one.
+
+The header is `include/mcme/leveldb.h`; the implementation is
+`src/world/leveldb/{format,log,table,db}.c`. It is read-only by design (D9):
+no locking, no writes, no compaction.
+
+### The four things the format did not say
+
+Writing the reader turned up more about LevelDB than the format description
+predicts. All four are in `decisions.md#D9`; the short version is that
+Minecraft's fork is not upstream LevelDB, and the differences are the kind
+that fail quietly:
+
+- **Blocks are compressed with bare DEFLATE, called type 4.** Upstream knows
+  0 (none) and 1 (snappy). Every real Bedrock world writes type 4. The reader
+  refused it, which reads as "an optional feature is missing" when it actually
+  means "no Bedrock world will ever open".
+- **The five-byte block trailer is outside the handle's size.** Off by five,
+  and the restart array lands on the wrong bytes — surfacing as a nonsense
+  compression type rather than as an off-by-five.
+- **The checksum covers the stored bytes**, so a deflated block is checksummed
+  compressed. Checksumming the decompressed form gives blocks that decode
+  perfectly and still fail verification.
+- **Data blocks are ~100 KiB here, not 4 KiB.** So a fixture built by driving
+  Minecraft's own LevelDB has one block and one index entry, and never tests
+  the index walk taking a second step.
+
+### Eleven bugs, each with a test
+
+Six were found against real stores before the reader would open anything:
+
+1. `mcme_ldb_mask_crc` rotated 17 instead of 15 — invisible on self-consistent
+   test data, rejected every real store.
+2. Log record checksums covered the payload only; the type byte is included
+   too, and the check belongs per *fragment*, not per reassembled record.
+3. MANIFEST tags 6/7 were swapped and compact-pointer (5) was unhandled, so
+   any compacted store failed to parse.
+4. `read_block` ignored the trailer entirely.
+5. `db.c` formed `NULL + 0` for zero-length values.
+6. `mcme_leveldb_open` left `*out` untouched when its arguments were NULL.
+
+Five more came out of making the fixtures small enough to read:
+
+7. Refusing compression type 4 (above).
+8. **The block cursor stopped after one entry.** `block_iter_next` advanced to
+   the start of the value instead of past it, so the second entry was parsed
+   out of value bytes and the walk died. One entry per block, which looks like
+   a small world rather than a broken one — and no fixture could have caught
+   it, because every real fixture has exactly one block.
+9. That failure was *silent*: `block_iter_next` returns false both when a
+   block ends and when it is damaged. The iterator now carries a `failed` flag
+   and all three callers check it.
+10. `load_golden` asked `sscanf` for two tokens, so a line whose value is zero
+    bytes was dropped — a reference that reads one entry short.
+11. `memcmp(NULL, x, 0)` in the test and in `db.c`/`nbt.c`. Legal-looking,
+    undefined, and reported by the sanitizer build.
+
+### The forged fixture
+
+`tools/ref_leveldb_table.py` writes a store byte by byte rather than asking
+LevelDB for one: eight data blocks, a restart point every eight entries, and
+blocks alternating between stored and bare-DEFLATE. It is the only fixture in
+which the index walk takes a second step, and it is why bug 8 is fixed rather
+than merely suspected.
+
+The generator is validated by reading its own output back with the reference
+library before any golden data is written — a forgery the real library refuses
+is worthless, and it was: the first three attempts were refused, each for a
+real mistake (a 46-byte footer where the format wants a fixed 48; checksums
+over uncompressed bytes; and user keys where tables store internal keys).
+
+### Known gaps
+
+- **No writes.** D9 puts reads first; log-append comes next.
+- **Snappy is not implemented**, by choice — Minecraft does not write it. It is
+  refused by name and offset rather than guessed at.
+- **Filters are never read.** They accelerate point lookups and this reader
+  only scans; an unknown filter is refused as a store we were not built
+  against.
+- **`mcme info` does not yet count Bedrock chunks**, and `mcme chunks` does not
+  exist. The library is ready; the CLI is not wired to it.
+- **No fuzzer for the table or log readers.** The NBT and decompress harnesses
+  exist; these parsers touch the same untrusted data and should get one.
+
+---
+
 ## 2026-10-10 — Phase 3 (part 1): compression, Anvil regions, `mcme info`
 
 **Status: done** for Java. Bedrock detection done; the LevelDB reader is not

@@ -618,7 +618,10 @@ const McmeTag *mcme_nbt_get(const McmeTag *tag, const char *key)
     size_t len = strlen(key);
     for (size_t i = 0; i < tag->compound.len; ++i) {
         const McmeCompoundEntry *e = &tag->compound.entries[i];
-        if (e->name.len == len && memcmp(e->name.data, key, len) == 0) {
+        /* An empty name is a legal compound key, and its data pointer may be
+           NULL, so a zero length short-circuits rather than reaching memcmp. */
+        if (e->name.len == len &&
+            (len == 0 || memcmp(e->name.data, key, len) == 0)) {
             return e->value;
         }
     }

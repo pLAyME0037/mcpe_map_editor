@@ -102,6 +102,7 @@ int mcme_test_core(void);
 int mcme_test_nbt(void);
 int mcme_test_compress(void);
 int mcme_test_world(void);
+int mcme_test_leveldb(void);
 
 static int run_selftest(void)
 {
@@ -113,6 +114,7 @@ static int run_selftest(void)
         { "nbt", mcme_test_nbt },
         { "compress", mcme_test_compress },
         { "world", mcme_test_world },
+        { "leveldb", mcme_test_leveldb },
     };
 
     const size_t n = sizeof(suites) / sizeof(suites[0]);

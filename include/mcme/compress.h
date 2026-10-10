@@ -31,18 +31,23 @@
 
 /* Codec. STORE means the bytes are already the payload, with no framing. */
 typedef enum {
-    MCME_COMPRESS_STORE   = 0,
-    MCME_COMPRESS_GZIP    = 1,
-    MCME_COMPRESS_ZLIB    = 2,
-    MCME_COMPRESS_LZ4     = 3,
-    MCME_COMPRESS_UNKNOWN = 4,
+    MCME_COMPRESS_STORE       = 0,
+    MCME_COMPRESS_GZIP        = 1,
+    MCME_COMPRESS_ZLIB        = 2,
+    MCME_COMPRESS_LZ4         = 3,
+    MCME_COMPRESS_UNKNOWN     = 4,
+    /* DEFLATE with neither the zlib nor the gzip header, and no checksum at
+       the end. Minecraft's Bedrock LevelDB fork writes its table blocks this
+       way and labels them with type byte 4 in the block trailer. Like the LZ4
+       block format it has nothing to sniff, so a caller must name it. */
+    MCME_COMPRESS_RAW_DEFLATE = 5,
 } McmeCompression;
 
 /* Fallback ceiling for callers with no format-implied bound. Generous enough
    for any real chunk, small enough to fail before the OOM killer does. */
 #define MCME_DECOMPRESS_MAX ((size_t)256u * 1024u * 1024u)
 
-/* Short name for logs: "store", "gzip", "zlib", "lz4", "unknown". */
+/* Short name for logs: "store", "gzip", "zlib", "lz4", "unknown", "deflate". */
 const char *mcme_compression_name(McmeCompression c);
 
 /* Sniff the codec from leading bytes.
@@ -52,8 +57,9 @@ const char *mcme_compression_name(McmeCompression c);
 McmeCompression mcme_compression_detect(const void *data, size_t len);
 
 /* Does `c` frame its payload in a header we can sniff? gzip and zlib do; the
-   LZ4 *block* format Bedrock uses does not (it is headerless), so it can never
-   be auto-detected and must be named explicitly by the caller. */
+   LZ4 *block* format Bedrock uses does not (it is headerless), and neither
+   does bare DEFLATE, so those can never be auto-detected and must be named
+   explicitly by the caller. */
 bool mcme_compression_detectable(McmeCompression c);
 
 /*
