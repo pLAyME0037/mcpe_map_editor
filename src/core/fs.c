@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 bool mcme_fs_exists(const char *path)
 {
@@ -24,6 +25,26 @@ bool mcme_fs_read(const char *path, void **out_data, size_t *out_size)
     if (!f) {
         mcme_set_error("cannot open '%s': %s", path, strerror(errno));
         return false;
+    }
+
+    /* Only regular files. fopen() happily succeeds on a directory, and on
+       Linux fseek/ftell then report a nonsensical size (LONG_MAX here), which
+       used to reach malloc() as 2^63 bytes. Devices and FIFOs are refused for
+       the same reason and a second one: reading from them can block
+       indefinitely. A map editor gets pointed at directories by users who mean
+       "this world", so this is a normal input, not a hostile one. */
+    {
+        struct stat st;
+        if (fstat(fileno(f), &st) != 0) {
+            mcme_set_error("cannot stat '%s': %s", path, strerror(errno));
+            fclose(f);
+            return false;
+        }
+        if (!S_ISREG(st.st_mode)) {
+            mcme_set_error("cannot read '%s': not a regular file", path);
+            fclose(f);
+            return false;
+        }
     }
 
     if (fseek(f, 0, SEEK_END) != 0) {

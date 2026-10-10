@@ -15,8 +15,10 @@
 #include <string.h>
 
 #include "mcme/cli.h"
+#include "mcme/compress.h"
 #include "mcme/core.h"
 #include "mcme/nbt.h"
+#include "mcme/world.h"
 
 #include "cJSON.h"   /* for the config subcommand's tree surgery */
 
@@ -55,13 +57,13 @@ static void print_usage(FILE *out)
         "  selftest        Run built-in tests for every compiled-in subsystem\n"
         "  lang            Inspect the bundled .lang translation files\n"
         "  config          Read and write user configuration (JSON)\n"
+        "  info <world>    Identify a world and summarise it\n"
         "  nbt dump <file> Print NBT as SNBT (or JSON with --json)\n"
         "                    --le            read little-endian (Bedrock)\n"
         "                    --path <dotted> print only that subtree\n"
         "                    --indent <n>    pretty-print\n"
         "\n"
         "RESERVED (parse, then exit 5 = not implemented)\n"
-        "  info <world>                    World metadata\n"
         "  convert <in> <out> --to <p>/<v> Convert between world formats\n"
         "  chunks <world> --count          Chunk inventory\n"
         "\n"
@@ -98,6 +100,8 @@ static void print_version(void)
    one line, not a change to main(). */
 int mcme_test_core(void);
 int mcme_test_nbt(void);
+int mcme_test_compress(void);
+int mcme_test_world(void);
 
 static int run_selftest(void)
 {
@@ -107,6 +111,8 @@ static int run_selftest(void)
     } suites[] = {
         { "core", mcme_test_core },
         { "nbt", mcme_test_nbt },
+        { "compress", mcme_test_compress },
+        { "world", mcme_test_world },
     };
 
     const size_t n = sizeof(suites) / sizeof(suites[0]);
@@ -349,14 +355,36 @@ static int cmd_nbt_dump(int argc, char **argv)
         return MCME_EXIT_IO;
     }
 
-    /* Name the compression problem rather than failing with a confusing
-       "root tag must be a compound" three bytes in. */
+    /* A gzip container wraps NBT in both editions, so it is stripped here
+       rather than inside the parser. Keeping compression out of mcme_nbt_parse
+       is deliberate: NBT has no framing of its own, and conflating the two
+       would make it impossible to read one NBT stream out of the middle of a
+       file — which is exactly what reading Bedrock chunk data requires.
+
+       The inflated bytes are copied into a plain malloc block so the rest of
+       this function keeps a single, uniform owner for `data`. An extra copy of
+       an already-small document is a fine price for not having two cleanup
+       paths. */
     if (size >= 2 && ((const uint8_t *)data)[0] == 0x1F
                   && ((const uint8_t *)data)[1] == 0x8B) {
+        McmeBuffer inflated;
+        mcme_buffer_init(&inflated);
+        if (!mcme_decompress(MCME_COMPRESS_GZIP, data, size, &inflated,
+                             MCME_DECOMPRESS_MAX)) {
+            free(data);
+            mcme_buffer_free(&inflated);
+            return MCME_EXIT_BAD_FORMAT;
+        }
         free(data);
-        mcme_set_error("nbt dump: '%s' is gzip-compressed; "
-                       "decompression is planned for Phase 3", path);
-        return MCME_EXIT_NOT_IMPLEMENTED;
+        data = malloc(inflated.len + 1);
+        if (data == NULL) {
+            mcme_buffer_free(&inflated);
+            return MCME_EXIT_INTERNAL;
+        }
+        memcpy(data, inflated.data, inflated.len);
+        ((char *)data)[inflated.len] = '\0';
+        size = inflated.len;
+        mcme_buffer_free(&inflated);
     }
 
     McmeArena *arena = mcme_arena_new();
@@ -399,6 +427,146 @@ static int cmd_nbt_dump(int argc, char **argv)
     mcme_buffer_free(&out);
     mcme_arena_free(arena);
     return MCME_OK;
+}
+
+/* ========================================================================
+ * info
+ *
+ * Summarise a world directory. This is the first command that exercises the
+ * whole Phase 3 stack at once: directory detection, gzip, NBT, and the region
+ * container. It is deliberately read-only and never opens a database.
+ * ======================================================================== */
+
+static void print_info_text(const McmeWorldInfo *w)
+{
+    printf("path:     %s\n", w->path);
+    printf("format:   %s\n", mcme_world_kind_name(w->kind));
+
+    if (w->kind == MCME_WORLD_UNKNOWN) {
+        printf("\nNot a Minecraft world: no db/ (Bedrock) and no region/ or "
+               "session.lock (Java).\n");
+        return;
+    }
+
+    if (w->name != NULL) printf("name:     %s\n", w->name);
+
+    /* Report version information in the shape the edition actually uses rather
+       than inventing a common one. Java records a data version number; Bedrock
+       records the game version it was last opened with. */
+    if (w->kind == MCME_WORLD_JAVA && w->data_version != 0) {
+        printf("data:     DataVersion %d\n", w->data_version);
+    }
+    if (w->version != NULL) printf("version:  %s\n", w->version);
+
+    if (w->has_game_type) printf("gametype: %d\n", w->game_type);
+    if (w->has_spawn) {
+        printf("spawn:    %d %d %d\n", w->spawn_x, w->spawn_y, w->spawn_z);
+    }
+    if (w->last_played != 0) printf("played:   %lld\n", (long long)w->last_played);
+
+    printf("leveldat: %s\n", mcme_level_dat_frame_name(w->frame));
+
+    if (w->kind == MCME_WORLD_JAVA) {
+        printf("regions:  %zu\n", w->region_files);
+        printf("chunks:   %zu\n", w->chunks);
+    } else {
+        /* Bedrock chunk inventory needs the LevelDB reader, which is the next
+           piece of Phase 3. Saying so is better than printing a zero that a
+           reader would take as "this world is empty". */
+        printf("database: present (chunk inventory requires the LevelDB layer)\n");
+    }
+}
+
+static void print_info_json(const McmeWorldInfo *w)
+{
+    /* Built with cJSON rather than by hand so names containing quotes or
+       non-ASCII survive the round trip into a JSON parser. */
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        printf("{}\n");
+        return;
+    }
+
+    cJSON_AddStringToObject(root, "path", w->path);
+    cJSON_AddStringToObject(root, "format", mcme_world_kind_name(w->kind));
+
+    if (w->kind != MCME_WORLD_UNKNOWN) {
+        if (w->name != NULL) cJSON_AddStringToObject(root, "name", w->name);
+        if (w->version != NULL) cJSON_AddStringToObject(root, "version", w->version);
+        if (w->data_version != 0) {
+            cJSON_AddNumberToObject(root, "data_version", (double)w->data_version);
+        }
+        if (w->has_game_type) {
+            cJSON_AddNumberToObject(root, "game_type", (double)w->game_type);
+        }
+        if (w->has_spawn) {
+            cJSON *spawn = cJSON_AddArrayToObject(root, "spawn");
+            cJSON_AddItemToArray(spawn, cJSON_CreateNumber(w->spawn_x));
+            cJSON_AddItemToArray(spawn, cJSON_CreateNumber(w->spawn_y));
+            cJSON_AddItemToArray(spawn, cJSON_CreateNumber(w->spawn_z));
+        }
+        if (w->last_played != 0) {
+            /* Seconds since the epoch, as a number, so jq can compare it. */
+            cJSON_AddNumberToObject(root, "last_played", (double)w->last_played);
+        }
+        cJSON_AddStringToObject(root, "level_dat_frame",
+                                mcme_level_dat_frame_name(w->frame));
+        cJSON_AddBoolToObject(root, "has_level_dat", w->has_level_dat);
+
+        if (w->kind == MCME_WORLD_JAVA) {
+            cJSON_AddNumberToObject(root, "region_files", (double)w->region_files);
+            cJSON_AddNumberToObject(root, "chunks", (double)w->chunks);
+        } else {
+            cJSON_AddBoolToObject(root, "has_db", w->has_db);
+        }
+    }
+
+    char *text = cJSON_PrintUnformatted(root);
+    if (text != NULL) {
+        printf("%s\n", text);
+        free(text);
+    }
+    cJSON_Delete(root);
+}
+
+static int cmd_info(int argc, char **argv)
+{
+    const char *path = NULL;
+
+    for (int i = 0; i < argc; ++i) {
+        if (argv[i][0] == '-') {
+            mcme_set_error("info: unknown option '%s'", argv[i]);
+            return MCME_EXIT_USAGE;
+        }
+        if (path != NULL) {
+            mcme_set_error("info: unexpected extra argument '%s'", argv[i]);
+            return MCME_EXIT_USAGE;
+        }
+        path = argv[i];
+    }
+
+    if (path == NULL) {
+        mcme_set_error("info: missing <world>");
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        /* Not readable as a directory at all. Distinguish "does not exist" from
+           "exists but is unusable", because callers script around exit 2. */
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+
+    int rc = MCME_OK;
+    if (info.kind == MCME_WORLD_UNKNOWN) {
+        rc = MCME_EXIT_NOT_FOUND;
+    }
+
+    if (g_opts.json) print_info_json(&info);
+    else print_info_text(&info);
+
+    mcme_world_info_free(&info);
+    return rc;
 }
 
 /* ========================================================================
@@ -498,7 +666,7 @@ static int dispatch(int argc, char **argv)
 
     /* Reserved surface. These parse so the shape is settled and tests can
        assert the gap, then report MCME_EXIT_NOT_IMPLEMENTED. */
-    if (strcmp(cmd, "info") == 0)    return cmd_not_implemented("info", "Phase 3");
+    if (strcmp(cmd, "info") == 0)    return cmd_info(rest, args);
     if (strcmp(cmd, "nbt") == 0) {
         if (rest == 0) {
             mcme_set_error("nbt: missing subcommand (expected dump)");

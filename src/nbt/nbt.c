@@ -1011,9 +1011,17 @@ static void format_float_repr(float v, char *buf, size_t cap)
  * SNBT writing
  * ======================================================================== */
 
-/* SNBT compound keys sort case-insensitively; at the first character that is
-   equal folded but differs in case, lowercase sorts before uppercase. This is
-   why the reference prints {ab, aB, Ab, AB} in that order. */
+/* SNBT compound keys sort case-insensitively; when two keys are identical
+   apart from case, lowercase sorts before uppercase, which is why the
+   reference prints {ab, aB, Ab, AB} in that order.
+
+   The two rules are applied in separate passes, and that ordering is load
+   bearing. Folding first and case-breaking only on a full fold-tie is what the
+   reference does. Breaking on case at the first differing character instead
+   ranks "structures" below "Status": both begin with 's', differing only in
+   case, so the tiebreak would fire before the comparison ever reaches the 'r'
+   versus 'a' that actually decides it. The reference prints Status first,
+   because "status" < "structures". */
 static int snbt_key_strcmp(const char *a, const char *b)
 {
     const unsigned char *pa = (const unsigned char *)a;
@@ -1022,6 +1030,18 @@ static int snbt_key_strcmp(const char *a, const char *b)
     while (*pa && *pb) {
         int fa = ascii_lower(*pa), fb = ascii_lower(*pb);
         if (fa != fb) return fa < fb ? -1 : 1;
+        pa++;
+        pb++;
+    }
+    /* A prefix sorts first. */
+    if (*pa) return 1;
+    if (*pb) return -1;
+
+    /* The folded strings are identical, so they are the same length and only
+       case distinguishes them. Lowercase goes first. */
+    pa = (const unsigned char *)a;
+    pb = (const unsigned char *)b;
+    while (*pa && *pb) {
         if (*pa != *pb) {
             int aup = ascii_isupper(*pa), bup = ascii_isupper(*pb);
             if (aup != bup) return aup ? 1 : -1;
@@ -1029,8 +1049,6 @@ static int snbt_key_strcmp(const char *a, const char *b)
         pa++;
         pb++;
     }
-    if (*pa) return 1;
-    if (*pb) return -1;
     return 0;
 }
 

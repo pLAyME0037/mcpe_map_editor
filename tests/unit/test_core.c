@@ -13,6 +13,8 @@
 
 int mcme_test_core(void);
 int mcme_test_nbt(void);
+int mcme_test_compress(void);
+int mcme_test_world(void);
 
 int main(void)
 {
@@ -22,6 +24,8 @@ int main(void)
     } suites[] = {
         { "core", mcme_test_core },
         { "nbt", mcme_test_nbt },
+        { "compress", mcme_test_compress },
+        { "world", mcme_test_world },
     };
 
     const int n = (int)(sizeof(suites) / sizeof(suites[0]));

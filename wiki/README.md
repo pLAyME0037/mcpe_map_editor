@@ -30,6 +30,7 @@ If you are an agent or a human picking this up cold, read in this order:
 | [decisions.md](decisions.md) | Why did we do it this way and not that way? |
 | [cli.md](cli.md) | What is the command-line contract for users and agents? |
 | [nbt.md](nbt.md) | What exactly does the NBT/SNBT format contract require? |
+| [world.md](world.md) | How is a world directory recognised and read? |
 | [porting/amulet-architecture.md](porting/amulet-architecture.md) | How did the original Python app work? |
 | [porting/parity.md](porting/parity.md) | Which features are ported, which are not? |
 | [porting/data-formats.md](porting/data-formats.md) | What must we parse and write correctly? |

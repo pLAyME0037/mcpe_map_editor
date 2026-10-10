@@ -47,6 +47,18 @@ static int g_failed;
         }                                                                      \
     } while (0)
 
+/* CHECK with a printed explanation. Use it where the bare condition would not
+   say which case failed. */
+#define CHECK_MSG(cond, ...)                                                   \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            g_failed++;                                                        \
+            printf("  FAIL %s:%d  %s\n    ", __FILE__, __LINE__, #cond);       \
+            printf(__VA_ARGS__);                                               \
+            printf("\n");                                                      \
+        }                                                                      \
+    } while (0)
+
 static const char kGoldenDir[] = "tests/golden/nbt";
 static char kEmptyRoot[] = "";
 
@@ -860,6 +872,68 @@ static void test_navigate(void)
  * Entry point
  * ------------------------------------------------------------------ */
 
+/*
+ * Compound key ordering in SNBT.
+ *
+ * The rule has two parts applied in a specific order, and getting that order
+ * wrong produces output that looks plausible and is wrong: fold case and
+ * compare; only if the folded strings are identical does lowercase-before-
+ * uppercase break the tie.
+ *
+ * This is pinned here with hand-written cases because it was once wrong in a
+ * way the golden documents happened not to expose: breaking on case at the
+ * first differing character ranks "structures" below "Status", since both
+ * begin with 's' and the tiebreak fires before the 'r' versus 'a' that should
+ * decide it. A real Anvil chunk carries exactly those keys, so the bug surfaced
+ * in the world tests rather than here. It belongs here.
+ */
+static void test_snbt_key_order(void)
+{
+    static const struct {
+        const char *in;
+        const char *want;
+    } cases[] = {
+        /* The case that was wrong. */
+        { "{sections: 1, structures: 2, Status: 3}",
+          "{sections: 1, Status: 3, structures: 2}" },
+        /* Full fold-tie: lowercase before uppercase, then upper before upper.
+           This is the ordering the {ab, aB, Ab, AB} example describes. */
+        { "{AB: 1, Ab: 2, aB: 3, ab: 4}", "{ab: 4, aB: 3, Ab: 2, AB: 1}" },
+        /* A prefix sorts before its extensions. */
+        { "{ab: 1, a: 2}", "{a: 2, ab: 1}" },
+        /* Ties elsewhere in the string must not disturb the case rule. Here
+           the folded strings are identical, so case alone decides — and it
+           decides at position 5, well past the shared "statu" prefix. */
+        { "{statuSx: 1, statusx: 2}", "{statusx: 2, statuSx: 1}" },
+        /* Nested compounds sort by their own keys, independently. */
+        { "{z: {sections: 1, structures: 2, Status: 3}}",
+          "{z: {sections: 1, Status: 3, structures: 2}}" },
+    };
+
+    printf("  snbt key order\n");
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        McmeArena *arena = mcme_arena_new();
+        McmeTag *tag = NULL;
+        bool ok = mcme_nbt_parse_snbt(arena, cases[i].in, strlen(cases[i].in), &tag);
+        CHECK_MSG(ok, "case %zu failed to parse '%s': %s",
+                  i, cases[i].in, mcme_last_error());
+
+        if (ok) {
+            McmeBuffer out;
+            mcme_buffer_init(&out);
+            CHECK(mcme_nbt_write_snbt(tag, &out, 0));
+            CHECK_MSG(out.len == strlen(cases[i].want) &&
+                      memcmp(out.data, cases[i].want, out.len) == 0,
+                      "case %zu\n    in   %s\n    got  %.*s\n    want %s",
+                      i, cases[i].in, (int)out.len, (const char *)out.data,
+                      cases[i].want);
+            mcme_buffer_free(&out);
+        }
+        mcme_arena_free(arena);
+    }
+}
+
 int mcme_test_nbt(void)
 {
     g_failed = 0;
@@ -884,6 +958,7 @@ int mcme_test_nbt(void)
     test_list_homogeneity_and_dup_keys();
     test_non_compound_root();
     test_depth_limit();
+    test_snbt_key_order();
     test_navigate();
 
     return g_failed;

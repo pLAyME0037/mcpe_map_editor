@@ -9,6 +9,89 @@ Status vocabulary:
 
 ---
 
+## 2026-10-10 — Phase 3 (part 1): compression, Anvil regions, `mcme info`
+
+**Status: done** for Java. Bedrock detection done; the LevelDB reader is not
+started.
+
+Compression, the Java Anvil region container, world detection, and the first
+command that exercises all three at once. See [world.md](world.md) for the
+format contract and [decisions.md#D8](decisions.md) for the zlib change.
+
+### Built
+
+- **`include/mcme/compress.h`, `src/compress/`** — gzip, zlib, LZ4 and stored,
+  with a `max_out` ceiling on every decompression and magic-byte sniffing. This
+  is the only place in the tree allowed to include `<zlib.h>` or `<lz4.h>`.
+- **`include/mcme/region.h`, `src/world/region.c`** — Java Anvil `.mca` reader:
+  sector table, timestamps, chunk extraction and decompression.
+- **`include/mcme/world.h`, `src/world/world.c`** — world detection plus
+  `level.dat` metadata for both editions.
+- **`mcme info <world>`** — identifies a world and summarises it. Exits `2` for
+  "not a world" and `4` for "not a readable directory", deliberately.
+- **`mcme nbt dump`** now strips gzip instead of refusing it.
+- **Golden data:** `tools/ref_worlds.py` (amulet-core 1.9.50),
+  `tools/ref_region.py` (amulet_nbt 2.1.8), `tools/ref_compress.py` (Python
+  `zlib` and `lz4.block`).
+- **`build/fuzz_decompress`** — the third fuzz harness.
+
+### The zlib reversal
+
+Phase 1 vendored `miniz` for gzip and never compiled it, because it needs a
+CMake-generated `miniz_export.h`. Phase 3 needed gzip for real, so the choice
+was revisited and **miniz lost**: zlib is already a hard dependency of GTK4 via
+libpng, so vendoring a second implementation would add a dependency rather than
+remove one. Recorded as [D8](decisions.md). `third_party/miniz` stays on disk,
+unused, behind `mcme_compress.h` for a possible static build later.
+
+### Bugs found
+
+**`mcme_fs_read` on a directory.** `fopen` succeeds on a directory, `fseek` to
+the end succeeds, and `ftell` reports `LONG_MAX` — which reached `malloc` as
+2^63 bytes and aborted under ASan. The `size < 0` guard did not catch it because
+`LONG_MAX` is positive. Found by pointing the region reader at
+`tests/golden/worlds/java/region` instead of an `.mca` file, which is exactly
+what a user does when they mean "this world". Fixed with `fstat` +
+`S_ISREG`, which also stops us blocking forever on a FIFO. Regression test in
+`src/core/selftest.c`.
+
+**SNBT compound key ordering.** The case tiebreak was applied at the first
+differing *character*, so `structures` sorted below `Status`: both start with
+`s`, and the tiebreak fired before the comparison ever reached the `r` versus
+`a` that should decide it. The reference compares case-insensitively first and
+only uses case to break a full fold-tie, so it prints `Status` first. Phase 2's
+eleven golden documents happened to contain no such key pair, so the bug
+survived a byte-exact test suite — it surfaced only when a real Anvil chunk,
+which does contain `Status` and `structures`, went through it. Fixed, and now
+pinned by hand-written cases in `src/nbt/selftest.c`, where it belongs.
+
+That is the general lesson: **golden data only covers what it happens to
+contain.** A fixture of empty chunks found a sorting bug that eleven carefully
+constructed NBT documents did not.
+
+### Notes
+
+- Bedrock `level.dat` is an 8-byte header followed by NBT that may or may not
+  then be gzipped. Minecraft gzips it; amulet's writer does not.
+- The Bedrock `lastOpenedWithVersion` tuple is printed in full (`1.10.0.0.0`)
+  rather than truncated to a depth that looks plausible.
+- `fuzz_decompress` run for 121 s: **5,366,633 execs, exit 0, no artifacts**.
+  An earlier run under `-rss_limit_mb=512` reported an OOM that did not
+  reproduce from the saved artifact; it was libFuzzer's own corpus plus ASan
+  shadow accounting, not our code. Run it with the limit off.
+
+### Next
+
+1. Bedrock LevelDB reader — vendored via its C API behind `mc_leveldb.h`, then
+   `mcme info` gains a real chunk inventory and `mcme chunks` comes off the
+   reserved list.
+2. `wiki/porting/` — linked from [README.md](README.md) and [cli.md](cli.md)
+   but not written yet, so those two links are currently broken.
+3. `.lang` list is hardcoded in `main.c` (18 ids) instead of reading the
+   directory.
+
+---
+
 ## 2026-10-10 — Phase 2: NBT library, golden parity, fuzzing
 
 **Status: done**

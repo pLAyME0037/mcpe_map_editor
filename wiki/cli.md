@@ -109,12 +109,59 @@ SNBT is the default because it is faithful: it keeps the type distinctions
 to `jq`, and trades type fidelity for a stable shape — note that infinity and
 NaN become `null`, since JSON has no literal for them.
 
-**Gzip is not handled here.** A file starting with `1f 8b` exits
-`MCME_EXIT_NOT_IMPLEMENTED` with a message saying so, rather than failing
-confusingly three bytes in. Compression belongs to the region/ChunkIO layer in
-Phase 3: NBT itself has no compression, and keeping them separate is what makes
-it possible to read a single NBT stream out of the middle of a file, which is
-exactly what reading Bedrock chunk data requires.
+**Gzip is stripped here, not in the parser.** A file starting with `1f 8b` is
+inflated before parsing. Compression is deliberately kept out of
+`mcme_nbt_parse`: NBT has no framing of its own, and conflating the two would
+make it impossible to read one NBT stream out of the middle of a file — which
+is exactly what reading Bedrock chunk data requires. A corrupt gzip stream exits
+`MCME_EXIT_BAD_FORMAT`.
+
+Bedrock's `level.dat` is *not* gzip-framed the way Java's is: it carries an
+8-byte header first. Use `mcme info` on the world directory rather than `nbt
+dump` on that file.
+
+### `mcme info`
+
+Identifies a world directory and summarises it. Read-only; never writes, never
+opens a database. Implemented in Phase 3.
+
+```
+mcme info <world>            # human-readable summary
+mcme --json info <world>     # the same facts as one JSON object
+```
+
+```
+$ mcme info myworld
+path:     myworld
+format:   java
+name:     World Created By Amulet
+data:     DataVersion 3463
+played:   1791643789
+leveldat: gzip
+regions:  2
+chunks:   5
+```
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | A world was identified |
+| `2` | The path exists but is not a world |
+| `4` | The path is not a readable directory |
+
+`2` and `4` are distinguished on purpose so a script can tell "wrong directory"
+from "no permission".
+
+Fields vary by edition and only appear when present. Java reports
+`data: DataVersion <n>`; Bedrock reports `version:` from its
+`lastOpenedWithVersion` tuple, printed in full (`1.10.0.0.0`) rather than
+truncated to a plausible-looking depth. `leveldat:` reports how the file was
+framed, which is the most useful clue when a world is mis-detected.
+
+For Bedrock, chunk inventory is **not** printed yet: the LevelDB reader is not
+built, and a `chunks: 0` for a world that has chunks would be worse than saying
+so.
 
 ### Reserved, not yet implemented
 
@@ -122,9 +169,8 @@ These parse and then exit `MCME_EXIT_NOT_IMPLEMENTED`. They exist so the surface
 is settled early and tests can assert the gap.
 
 ```
-mcme info <world>            # Phase 3 — world metadata
 mcme convert <in> <out> --to <platform>/<version>   # Phase 4
-mcme chunks <world> --count  # Phase 3
+mcme chunks <world> --count                         # needs the LevelDB reader
 ```
 
 ## Writing agent-friendly commands

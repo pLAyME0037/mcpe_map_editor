@@ -203,6 +203,16 @@ static void test_fs(void)
     CHECK(!mcme_fs_read("/no/such/file/here", &d2, &s2));
     CHECK(mcme_last_error()[0] != '\0');
     mcme_clear_error();
+
+    /* Reading a DIRECTORY must fail. fopen() succeeds on one and, on Linux,
+       ftell then reports LONG_MAX — which reached malloc() as 2^63 bytes and
+       aborted under ASan. Found by the region reader pointing at
+       tests/golden/worlds/java/region instead of an .mca file. The check is
+       fstat + S_ISREG in mcme_fs_read; this pins it. */
+    CHECK(!mcme_fs_read("build", &d2, &s2));
+    CHECK(!mcme_fs_read(".", &d2, &s2));
+    CHECK(mcme_fs_read_text("build") == NULL);
+    mcme_clear_error();
 }
 
 /* ------------------------------------------------------------------

@@ -211,8 +211,9 @@ int main(int argc, char **argv)
             const char *src;
             const char *out;
         } targets[] = {
-            { "tests/fuzz/fuzz_nbt.c",  "build/fuzz_nbt"  },
-            { "tests/fuzz/fuzz_snbt.c", "build/fuzz_snbt" },
+            { "tests/fuzz/fuzz_nbt.c",        "build/fuzz_nbt"        },
+            { "tests/fuzz/fuzz_snbt.c",       "build/fuzz_snbt"       },
+            { "tests/fuzz/fuzz_decompress.c", "build/fuzz_decompress" },
         };
         const size_t target_count = sizeof(targets) / sizeof(targets[0]);
 
@@ -234,7 +235,7 @@ int main(int argc, char **argv)
                 if (strcmp(g_sources[i], "src/app/main.c") == 0) continue;
                 nob_cmd_append(&cmd, g_sources[i]);
             }
-            nob_cmd_append(&cmd, targets[t].src, "-lm", "-lpthread");
+            nob_cmd_append(&cmd, targets[t].src, "-lm", "-lpthread", "-lz");
 
             if (!nob_cmd_run_sync(cmd)) {
                 nob_log(NOB_ERROR, "failed to build %s", targets[t].out);
@@ -270,7 +271,7 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < mcme_object_count; ++i) {
             nob_cmd_append(&cmd, obj_path_for(g_sources[i]));
         }
-        nob_cmd_append(&cmd, "-lm", "-lpthread");
+        nob_cmd_append(&cmd, "-lm", "-lpthread", "-lz");
         if (!nob_cmd_run_sync(cmd)) {
             nob_log(NOB_ERROR, "link failed for mcme");
             return 1;
@@ -297,7 +298,7 @@ int main(int argc, char **argv)
             if (strcmp(g_sources[i], "src/app/main.c") == 0) continue;
             nob_cmd_append(&cmd, obj_path_for(g_sources[i]));
         }
-        nob_cmd_append(&cmd, "-lm", "-lpthread");
+        nob_cmd_append(&cmd, "-lm", "-lpthread", "-lz");
         if (!nob_cmd_run_sync(cmd)) {
             nob_log(NOB_ERROR, "link failed for mcme_tests");
             return 1;

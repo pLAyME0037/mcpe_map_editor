@@ -148,3 +148,42 @@ five entries is obviously correct.
 
 **Planned, not built.** A `dlopen` plugin ABI in a later phase, and optionally
 embedded Lua for user-authored operations. Deliberately deferred.
+
+---
+
+## D8 — System zlib for gzip/zlib, not vendored miniz
+
+**Chosen.** Link system `zlib` (`-lz`) for gzip and zlib streams.
+`third_party/miniz` stays on disk but is **never compiled**.
+
+**Why.** Phase 3 needs zlib for three real things: Anvil region chunk payloads
+(raw zlib), Java `level.dat` (gzip), and Bedrock `level.dat` (gzip). miniz was
+vendored for this in Phase 1 on the theory that it is a single-file C library.
+That theory failed twice:
+
+1. miniz does not ship `miniz_export.h`. It is CMake-generated, so using it
+   means running CMake — exactly the build complexity `rebuild.sh` exists to
+   avoid. This is already recorded in the Phase 1 note in `build.c`.
+2. zlib is **already a hard dependency of GTK4** via libpng/gdk-pixbuf, and it
+   is present on every target we care about. Vendoring miniz would not remove a
+   dependency; it would add a second implementation of one we already have.
+
+So miniz bought nothing and cost a build system.
+
+**Rejected.**
+- *miniz with a hand-written `miniz_export.h`*: works, but carries a second
+  gzip implementation whose behaviour on malformed input we would have to test
+  against zlib's anyway.
+- *stb's gzip writer only*: `stb_image_write` has no inflate. We need to read.
+- *A self-written DEFLATE decoder*: educational, but it is a well-known
+  security-sensitive surface and zlib is already on the machine. Not a good
+  trade.
+
+**Cost accepted.** `mcme` is no longer buildable on a system without zlib.
+That is acceptable: zlib is ubiquitous, and D2 already makes GTK4 a system
+dependency.
+
+**Reverses if:** we need a genuinely static, dependency-free binary for a target
+with no zlib. Then vendor miniz and generate the header once, behind
+`mc_compress.h` — which is why all compression goes through that header and
+nothing else in the tree calls `zlib.h` directly.
