@@ -9,6 +9,57 @@ Status vocabulary:
 
 ---
 
+## 2026-10-11 — First write: set one block
+
+### Built
+
+- `mcme_bedrock_set_block()`
+  (`src/world/bedrock_write.c`): builds the
+  subchunk key, opens the store with the exclusive
+  LOCK, decodes the stored payload, sets the
+  block, re-encodes, writes the value back. The
+  subchunk must already exist — a missing one is
+  refused, not created, because creating chunks
+  means the version record, the heightmap and the
+  records a real save also touches.
+- `mcme_bedrock_subchunk_set()`
+  (`src/world/bedrock_chunk.c`): the domain
+  mutation. Find-or-add on the layer-zero palette
+  — the new entry is serialised and compared byte
+  for byte against the stored entries — set the
+  index, grow the stored width only when the edit
+  forces it. The width only ever grows: a no-op
+  edit leaves every byte alone, and a layer stored
+  wider than its palette needs (real worlds
+  contain such layers) stays that way, because
+  narrowing would rewrite indices the edit did not
+  touch.
+- `mcme_bedrock_block_entry()`: builds a palette
+  entry the way the reference writes one — name,
+  states, version in that order, version 17694720
+  ("1, 14, 0, 0"), the version amulet assigns a
+  block that arrives without one.
+- `tools/ref_bedrock_store.py` and the golden
+  fixture `tests/golden/worlds/bedrock-chunks`:
+  eight subchunk payloads under the keys their
+  coordinates dictate, put through amulet-leveldb
+  itself. The selftest edits copies and checks the
+  store's answer against the original payloads:
+  width growth 4 → 5, index reuse, a no-op coming
+  back byte-identical, a waterlogged subchunk's
+  fluid layer untouched, the compact form growing
+  to width 1, version-9 wrappers and a non-zero
+  dimension surviving, the neighbouring chunk
+  unchanged byte for byte.
+
+### Next
+
+The CLI verb — `mcme chunk set` — and the
+reference cross-check that reads mcme's write
+back through amulet's own decoder.
+
+---
+
 ## 2026-10-11 — Chunk keys: the builder, and a wiki correction
 
 ### Built

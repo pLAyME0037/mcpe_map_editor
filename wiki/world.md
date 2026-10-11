@@ -201,6 +201,44 @@ appending a byte. The one documented non-inversion is padding: the model
 carries block indices, not the unused high bits of each word, so garbage
 there would come back zero; every writer seen here stores zeros anyway.
 
+### Writing one block
+
+`include/mcme/bedrock_write.h`, `src/world/bedrock_write.c`, plus `mcme_bedrock_subchunk_set()` in
+`src/world/bedrock_chunk.c`. `mcme_bedrock_set_block(world_db, x, y, z,
+dimension, entry)` is the first edit the store layer carries: it builds the
+subchunk key, opens the store with the exclusive LOCK, decodes the stored
+payload, sets the block, re-encodes and writes the value back. The
+subchunk must already exist — creating chunks (the version record, the
+heightmap, the records a real save also touches) is a larger operation,
+and a missing subchunk is refused, not created.
+
+Setting a block is find-or-add on the layer-zero palette: the new entry
+is serialised and compared byte for byte against the stored entries, and
+an identical block reuses its index. `mcme_bedrock_block_entry()` builds
+the entry the way the reference writes one — `name`, `states`, `version`
+in that order, with 17694720 ("1, 14, 0, 0"), the version amulet
+assigns a block that arrives without one.
+
+The stored width only ever grows, and only when the edit forces it: a
+no-op edit leaves every byte of the payload alone, and a layer stored
+wider than its palette needs (real worlds contain such layers) stays
+that way, because narrowing would rewrite indices the edit did not
+touch. The compact bits==0 form keeps its width until a second entry
+arrives. Palette entries the indices no longer reference are kept: the
+reference prunes them on its own saves, but dropping them here would
+rewrite indices this edit did not touch.
+
+The golden fixture `tests/golden/worlds/bedrock-chunks` is a store
+seeded by `tools/ref_bedrock_store.py`: eight subchunk payloads — one
+per interesting shape — under the keys their coordinates dictate, put
+through amulet-leveldb itself. The selftest edits copies of it and checks
+the store's answer against the original fixture payloads: a new block
+joining a 16-entry palette (width 4 → 5), an index reuse, a no-op coming
+back byte-identical, the fluid layer of a waterlogged subchunk untouched,
+the compact form growing to width 1, both version-9 wrappers and a
+non-zero dimension surviving the edit, and the neighbouring chunk
+unchanged, byte for byte.
+
 ---
 
 ## Safety

@@ -406,3 +406,128 @@ bool mcme_bedrock_subchunk_encode(const McmeBedrockSubchunk *sc,
     }
     return true;
 }
+
+/* ========================================================================
+ * Setting one block
+ * ======================================================================== */
+
+/* The width the reference's encoder picks for a palette whose
+   largest index in use is max_index: the bit length of that
+   index, with the gaps at 7 and 9..15 snapped to the next
+   width the format carries. */
+static uint8_t bits_for(size_t max_index)
+{
+    unsigned bits = 0;
+    for (size_t v = max_index; v > 0; v >>= 1) ++bits;
+    if (bits == 7) bits = 8;
+    else if (bits >= 9 && bits <= 15) bits = 16;
+    if (bits == 0) bits = 1;
+    return (uint8_t)bits;
+}
+
+bool mcme_bedrock_subchunk_set(McmeBedrockSubchunk *sc,
+                              McmeArena *arena,
+                              int32_t x, int32_t y, int32_t z,
+                              const McmeNbtDoc *block)
+{
+    if (sc == NULL || arena == NULL || block == NULL) {
+        mcme_set_error("subchunk: set: null argument");
+        return false;
+    }
+    if (block->root == NULL
+            || block->root->type != MCME_TAG_Compound) {
+        mcme_set_error("subchunk: set: block is not a compound "
+                       "document");
+        return false;
+    }
+    if (block->root_name.len != 0) {
+        mcme_set_error("subchunk: set: a palette entry carries "
+                       "no root name");
+        return false;
+    }
+    if (x < 0 || x > 15 || y < 0 || y > 15 || z < 0 || z > 15) {
+        mcme_set_error("subchunk: set: block (%d, %d, %d) is "
+                       "outside the subchunk", x, y, z);
+        return false;
+    }
+    if (sc->layer_count == 0) {
+        mcme_set_error("subchunk: set: the all-air marker has "
+                       "no layer to set");
+        return false;
+    }
+
+    McmeBedrockLayer *layer = &sc->layers[0];
+    size_t u = (size_t)x * 256 + (size_t)z * 16 + (size_t)y;
+
+    /* Serialised, the entry is the comparison: two documents are
+       the same block exactly when the reference's bytes for
+       them are the same. */
+    McmeBuffer want;
+    mcme_buffer_init(&want);
+    if (!mcme_nbt_write_binary_as(block, &want, true)) return false;
+
+    size_t index = layer->palette_len;         /* "not present" */
+    for (size_t j = 0; j < layer->palette_len; ++j) {
+        McmeBuffer got;
+        mcme_buffer_init(&got);
+        bool ok = mcme_nbt_write_binary_as(&layer->palette[j],
+                                            &got, true);
+        bool same = ok && got.len == want.len
+                    && memcmp(got.data, want.data, got.len) == 0;
+        mcme_buffer_free(&got);
+        if (!ok) {
+            mcme_buffer_free(&want);
+            return false;
+        }
+        if (same) {
+            index = j;
+            break;
+        }
+    }
+
+    if (index == layer->palette_len) {
+        if (index > UINT16_MAX) {
+            mcme_buffer_free(&want);
+            mcme_set_error("subchunk: set: the palette already "
+                           "holds %zu entries; no index left to "
+                           "add one", index);
+            return false;
+        }
+        /* The palette array is arena memory and cannot grow, so a
+           new one is allocated and the documents — arena-owned,
+           never moved — are copied over. */
+        McmeNbtDoc *palette = mcme_arena_alloc(
+            arena, (layer->palette_len + 1) * sizeof *palette);
+        mcme_buffer_free(&want);
+        if (palette == NULL) return false;
+        memcpy(palette, layer->palette,
+               layer->palette_len * sizeof *palette);
+        palette[layer->palette_len] = *block;
+        layer->palette = palette;
+        layer->palette_len += 1;
+    } else {
+        mcme_buffer_free(&want);
+    }
+
+    layer->indices[u] = (uint16_t)index;
+
+    /* The stored width only ever grows, and only when the
+       edit forces it: a no-op leaves every byte of the
+       payload alone, and a layer stored wider than its
+       palette needs stays that way — the reference writes
+       such layers too, and narrowing here would rewrite
+       indices this edit did not touch. The exception is
+       the compact single-entry form, which an edit that
+       adds a second entry must leave for a wider one. */
+    size_t max_index = 0;
+    for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
+        if (layer->indices[v] > max_index) max_index = layer->indices[v];
+    }
+    if (max_index == 0 && layer->palette_len == 1) {
+        layer->bits = 0;
+    } else {
+        uint8_t need = bits_for(max_index);
+        if (need > layer->bits) layer->bits = need;
+    }
+    return true;
+}

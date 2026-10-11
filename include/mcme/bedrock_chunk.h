@@ -92,7 +92,8 @@ typedef struct {
 /*
  * Decodes one subchunk payload.
  *
- * `data`/`size` are the raw store value, decompressed. Returns false on
+ * `data`/`size` are the raw store value. Returns false on
+ * anything malformed or unsupported; mcme_last_error() says what was found
  * anything malformed or unsupported; mcme_last_error() says what was found
  * and where. On failure `*out` is zeroed and owns nothing.
  *
@@ -137,5 +138,36 @@ bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
  */
 bool mcme_bedrock_subchunk_encode(const McmeBedrockSubchunk *sc,
                                   McmeBuffer *out);
+
+/*
+ * Sets one block in a decoded subchunk, in place.
+ *
+ * The palette entry for `block` is found or appended to layer zero —
+ * the block layer; deeper layers are fluids and are not touched —
+ * the index at (x, y, z) is pointed at it, and the layer's stored
+ * width is grown to fit the largest index now in use — and only
+ * grown: a layer stored wider than its palette needs stays that
+ * way, so a no-op edit leaves every byte of the payload alone.
+ * Coordinates are within the subchunk, each 0 to 15.
+ *
+ * The width follows the reference's rule — the bit length of the
+ * largest index in use, floored at 1, with 7 and 9..15 snapped to
+ * 8 and 16 — except that a layer still holding exactly one entry
+ * at index 0 keeps width 0, the compact form the reference never
+ * writes but real worlds contain. Setting a block to the value it
+ * already holds therefore changes nothing, and encoding reproduces
+ * the payload byte for byte.
+ *
+ * Palette entries the indices no longer reference are kept: the
+ * reference prunes them on its own saves, but dropping them here
+ * would rewrite indices this edit did not touch.
+ *
+ * `block` and everything it references is borrowed for the call;
+ * encode the subchunk before the block's arena is freed.
+ */
+bool mcme_bedrock_subchunk_set(McmeBedrockSubchunk *sc,
+                              McmeArena *arena,
+                              int32_t x, int32_t y, int32_t z,
+                              const McmeNbtDoc *block);
 
 #endif /* MCME_BEDROCK_CHUNK_H */

@@ -1,5 +1,6 @@
 #include "mcme/bedrock_chunk.h"
 #include "mcme/bedrock_keys.h"
+#include "mcme/bedrock_write.h"
 #include "mcme/core.h"
 #include "mcme/compress.h"
 #include "mcme/leveldb.h"
@@ -7,9 +8,11 @@
 #include "mcme/region.h"
 #include "mcme/world.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /*
  * World-format self-tests: the Java Anvil region reader.
@@ -1121,6 +1124,511 @@ static void test_bedrock_inventory(void)
               "%zu chunks marked only by 0x2f, want 2", inv.modern_only);
 }
 
+/* ========================================================================
+ * Writing: one block, through the store
+ * ======================================================================== */
+
+static const char kChunksWorld[] = "tests/golden/worlds/bedrock-chunks";
+
+/* Copies a whole db/ directory to `dst` so an edit
+   lands on a copy and never on the fixture. Only
+   regular files; the store layout is flat. */
+static bool copy_store(const char *src, const char *dst)
+{
+    if (!mcme_fs_mkdir_p(dst)) return false;
+
+    DIR *d = opendir(src);
+    if (d == NULL) return false;
+
+    struct dirent *e;
+    bool ok = true;
+    while (ok && (e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+
+        char from[4096], to[4096];
+        snprintf(from, sizeof from, "%s/%s", src, e->d_name);
+        snprintf(to, sizeof to, "%s/%s", dst, e->d_name);
+
+        void *data = NULL;
+        size_t len = 0;
+        if (!mcme_fs_read(from, &data, &len)) { ok = false; break; }
+        ok = mcme_fs_write(to, data, len);
+        free(data);
+    }
+    closedir(d);
+    return ok;
+}
+
+static void remove_store(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL) return;
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char path[4096];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        remove(path);
+    }
+    closedir(d);
+    rmdir(dir);
+}
+
+/* The same block is the same block exactly when the
+   reference's bytes for it are: serialise both the
+   way the store carries them and compare. */
+static bool docs_equal(const McmeNbtDoc *a, const McmeNbtDoc *b)
+{
+    McmeBuffer x, y;
+    mcme_buffer_init(&x);
+    mcme_buffer_init(&y);
+    bool ok = mcme_nbt_write_binary_as(a, &x, true)
+              && mcme_nbt_write_binary_as(b, &y, true)
+              && x.len == y.len
+              && memcmp(x.data, y.data, x.len) == 0;
+    mcme_buffer_free(&x);
+    mcme_buffer_free(&y);
+    return ok;
+}
+
+/* Decodes the subchunk payload a fixture ships, for
+   the expectations an edit is checked against. */
+static bool decode_fixture(const char *case_name,
+                               McmeArena *arena,
+                               McmeBedrockSubchunk *out)
+{
+    char path[512];
+    snprintf(path, sizeof path,
+             "tests/golden/subchunks/%s.bin", case_name);
+    void *data = NULL;
+    size_t size = 0;
+    if (!mcme_fs_read(path, &data, &size)) return false;
+    bool ok = mcme_bedrock_subchunk_decode(out, arena,
+                                                      data, size);
+    free(data);
+    return ok;
+}
+
+/* Reads the subchunk at (cx, cz, dimension, cy) from
+   an open store and decodes it. */
+static bool load_subchunk(McmeLevelDb *db, McmeArena *arena,
+                          int32_t cx, int32_t cz,
+                          int32_t dimension, int8_t cy,
+                          McmeBedrockSubchunk *out)
+{
+    uint8_t key[14];
+    size_t key_len = 0;
+    if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                        cx, cz, dimension,
+                                        MCME_BEDROCK_TAG_SUBCHUNK,
+                                        true, cy)) {
+        return false;
+    }
+    bool deleted = false;
+    McmeBuffer payload;
+    mcme_buffer_init(&payload);
+    if (!mcme_leveldb_get(db, key, key_len, &payload, &deleted)
+            || deleted) {
+        mcme_buffer_free(&payload);
+        return false;
+    }
+    bool ok = mcme_bedrock_subchunk_decode(
+        out, arena, payload.data, payload.len);
+    mcme_buffer_free(&payload);
+    return ok;
+}
+
+/* Reads the raw value at a subchunk key, for byte
+   comparisons against a fixture payload. */
+static bool raw_subchunk(McmeLevelDb *db, int32_t cx, int32_t cz,
+                         int32_t dimension, int8_t cy,
+                         McmeBuffer *out)
+{
+    uint8_t key[14];
+    size_t key_len = 0;
+    if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                        cx, cz, dimension,
+                                        MCME_BEDROCK_TAG_SUBCHUNK,
+                                        true, cy)) {
+        return false;
+    }
+    bool deleted = false;
+    return mcme_leveldb_get(db, key, key_len, out, &deleted)
+               && !deleted;
+}
+
+/* mkdtemp writes the name it made over the pattern,
+   so every case starts from the pattern again. */
+static bool fresh_store_dir(char *tmp, size_t cap)
+{
+    snprintf(tmp, cap, "/tmp/opencode/mcme_write_XXXXXX");
+    return mkdtemp(tmp) != NULL;
+}
+
+static void test_bedrock_write(void)
+{
+    char src[512];
+    snprintf(src, sizeof src, "%s/db", kChunksWorld);
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP chunk write tests (%s not found; run "
+               "tools/ref_bedrock_store.py)\n", src);
+        return;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        CHECK_MSG(false, "out of memory");
+        return;
+    }
+
+    /* Every edit runs on a fresh copy of the fixture,
+       so the cases stay independent of one another. */
+    char tmp[64];
+    char dbdir[512];
+    McmeBedrockSubchunk a, b;
+    McmeNbtDoc placed;
+    McmeLevelDb *db = NULL;
+
+    /* --- A new block joins a wide palette. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bits4", arena, &a));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                              NULL, &placed));
+
+        CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, &placed));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 0, 0, &b));
+
+        CHECK(b.version == 8 && b.layer_count == 1);
+        CHECK(b.layers[0].palette_len
+              == a.layers[0].palette_len + 1);
+        for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
+            CHECK_MSG(docs_equal(&b.layers[0].palette[j],
+                                     &a.layers[0].palette[j]),
+                      "palette entry %zu changed", j);
+        }
+        CHECK(docs_equal(
+            &b.layers[0].palette[a.layers[0].palette_len],
+            &placed));
+        CHECK(b.layers[0].indices[0] == a.layers[0].palette_len);
+        for (size_t v = 1; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
+            CHECK_MSG(b.layers[0].indices[v]
+                          == a.layers[0].indices[v],
+                      "index %zu changed", v);
+        }
+        /* Seventeen entries outgrow four bits. */
+        CHECK(b.layers[0].bits == 5);
+
+        /* The neighbouring chunk is untouched, byte
+           for byte. */
+        McmeBuffer raw;
+        mcme_buffer_init(&raw);
+        CHECK(raw_subchunk(db, 1, -2, 0, 0, &raw));
+        void *want = NULL;
+        size_t want_len = 0;
+        CHECK(mcme_fs_read("tests/golden/subchunks/v8-bits16.bin",
+                           &want, &want_len));
+        CHECK_MSG(raw.len == want_len
+                      && memcmp(raw.data, want, want_len) == 0,
+                  "neighbouring chunk changed");
+        free(want);
+        mcme_buffer_free(&raw);
+        mcme_leveldb_close(db);
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- Setting a block to a block the palette
+           already holds reuses its index and nothing
+           else. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bits4", arena, &a));
+
+        /* Pick the palette entry after the one already
+           there, so the edit is provably a change. */
+        size_t u = 1 * 256;             /* block (1, 0, 0) */
+        size_t want = (a.layers[0].indices[u] + 1)
+                      % a.layers[0].palette_len;
+        CHECK(mcme_bedrock_set_block(dbdir, 1, 0, 0, 0,
+                                          &a.layers[0].palette[want]));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 0, 0, &b));
+
+        CHECK(b.layers[0].palette_len == a.layers[0].palette_len);
+        for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
+            CHECK(docs_equal(&b.layers[0].palette[j],
+                                 &a.layers[0].palette[j]));
+        }
+        CHECK(b.layers[0].indices[u] == want);
+        for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
+            if (v == u) continue;
+            CHECK(b.layers[0].indices[v] == a.layers[0].indices[v]);
+        }
+        CHECK(b.layers[0].bits == 4);
+        mcme_leveldb_close(db);
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- Setting a block to the value it already
+           holds changes nothing: the payload comes
+           back byte for byte. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bits4", arena, &a));
+
+        size_t u = 2 * 256 + 4 * 16 + 3;   /* block (2, 3, 4) */
+        CHECK(mcme_bedrock_set_block(
+            dbdir, 2, 3, 4, 0,
+            &a.layers[0].palette[a.layers[0].indices[u]]));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+
+        McmeBuffer raw;
+        mcme_buffer_init(&raw);
+        CHECK(raw_subchunk(db, 0, 0, 0, 0, &raw));
+        void *want = NULL;
+        size_t want_len = 0;
+        CHECK(mcme_fs_read("tests/golden/subchunks/v8-bits4.bin",
+                           &want, &want_len));
+        CHECK_MSG(raw.len == want_len
+                      && memcmp(raw.data, want, want_len) == 0,
+                  "a no-op edit rewrote the payload");
+        free(want);
+        mcme_buffer_free(&raw);
+        mcme_leveldb_close(db);
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- A waterlogged subchunk: the block layer
+           gains the entry and the fluid layer is
+           untouched, width included (four entries
+           still fit the stored two bits). --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-waterlogged", arena, &a));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                              NULL, &placed));
+
+        size_t u = 5 * 256 + 7 * 16 + 6;   /* block (5, 22, 7) */
+        CHECK(mcme_bedrock_set_block(dbdir, 5, 22, 7, 0, &placed));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 0, 1, &b));
+
+        CHECK(b.version == 8 && b.layer_count == 2);
+        CHECK(b.layers[0].palette_len
+              == a.layers[0].palette_len + 1);
+        for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
+            CHECK(docs_equal(&b.layers[0].palette[j],
+                                 &a.layers[0].palette[j]));
+        }
+        CHECK(docs_equal(
+            &b.layers[0].palette[a.layers[0].palette_len],
+            &placed));
+        CHECK(b.layers[0].indices[u] == a.layers[0].palette_len);
+        CHECK(b.layers[0].bits == 2);
+
+        McmeBedrockLayer *fluid = &b.layers[1];
+        McmeBedrockLayer *fluid_a = &a.layers[1];
+        CHECK(fluid->bits == fluid_a->bits);
+        CHECK(fluid->palette_len == fluid_a->palette_len);
+        for (size_t j = 0; j < fluid_a->palette_len; ++j) {
+            CHECK(docs_equal(&fluid->palette[j],
+                                 &fluid_a->palette[j]));
+        }
+        for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
+            CHECK(fluid->indices[v] == fluid_a->indices[v]);
+        }
+        mcme_leveldb_close(db);
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- The compact bits==0 form: a second entry
+           leaves it for the width the format
+           carries. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bpb0", arena, &a));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                              NULL, &placed));
+
+        size_t u = 15;                     /* block (0, -1, 0) */
+        CHECK(mcme_bedrock_set_block(dbdir, 0, -1, 0, 0, &placed));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 0, -1, &b));
+
+        CHECK(b.version == 8 && b.layer_count == 1);
+        CHECK(b.layers[0].palette_len == 2);
+        CHECK(docs_equal(&b.layers[0].palette[0],
+                             &a.layers[0].palette[0]));
+        CHECK(docs_equal(&b.layers[0].palette[1], &placed));
+        CHECK(b.layers[0].indices[u] == 1);
+        for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
+            if (v == u) continue;
+            CHECK(b.layers[0].indices[v] == 0);
+        }
+        CHECK(b.layers[0].bits == 1);
+        mcme_leveldb_close(db);
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- The version 9 wrapper keeps its version
+           and its Y index through the edit. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v9-cy4", arena, &a));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                              NULL, &placed));
+
+        size_t u = 4;                      /* block (0, 68, 0) */
+        CHECK(mcme_bedrock_set_block(dbdir, 0, 68, 0, 0, &placed));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 0, 4, &b));
+
+        CHECK(b.version == 9 && b.has_index && b.index == 4);
+        CHECK(b.layers[0].palette_len
+              == a.layers[0].palette_len + 1);
+        for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
+            CHECK(docs_equal(&b.layers[0].palette[j],
+                                 &a.layers[0].palette[j]));
+        }
+        CHECK(docs_equal(
+            &b.layers[0].palette[a.layers[0].palette_len],
+            &placed));
+        CHECK(b.layers[0].indices[u] == a.layers[0].palette_len);
+        for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
+            if (v == u) continue;
+            CHECK(b.layers[0].indices[v] == a.layers[0].indices[v]);
+        }
+        /* Five entries outgrow two bits. */
+        CHECK(b.layers[0].bits == 3);
+        mcme_leveldb_close(db);
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- A non-zero dimension is written into the
+           key, and the edit lands on it. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bits1", arena, &a));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                              NULL, &placed));
+
+        CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 1, &placed));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 1, 0, &b));
+
+        CHECK(b.version == 8 && b.layer_count == 1);
+        CHECK(b.layers[0].palette_len
+              == a.layers[0].palette_len + 1);
+        CHECK(docs_equal(
+            &b.layers[0].palette[a.layers[0].palette_len],
+            &placed));
+        CHECK(b.layers[0].indices[0] == a.layers[0].palette_len);
+        /* Three entries outgrow one bit. */
+        CHECK(b.layers[0].bits == 2);
+        mcme_leveldb_close(db);
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- Refusals: an absent subchunk is refused,
+           not created, and the direct API says what
+           it was handed. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bits4", arena, &a));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                              NULL, &placed));
+
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_set_block(dbdir, 0, 0, 3 * 16, 0,
+                                          &placed));
+        CHECK(mcme_last_error()[0] != '\0');
+        CHECK(!mcme_bedrock_set_block(dbdir, 32, 0, 0, 0,
+                                          &placed));
+        CHECK(mcme_last_error()[0] != '\0');
+        /* Subchunk Y past the key's signed byte. */
+        CHECK(!mcme_bedrock_set_block(dbdir, 0, 2048, 0, 0,
+                                          &placed));
+        CHECK(mcme_last_error()[0] != '\0');
+        CHECK(!mcme_bedrock_set_block(NULL, 0, 0, 0, 0, &placed));
+        CHECK(!mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, NULL));
+        CHECK(mcme_last_error()[0] != '\0');
+
+        /* Coordinates outside the subchunk, an
+           all-air subchunk, a block that is not a
+           compound, and a palette entry that carries
+           a root name. */
+        CHECK(!mcme_bedrock_subchunk_set(&a, arena, 16, 0, 0,
+                                         &placed));
+        CHECK(!mcme_bedrock_subchunk_set(&a, arena, 0, -1, 0,
+                                         &placed));
+        CHECK(mcme_last_error()[0] != '\0');
+
+        McmeBedrockSubchunk empty;
+        memset(&empty, 0, sizeof empty);
+        CHECK(!mcme_bedrock_subchunk_set(&empty, arena, 0, 0, 0,
+                                         &placed));
+
+        McmeTag *str = mcme_arena_alloc(arena, sizeof *str);
+        str->type = MCME_TAG_String;
+        str->string.data = (char *)"x";
+        str->string.len = 1;
+        McmeNbtDoc not_compound = {
+            .arena = arena, .root = str,
+            .root_name = {NULL, 0}, .little_endian = true,
+        };
+        CHECK(!mcme_bedrock_subchunk_set(&a, arena, 0, 0, 0,
+                                         &not_compound));
+
+        McmeNbtDoc named = placed;
+        named.root_name.data = (char *)"root";
+        named.root_name.len = 4;
+        CHECK(!mcme_bedrock_subchunk_set(&a, arena, 0, 0, 0,
+                                         &named));
+
+        /* Building an entry refuses an empty name and
+           states that are not a compound. */
+        CHECK(!mcme_bedrock_block_entry(NULL, "minecraft:stone",
+                                        NULL, &placed));
+        CHECK(!mcme_bedrock_block_entry(arena, NULL, NULL, &placed));
+        CHECK(!mcme_bedrock_block_entry(arena, "minecraft:stone",
+                                        NULL, NULL));
+        CHECK(!mcme_bedrock_block_entry(arena, "", NULL, &placed));
+        CHECK(!mcme_bedrock_block_entry(arena, "minecraft:stone",
+                                        str, &placed));
+        CHECK(mcme_last_error()[0] != '\0');
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    mcme_arena_free(arena);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -1130,6 +1638,7 @@ int mcme_test_world(void)
     test_bedrock_subchunks();
     test_subchunk_refusals();
     test_bedrock_inventory();
+    test_bedrock_write();
 
     if (!mcme_fs_exists(kWorldDir)) {
         printf("  SKIP golden world (%s not found; run tools/ref_worlds.py)\n",
