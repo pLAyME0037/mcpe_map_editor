@@ -211,3 +211,198 @@ bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
     out->layers = layers;
     return true;
 }
+
+/* ========================================================================
+ * Encoding
+ *
+ * Two phases: every refusal is decided in the outer function before the
+ * first byte is appended, so a refused encode leaves the caller's buffer
+ * exactly as it was. The only failure that can interrupt writing is the
+ * buffer's own allocation.
+ * ======================================================================== */
+
+static bool encode_layer(const McmeBedrockLayer *layer, McmeBuffer *out)
+{
+    if (layer->bits == 0) {
+        /* One entry fills the layer: header, then the NBT itself — no
+           length field, the layout the decoder pins. */
+        if (!mcme_buffer_append_u8(out, 0)) return false;
+        return mcme_nbt_write_binary_as(&layer->palette[0], out,
+                                        true /* little endian */);
+    }
+
+    if (!mcme_buffer_append_u8(out, (uint8_t)(layer->bits << 1))) return false;
+
+    /* Words: floor(32/bits) indices each, packed from the least-significant
+       bit upward, zeroed first so the padding above the last index comes
+       out zero — the one documented non-inversion (see the header). The
+       word count is exactly what the decoder computes: ceil(4096/vpw). */
+    size_t per_word = 32u / layer->bits;
+    uint32_t word = 0;
+    for (size_t u = 0; u < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++u) {
+        word |= (uint32_t)layer->indices[u]
+                << ((u % per_word) * layer->bits);
+        if (u % per_word == per_word - 1
+                || u == MCME_BEDROCK_SUBCHUNK_BLOCKS - 1) {
+            if (!mcme_buffer_append_u8(out, (uint8_t)word) ||
+                !mcme_buffer_append_u8(out, (uint8_t)(word >> 8)) ||
+                !mcme_buffer_append_u8(out, (uint8_t)(word >> 16)) ||
+                !mcme_buffer_append_u8(out, (uint8_t)(word >> 24)))
+                return false;
+            word = 0;
+        }
+    }
+
+    uint32_t len = (uint32_t)layer->palette_len;
+    if (!mcme_buffer_append_u8(out, (uint8_t)len) ||
+        !mcme_buffer_append_u8(out, (uint8_t)(len >> 8)) ||
+        !mcme_buffer_append_u8(out, (uint8_t)(len >> 16)) ||
+        !mcme_buffer_append_u8(out, (uint8_t)(len >> 24)))
+        return false;
+
+    for (size_t j = 0; j < layer->palette_len; ++j) {
+        if (!mcme_nbt_write_binary_as(&layer->palette[j], out,
+                                      true /* little endian */))
+            return false;
+    }
+    return true;
+}
+
+/* Phase one: everything that could make the bytes unwritable, decided
+   before out is touched. Whether an index points inside its palette is
+   deliberately NOT checked here — the decoder does not check it either,
+   and encode exists to invert decode. */
+static bool check_layer(const McmeBedrockLayer *l, size_t i)
+{
+    if (!valid_bits(l->bits)) {
+        mcme_set_error("subchunk: encode: layer %zu stores %u bits per "
+                       "index; valid widths are 0,1,2,3,4,5,6,8,16",
+                       i, l->bits);
+        return false;
+    }
+    if (l->indices == NULL) {
+        mcme_set_error("subchunk: encode: layer %zu has no indices", i);
+        return false;
+    }
+    if (l->palette == NULL) {
+        mcme_set_error("subchunk: encode: layer %zu has no palette", i);
+        return false;
+    }
+    if (l->palette_len == 0) {
+        mcme_set_error("subchunk: encode: layer %zu has an empty palette", i);
+        return false;
+    }
+    if (l->palette_len > 0xffffffffu) {
+        mcme_set_error("subchunk: encode: layer %zu palette of %zu cannot "
+                       "be written", i, l->palette_len);
+        return false;
+    }
+    for (size_t j = 0; j < l->palette_len; ++j) {
+        if (l->palette[j].root == NULL) {
+            mcme_set_error("subchunk: encode: layer %zu palette entry %zu "
+                           "has no root tag", i, j);
+            return false;
+        }
+    }
+
+    if (l->bits == 0) {
+        if (l->palette_len != 1) {
+            mcme_set_error("subchunk: encode: layer %zu: 0-bit indices "
+                           "require exactly one palette entry, have %zu",
+                           i, l->palette_len);
+            return false;
+        }
+        for (size_t u = 0; u < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++u) {
+            if (l->indices[u] != 0) {
+                mcme_set_error("subchunk: encode: layer %zu: index %zu is %u "
+                               "but a 0-bit layer can only store 0",
+                               i, u, l->indices[u]);
+                return false;
+            }
+        }
+    } else {
+        uint32_t mask = (1u << l->bits) - 1u;
+        for (size_t u = 0; u < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++u) {
+            if ((uint32_t)l->indices[u] > mask) {
+                mcme_set_error("subchunk: encode: layer %zu: index %zu is "
+                               "%u, which %u bits cannot hold",
+                               i, u, l->indices[u], l->bits);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool mcme_bedrock_subchunk_encode(const McmeBedrockSubchunk *sc,
+                                  McmeBuffer *out)
+{
+    if (!sc || !out) {
+        mcme_set_error("subchunk: encode: null argument");
+        return false;
+    }
+
+    switch (sc->version) {
+    case 1:
+        if (sc->layer_count != 1) {
+            mcme_set_error("subchunk: encode: version 1 stores exactly one "
+                           "layer, have %zu", sc->layer_count);
+            return false;
+        }
+        if (sc->has_index) {
+            mcme_set_error("subchunk: encode: version 1 has no Y index byte "
+                           "to write");
+            return false;
+        }
+        break;
+    case 8:
+        if (sc->has_index) {
+            mcme_set_error("subchunk: encode: version 8 has no Y index byte "
+                           "to write");
+            return false;
+        }
+        if (sc->layer_count > 255) {
+            mcme_set_error("subchunk: encode: version 8 stores at most 255 "
+                           "layers, have %zu", sc->layer_count);
+            return false;
+        }
+        break;
+    case 9:
+        if (!sc->has_index) {
+            mcme_set_error("subchunk: encode: version 9 requires a Y index");
+            return false;
+        }
+        if (sc->layer_count > 255) {
+            mcme_set_error("subchunk: encode: version 9 stores at most 255 "
+                           "layers, have %zu", sc->layer_count);
+            return false;
+        }
+        break;
+    default:
+        mcme_set_error("subchunk: encode: version %u is not 1, 8 or 9",
+                       sc->version);
+        return false;
+    }
+
+    if (sc->layer_count > 0 && sc->layers == NULL) {
+        mcme_set_error("subchunk: encode: %zu layers but no layer array",
+                       sc->layer_count);
+        return false;
+    }
+    for (size_t i = 0; i < sc->layer_count; ++i) {
+        if (!check_layer(&sc->layers[i], i)) return false;
+    }
+
+    /* Phase two: write. */
+    if (!mcme_buffer_append_u8(out, sc->version)) return false;
+    if (sc->version != 1) {
+        if (!mcme_buffer_append_u8(out, (uint8_t)sc->layer_count)) return false;
+    }
+    if (sc->version == 9) {
+        if (!mcme_buffer_append_u8(out, (uint8_t)sc->index)) return false;
+    }
+    for (size_t i = 0; i < sc->layer_count; ++i) {
+        if (!encode_layer(&sc->layers[i], out)) return false;
+    }
+    return true;
+}

@@ -185,6 +185,16 @@ then encode, byte-identical — is the property this codec exists for, and a
 decoder that tolerates a tail or guesses a width cannot provide it. An
 editor that guesses here writes the guess back into someone's world.
 
+Encoding (`mcme_bedrock_subchunk_encode()`) is the inverse: for every
+payload the decoder accepts it reproduces the bytes exactly. That holds
+because the encoder writes what the model *records* rather than re-deriving
+it — `bits` is the stored width (a two-entry palette stored at width 16
+round-trips as width 16), palette NBT is forced little-endian, padding bits
+come out zero — and it refuses any model the wrapper cannot carry, before
+appending a byte. The one documented non-inversion is padding: the model
+carries block indices, not the unused high bits of each word, so garbage
+there would come back zero; every writer seen here stores zeros anyway.
+
 ---
 
 ## Safety
@@ -251,7 +261,9 @@ document the reference saw.
 The subchunk fixtures are held to the same standard, with one addition: each
 case ships the 4096 indices of every layer as raw little-endian uint16 in
 disk order, and the test compares **every index**, not a digest, plus every
-palette entry's compact SNBT. The width range is not decoration — index
+palette entry's compact SNBT. Each case also round-trips: decode → encode
+must reproduce the payload bytes themselves, compared against the `.bin`
+fixture, not against a re-parse. The width range is not decoration — index
 patterns at small palettes are symmetric under a z/y index transposition, so
 only the wide cases catch that class of bug. That is exactly how the
 generator's own confusion between amulet's [x][y][z] encoder arrays and the

@@ -9,6 +9,46 @@ Status vocabulary:
 
 ---
 
+## 2026-10-11 — Subchunk codec: encode now inverts decode, byte for byte
+
+### Built
+
+- `mcme_bedrock_subchunk_encode()` (`src/world/bedrock_chunk.c`): the model
+  back into payload bytes, appended to a buffer. Two phases — every refusal
+  is decided before the first byte is appended, and the test pins that
+  contract by checking the buffer is still empty on every refused encode.
+- The property: every payload the decoder accepts encodes back byte for
+  byte. Asserted against all thirteen golden fixtures by comparing the
+  encoder's *output* with the reference payload itself, plus the inline
+  accepted shapes (all-air marker, version 1 minimal, version 9 negative Y),
+  plus a from-scratch model landing on hand-written bytes.
+
+### Why it holds: the encoder writes what the model records
+
+`bits` is the stored width and is never re-derived from the palette — a
+two-entry palette stored at width 16 round-trips as width 16, not as the
+width someone would pick today. Palette NBT is forced little-endian
+regardless of what the document records. Padding bits are the single
+documented exception: the model carries block indices, not the unused high
+bits of each word, so they come back zero — which is what the reference
+encoder and every payload this tree has seen store there anyway.
+
+Refused before the first byte: versions outside {1, 8, 9}; a shape the
+wrapper cannot carry (version 1 without exactly one layer, version 9 without
+an index, an index on 1/8, more than 255 layers); widths outside the enum;
+an empty palette or one with missing roots; a bits==0 layer that is not one
+all-zero entry; an index its width cannot hold. Whether an index points
+*inside* its palette is deliberately not this function's business — the
+decoder does not enforce it either, and encode exists to invert decode.
+
+### Next
+
+Chunk writes: build the model, encode, compress (zlib or raw LZ4 from
+1.18.2 on), key it, hand it to the store — plus the CLI verb (D3). The
+store layer has been ready since compaction landed.
+
+---
+
 ## 2026-10-11 — Chunk payloads: the subchunk codec lands, decode half
 
 ### Built

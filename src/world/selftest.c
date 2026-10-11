@@ -489,9 +489,33 @@ static void test_bedrock_keys(void)
 
 static const char kSubchunkDir[] = "tests/golden/subchunks";
 
+/*
+ * The inverse property, asserted against the reference's own payload bytes:
+ * encode(decode(p)) must be p, exactly. A mismatch names the case and the
+ * first differing offset — "differs" without a byte is a puzzle, not a
+ * diagnosis.
+ */
+static void check_encode_roundtrip(const McmeBedrockSubchunk *sc,
+                                   const uint8_t *want, size_t want_len,
+                                   const char *what)
+{
+    McmeBuffer enc;
+    mcme_buffer_init(&enc);
+    bool ok = mcme_bedrock_subchunk_encode(sc, &enc);
+    CHECK_MSG(ok, "%s: encode failed: %s", what, mcme_last_error());
+    if (ok) {
+        size_t at = 0;
+        while (at < want_len && at < enc.len && enc.data[at] == want[at]) at++;
+        CHECK_MSG(at == want_len && enc.len == want_len,
+                  "%s: round trip differs at byte %zu (got %zu bytes, "
+                  "want %zu)", what, at, enc.len, want_len);
+    }
+    mcme_buffer_free(&enc);
+}
+
 static void test_bedrock_subchunks(void)
 {
-    printf("  subchunk payloads (amulet encoder fixtures)\n");
+    printf("  subchunk payloads (decode and byte-identical encode)\n");
 
     char manifest_path[512];
     snprintf(manifest_path, sizeof manifest_path, "%s/MANIFEST.txt",
@@ -631,6 +655,12 @@ static void test_bedrock_subchunks(void)
             printf("  SKIP %s.txt\n", path);
         }
 
+        /* And the inverse: the encoder's output must BE the reference's
+           payload, not a re-parse of it. */
+        if (ok) {
+            check_encode_roundtrip(&sc, bin, bin_len, names[c]);
+        }
+
         mcme_arena_free(arena);
         free(bin);
         free(idx);
@@ -727,6 +757,7 @@ static void test_subchunk_refusals(void)
         CHECK(mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b));
         CHECK(sc.version == 8 && sc.layer_count == 0);
         CHECK(!sc.has_index);
+        check_encode_roundtrip(&sc, b, sizeof b, "all-air marker");
     }
 
     /* Version 1: no count byte, one layer. Here a bits-0 layer whose only
@@ -743,6 +774,7 @@ static void test_subchunk_refusals(void)
             if (sc.layers[0].indices[u] != 0) { all_zero = false; break; }
         }
         CHECK(all_zero);   /* a bits-0 layer materialises 4096 zeros */
+        check_encode_roundtrip(&sc, b, sizeof b, "version 1 minimal");
     }
 
     /* A version-9 wrapper carries its subchunk Y index, sign-extended. */
@@ -751,6 +783,159 @@ static void test_subchunk_refusals(void)
                                      0x00, 0x00, 0x00 };
         CHECK(mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b));
         CHECK(sc.version == 9 && sc.has_index && sc.index == -4);
+        check_encode_roundtrip(&sc, b, sizeof b, "version 9 negative Y");
+    }
+
+    /* --- Encode: a model built from scratch lands on known bytes. --- */
+    printf("  subchunk encode from scratch\n");
+    {
+        static const uint8_t want[] = { 0x08, 0x01, 0x00,
+                                        0x0a, 0x00, 0x00, 0x00 };
+        static const uint8_t empty_compound[] = { 0x0a, 0x00, 0x00, 0x00 };
+        static uint16_t zeros[MCME_BEDROCK_SUBCHUNK_BLOCKS];
+        McmeNbtDoc doc;
+        CHECK(mcme_nbt_parse(&doc, arena, empty_compound,
+                             sizeof empty_compound, true /* little endian */));
+        memset(zeros, 0, sizeof zeros);
+
+        McmeBedrockLayer layer = { 0 };
+        layer.bits = 0;
+        layer.indices = zeros;
+        layer.palette_len = 1;
+        layer.palette = &doc;
+        McmeBedrockSubchunk built = { 0 };
+        built.version = 8;
+        built.layer_count = 1;
+        built.layers = &layer;
+
+        McmeBuffer enc;
+        mcme_buffer_init(&enc);
+        CHECK(mcme_bedrock_subchunk_encode(&built, &enc));
+        CHECK_MSG(enc.len == sizeof want &&
+                  memcmp(enc.data, want, sizeof want) == 0,
+                  "built-from-scratch encode produced %zu bytes, want %zu",
+                  enc.len, sizeof want);
+        mcme_buffer_free(&enc);
+    }
+
+    /* --- Encode refuses what its wrappers cannot carry. --- */
+    printf("  subchunk encode refusals\n");
+    {
+        static const uint8_t empty_compound[] = { 0x0a, 0x00, 0x00, 0x00 };
+        static uint16_t zeros[MCME_BEDROCK_SUBCHUNK_BLOCKS];
+        static uint16_t stray[MCME_BEDROCK_SUBCHUNK_BLOCKS];
+        McmeNbtDoc doc;
+        CHECK(mcme_nbt_parse(&doc, arena, empty_compound,
+                             sizeof empty_compound, true));
+        memset(zeros, 0, sizeof zeros);
+        memset(stray, 0, sizeof stray);
+
+        McmeBuffer enc;
+        mcme_buffer_init(&enc);
+
+        /* The two-phase contract: a refusal must leave the buffer empty,
+           and must say why. */
+#define REFUSE_ENCODE(scp)                                                     \
+    do {                                                                       \
+        if (mcme_bedrock_subchunk_encode((scp), &enc)) {                       \
+            g_failed++;                                                        \
+            printf("  FAIL %s:%d unwritable model encoded cleanly\n",          \
+                   __FILE__, __LINE__);                                        \
+            mcme_buffer_free(&enc);                                            \
+            mcme_buffer_init(&enc);                                            \
+        } else {                                                               \
+            CHECK_MSG(enc.len == 0,                                            \
+                      "refused encode appended %zu bytes", enc.len);           \
+            CHECK_MSG(mcme_last_error()[0] != '\0',                            \
+                      "refusal with empty error message");                     \
+        }                                                                      \
+    } while (0)
+
+        McmeBedrockLayer layer = { 0 };
+        layer.bits = 1;
+        layer.indices = zeros;
+        layer.palette_len = 1;
+        layer.palette = &doc;
+        McmeBedrockSubchunk m = { 0 };
+        m.version = 8;
+        m.layer_count = 1;
+        m.layers = &layer;
+
+        CHECK(!mcme_bedrock_subchunk_encode(&m, NULL));
+
+        m.version = 5;  REFUSE_ENCODE(&m);   /* outside {1, 8, 9} */
+        m.version = 0;  REFUSE_ENCODE(&m);
+        m.version = 10; REFUSE_ENCODE(&m);
+
+        m.version = 1;                        /* version 1 wants exactly 1 */
+        m.layer_count = 2;
+        REFUSE_ENCODE(&m);
+        m.layer_count = 1;
+        m.has_index = true;                   /* and has no Y index byte */
+        REFUSE_ENCODE(&m);
+        m.has_index = false;
+
+        m.version = 8;                        /* version 8 has none either */
+        m.has_index = true;
+        REFUSE_ENCODE(&m);
+        m.has_index = false;
+        m.layer_count = 256;                  /* count wider than its byte */
+        REFUSE_ENCODE(&m);
+        m.layer_count = 1;
+
+        m.version = 9;                        /* version 9 requires one */
+        REFUSE_ENCODE(&m);
+        m.has_index = true;
+        m.layer_count = 256;
+        REFUSE_ENCODE(&m);
+        m.layer_count = 1;
+
+        m.version = 8;                        /* layers, but no array */
+        m.layer_count = 2;
+        m.layers = NULL;
+        REFUSE_ENCODE(&m);
+        m.layer_count = 1;
+        m.layers = &layer;
+
+        layer.bits = 7;  REFUSE_ENCODE(&m);   /* width outside the enum */
+        layer.bits = 127; REFUSE_ENCODE(&m);
+        layer.bits = 1;
+
+        layer.palette_len = 0; REFUSE_ENCODE(&m);   /* empty palette */
+        layer.palette_len = ((size_t)1 << 33);      /* wider than u32 */
+        REFUSE_ENCODE(&m);
+        layer.palette_len = 1;
+
+        layer.palette = NULL; REFUSE_ENCODE(&m);    /* palette missing */
+        layer.palette = &doc;
+
+        {                                          /* entry with no root */
+            McmeNbtDoc hollow = { 0 };
+            layer.palette = &hollow;
+            REFUSE_ENCODE(&m);
+            layer.palette = &doc;
+        }
+
+        layer.indices = NULL; REFUSE_ENCODE(&m);    /* indices missing */
+        layer.indices = zeros;
+
+        layer.bits = 0;                            /* 0-bit wants one entry */
+        layer.palette_len = 2;
+        REFUSE_ENCODE(&m);
+        layer.palette_len = 1;
+        stray[5] = 1;                              /* and nothing but 0 */
+        layer.indices = stray;
+        REFUSE_ENCODE(&m);
+        layer.indices = zeros;
+
+        layer.bits = 1;                            /* 3 does not fit a bit */
+        stray[5] = 3;
+        layer.indices = stray;
+        REFUSE_ENCODE(&m);
+        layer.indices = zeros;
+
+#undef REFUSE_ENCODE
+        mcme_buffer_free(&enc);
     }
 
 #undef REFUSE

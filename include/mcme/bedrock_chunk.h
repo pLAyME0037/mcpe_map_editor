@@ -5,8 +5,9 @@
  * per chunk (see bedrock_keys.h for the key layout). The value is a small
  * binary wrapper around one or more *paletted storage* layers, each holding
  * 4096 block indices plus the palette those indices point into. This module
- * decodes that payload into a model; encoding it back is the next step and
- * must reproduce the input bytes exactly.
+ * decodes that payload into a model and encodes a model back into payload
+ * bytes; the two are inverses, byte for byte, which is what the golden
+ * fixtures assert against the reference's own payloads.
  *
  * The format, as settled by minecraft.wiki's Bedrock level-format page, by
  * Tommaso Checchi's paletted-storage write-up, and by the two independent
@@ -35,6 +36,8 @@
  *                 — XZY order with Y fastest, unlike Java's YZX.
  *                 Then a 32-bit little-endian palette length, then that many
  *                 little-endian NBT compounds, concatenated, no framing.
+ *                 The encoder writes the padding bits zero, as every writer
+ *                 seen here does; see the note under mcme_bedrock_subchunk_encode.
  *   bits == 0:    no words AND no length field — a single NBT compound
  *                 follows the header directly and fills the layer. This is
  *                 the detail two sources get wrong by analogy (the length
@@ -98,5 +101,40 @@ typedef struct {
  */
 bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
                                   const void *data, size_t size);
+
+/*
+ * Encodes a model back into payload bytes, appended to `out`.
+ *
+ * The contract is inversion: for every payload decode() accepts,
+ * encode(decode(payload)) reproduces it byte for byte, padding excepted
+ * (below). That holds because the encoder writes what the model *records*
+ * rather than re-deriving it: `bits` is the stored width, never recomputed
+ * from the palette — a two-entry palette stored at width 16 round-trips as
+ * width 16 — and palette documents are forced little-endian regardless of
+ * the endianness they carry. The golden fixtures assert the property by
+ * comparing this function's output with the reference payload itself, not
+ * with a re-parse of it.
+ *
+ * Refused before a byte is appended, with the finding in mcme_last_error():
+ * versions outside {1, 8, 9}; a shape the wrapper cannot carry (version 1
+ * with anything but exactly one layer and no index, version 8 with an index,
+ * version 9 without one, more than 255 layers); widths outside the enum; a
+ * zero-length palette or one whose documents are missing their root; a
+ * bits==0 layer that is not a single all-zero entry; and any index the
+ * layer's width cannot hold. Whether an index points *inside* its palette is
+ * the write path's business, not this one's: the decoder does not enforce it
+ * either, and this function exists to invert that decoder.
+ *
+ * The one documented non-inversion: padding bits. The model carries block
+ * indices, not the unused high bits of each word, so they come back zero —
+ * which is what the reference encoder and every payload this tree has seen
+ * store there anyway. A payload carrying garbage in padding decodes and
+ * re-encodes with zeros; nothing else behaves that way.
+ *
+ * On refusal nothing has been appended to `out`. A buffer allocation failure
+ * mid-write returns false with a partial buffer; the caller frees it.
+ */
+bool mcme_bedrock_subchunk_encode(const McmeBedrockSubchunk *sc,
+                                  McmeBuffer *out);
 
 #endif /* MCME_BEDROCK_CHUNK_H */
