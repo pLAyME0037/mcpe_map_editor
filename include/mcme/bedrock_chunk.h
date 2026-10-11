@@ -1,0 +1,102 @@
+/*
+ * Bedrock subchunk payloads — the bytes under a 0x2f / 0x2c chunk key.
+ *
+ * A chunk is stored as one key per 16x16x16 subchunk rather than one record
+ * per chunk (see bedrock_keys.h for the key layout). The value is a small
+ * binary wrapper around one or more *paletted storage* layers, each holding
+ * 4096 block indices plus the palette those indices point into. This module
+ * decodes that payload into a model; encoding it back is the next step and
+ * must reproduce the input bytes exactly.
+ *
+ * The format, as settled by minecraft.wiki's Bedrock level-format page, by
+ * Tommaso Checchi's paletted-storage write-up, and by the two independent
+ * disk readers this tree was validated against (amulet-core 1.9.50 and
+ * mcbe-leveldb 1.23.0 — all three agree, including on the odd cases):
+ *
+ *   byte 0        subchunk version: 1, 8 or 9
+ *                 0-7 are the legacy pre-palette format (raw id/data planes)
+ *                 and are REFUSED here, loudly, rather than misparsed
+ *   byte 1        storage-layer count       (version 1 omits this: it is 1)
+ *   byte 2        signed subchunk Y index   (version 9 only, 1.18.2+)
+ *
+ * then, per storage layer:
+ *
+ *   byte          header = (bits_per_index << 1) | runtime_flag
+ *                 bits_per_index is one of 0,1,2,3,4,5,6,8,16; other widths
+ *                 never occur on disk and are refused
+ *                 runtime_flag is 0 on disk (persistent NBT palettes); 1
+ *                 means network runtime IDs, which are session-relative and
+ *                 meaningless in a world file — refused
+ *   bits > 0:     ceil(4096 / floor(32/bits)) 32-bit little-endian words.
+ *                 Each word holds floor(32/bits) indices packed from its
+ *                 least-significant bit upward; the bits above the last index
+ *                 are padding (present, zero in practice, not validated).
+ *                 Index i addresses block (x, z, y) = (i>>8, (i>>4)&15, i&15)
+ *                 — XZY order with Y fastest, unlike Java's YZX.
+ *                 Then a 32-bit little-endian palette length, then that many
+ *                 little-endian NBT compounds, concatenated, no framing.
+ *   bits == 0:    no words AND no length field — a single NBT compound
+ *                 follows the header directly and fills the layer. This is
+ *                 the detail two sources get wrong by analogy (the length
+ *                 field is NOT here) and both disk readers agree it is not;
+ *                 it is pinned by tests/golden/subchunks/v8-bpb0.
+ *
+ * A layer count of 0 (version 8/9) is a legal "this subchunk is all air"
+ * marker and decodes to zero layers.
+ *
+ * The payload reaching this module is already decompressed: zlib / raw LZ4
+ * framing is the store layer's business (see world.md), and keeping that
+ * boundary here would make it impossible to decode a payload out of the
+ * middle of a dump.
+ *
+ * Strictness is deliberate. Everything is bounds-checked, and anything this
+ * decoder does not fully understand — legacy versions, unknown widths,
+ * runtime palettes, an empty palette, trailing bytes after the last layer —
+ * is an error naming what was found, not a best-effort guess. An editor that
+ * guesses here writes the guess back to someone's world. The cost is that a
+ * real world containing one of these refuses to decode that subchunk with a
+ * message; that is the trade, and it is the same one the region reader makes.
+ *
+ * Ownership: everything returned lives in the arena the caller passes.
+ * Freeing the arena frees the whole model. The input bytes are borrowed for
+ * the duration of the call only.
+ */
+
+#ifndef MCME_BEDROCK_CHUNK_H
+#define MCME_BEDROCK_CHUNK_H
+
+#include "mcme/core.h"
+#include "mcme/nbt.h"
+
+#define MCME_BEDROCK_SUBCHUNK_BLOCKS 4096u
+
+typedef struct {
+    uint8_t    bits;        /* stored width; 0 means one entry fills the layer */
+    uint16_t  *indices;     /* 4096 palette indices in XZY order; never NULL  */
+    size_t     palette_len; /* >= 1                                           */
+    McmeNbtDoc *palette;    /* palette_len little-endian NBT documents        */
+} McmeBedrockLayer;
+
+typedef struct {
+    uint8_t  version;       /* 1, 8 or 9 as stored */
+    bool     has_index;     /* version 9 carries the subchunk's own Y index */
+    int8_t   index;         /* valid when has_index; not range-checked here */
+    size_t   layer_count;   /* 0 means the all-air marker */
+    McmeBedrockLayer *layers;
+} McmeBedrockSubchunk;
+
+/*
+ * Decodes one subchunk payload.
+ *
+ * `data`/`size` are the raw store value, decompressed. Returns false on
+ * anything malformed or unsupported; mcme_last_error() says what was found
+ * and where. On failure `*out` is zeroed and owns nothing.
+ *
+ * The indices of a bits==0 layer are materialised as 4096 zeros rather than
+ * left NULL, so callers have exactly one shape to handle; `bits` still says
+ * what the file stored, which is what an encoder needs to reproduce it.
+ */
+bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
+                                  const void *data, size_t size);
+
+#endif /* MCME_BEDROCK_CHUNK_H */

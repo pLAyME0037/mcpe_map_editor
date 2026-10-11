@@ -132,6 +132,23 @@ bool mcme_nbt_parse(McmeNbtDoc *doc, McmeArena *arena,
                     const void *data, size_t size, bool little_endian);
 
 /*
+ * Parses ONE document from the front of a buffer that may hold more, and
+ * reports where it ended.
+ *
+ * Bedrock block palettes are several NBT documents concatenated with no
+ * length framing — the next one simply starts where the last finished — so a
+ * palette reader cannot use mcme_nbt_parse() twice on the same buffer without
+ * knowing the first document's extent. `*consumed` is that extent in bytes.
+ *
+ * Unlike mcme_nbt_parse(), trailing data is normal here and is not an error;
+ * the caller decides what follows. `consumed` may be NULL when unneeded, in
+ * which case this behaves exactly like mcme_nbt_parse().
+ */
+bool mcme_nbt_parse_prefix(McmeNbtDoc *doc, McmeArena *arena,
+                           const void *data, size_t size, bool little_endian,
+                           size_t *consumed);
+
+/*
  * Parses SNBT text into a bare tag. SNBT carries no root name, so there is no
  * McmeNbtDoc; wrap the result yourself if you need one.
  */

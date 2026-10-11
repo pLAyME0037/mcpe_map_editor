@@ -9,6 +9,52 @@ Status vocabulary:
 
 ---
 
+## 2026-10-11 — Chunk payloads: the subchunk codec lands, decode half
+
+### Built
+
+- `mcme_bedrock_subchunk_decode()` (`src/world/bedrock_chunk.c`): the bytes
+  under a 0x2f/0x2c key parsed into layers of 4096 XZY block indices plus
+  their little-endian NBT palettes. Versions 1, 8 and 9; every width the
+  game writes (0,1,2,3,4,5,6,8,16); multi-layer (waterlogged) subchunks; the
+  sign-extended Y index version 9 carries; the all-air marker as zero
+  layers. All from an arena; strict about everything it does not fully
+  understand, and it says what it found when it refuses.
+- `mcme_nbt_parse_prefix()` in the NBT library: a block palette is several
+  NBT documents concatenated with no framing, so the parser now reports
+  where each one ended. `mcme_nbt_parse()` is a thin wrapper over it, with
+  its behaviour unchanged.
+- `tools/ref_bedrock_subchunk.py` + `tests/golden/subchunks`: thirteen
+  fixtures encoded by amulet 0.10.64's own paletted-storage writer, each
+  verified back through amulet's decoder before a byte is dumped. Every
+  width, both storage-count wrappers, a waterlogged pair, the version-1
+  wrapper with legacy `{name, val}` palettes, and negative Y.
+
+### The bits==0 detail
+
+At width 0 there is no palette length field: one NBT compound follows the
+header and fills the layer. The wiki sentence can be read the other way, and
+amulet's encoder can never settle it because it floors at one bit per index —
+but amulet's decoder and mcbe-leveldb, both battle-tested on real worlds,
+read it without a length. The `v8-bpb0` fixture pins our decoder to them.
+
+### Caught by the fixtures, not by review
+
+The first fixture generation built its index arrays transposed in z/y:
+amulet's encoder takes [x][y][z] arrays and permutes internally, while the
+disk is XZY. Widths 1 through 4 hid it — their small-modulus index patterns
+are symmetric under the swap — and width 5 exposed it at once, which is the
+case range doing its job. The C decoder had been right all along; the
+fixture's raw indices were not.
+
+### Next
+
+The encode half: `mcme_bedrock_subchunk_encode()` reproducing the fixture
+payloads byte for byte from the model, then chunks written through the store
+layer — where compaction already waits to handle them.
+
+---
+
 ## 2026-10-11 — Compaction: the log is now flushed, not just refused
 
 ### Built

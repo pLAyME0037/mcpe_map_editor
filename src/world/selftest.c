@@ -1,3 +1,4 @@
+#include "mcme/bedrock_chunk.h"
 #include "mcme/bedrock_keys.h"
 #include "mcme/core.h"
 #include "mcme/compress.h"
@@ -465,6 +466,298 @@ static void test_bedrock_keys(void)
 }
 
 /* ========================================================================
+ * Bedrock subchunk payloads
+ *
+ * tools/ref_bedrock_subchunk.py forges payloads with amulet 0.10.64's own
+ * paletted-storage encoder (the one that writes worlds Minecraft loads),
+ * verifies each one back through amulet's decoder, and only then dumps it.
+ * Each case ships three files: the payload (.bin), every layer's 4096
+ * indices as raw little-endian uint16 in XZY order (.idx), and the
+ * expectations (.txt) — version, layer shape, and every palette entry as the
+ * compact SNBT the reference itself emits.
+ *
+ * The checks per case are the ones that would hide a bug if weakened: the
+ * wrapper fields, each layer's stored width and palette length, every index
+ * against the reference bytes (not a checksum — the whole point is landing
+ * on THE bytes), and every palette entry re-serialised to compact SNBT and
+ * required to match the reference character for character.
+ *
+ * The refusal matrix at the end is inline rather than golden, because a
+ * payload no reference would write is a thing the test must state it expects
+ * to be rejected, down to the byte.
+ * ======================================================================== */
+
+static const char kSubchunkDir[] = "tests/golden/subchunks";
+
+static void test_bedrock_subchunks(void)
+{
+    printf("  subchunk payloads (amulet encoder fixtures)\n");
+
+    char manifest_path[512];
+    snprintf(manifest_path, sizeof manifest_path, "%s/MANIFEST.txt",
+             kSubchunkDir);
+    FILE *fh = fopen(manifest_path, "r");
+    if (fh == NULL) {
+        printf("  SKIP subchunk payloads (no %s; run "
+               "tools/ref_bedrock_subchunk.py)\n", manifest_path);
+        return;
+    }
+
+    char names[64][64];
+    size_t count = 0;
+    char line[1024];
+    while (count < sizeof names / sizeof names[0] &&
+           fgets(line, sizeof line, fh) != NULL) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        if (sscanf(line, "%63s", names[count]) == 1) count++;
+    }
+    fclose(fh);
+
+    if (count == 0) {
+        printf("  SKIP subchunk payloads (empty %s)\n", manifest_path);
+        return;
+    }
+
+    for (size_t c = 0; c < count; ++c) {
+        char base[512];
+        snprintf(base, sizeof base, "%s/%s", kSubchunkDir, names[c]);
+
+        char path[600];
+        snprintf(path, sizeof path, "%s.bin", base);
+        size_t bin_len = 0;
+        uint8_t *bin = slurp(path, &bin_len);
+        if (bin == NULL) {
+            printf("  SKIP %s.bin\n", path);
+            continue;
+        }
+        snprintf(path, sizeof path, "%s.idx", base);
+        size_t idx_len = 0;
+        uint8_t *idx = slurp(path, &idx_len);
+        snprintf(path, sizeof path, "%s.txt", base);
+        char *text = mcme_fs_read_text(path);
+
+        McmeArena *arena = mcme_arena_new();
+        McmeBedrockSubchunk sc;
+        bool ok = mcme_bedrock_subchunk_decode(&sc, arena, bin, bin_len);
+        CHECK_MSG(ok, "%s: decode failed: %s", names[c], mcme_last_error());
+
+        if (ok && text != NULL) {
+            size_t layer = 0;
+            char *cursor = text;
+            while (*cursor != '\0') {
+                char *nl = strchr(cursor, '\n');
+                if (nl != NULL) *nl = '\0';
+                size_t len = strlen(cursor);
+                if (len > 0 && cursor[len - 1] == '\r') cursor[len - 1] = '\0';
+
+                unsigned v = 0, n = 0;
+                int idx_byte = 0, rest = 0;
+                size_t l = 0;
+                unsigned bits = 0, pal = 0;
+                unsigned long off = 0;
+                if (sscanf(cursor, "version %u", &v) == 1) {
+                    CHECK_MSG(sc.version == v,
+                              "%s: version %u, expected %u",
+                              names[c], sc.version, v);
+                } else if (sscanf(cursor, "layers %u", &n) == 1) {
+                    CHECK_MSG(sc.layer_count == n,
+                              "%s: %zu layers, expected %u",
+                              names[c], sc.layer_count, n);
+                } else if (sscanf(cursor, "index %d", &idx_byte) == 1) {
+                    CHECK_MSG(sc.has_index && sc.index == (int8_t)idx_byte,
+                              "%s: Y index %d (has_index=%d), expected %d",
+                              names[c], sc.index, (int)sc.has_index, idx_byte);
+                } else if (sscanf(cursor, "layer %zu bits %u palette %u "
+                                          "offset %lu",
+                                  &l, &bits, &pal, &off) == 4) {
+                    CHECK_MSG(l < sc.layer_count,
+                              "%s: expectation for layer %zu but only %zu "
+                              "decoded", names[c], l, sc.layer_count);
+                    if (l >= sc.layer_count) break;
+                    layer = l;
+                    CHECK_MSG(sc.layers[l].bits == bits,
+                              "%s layer %zu: %u bits, expected %u",
+                              names[c], l, sc.layers[l].bits, bits);
+                    CHECK_MSG(sc.layers[l].palette_len == pal,
+                              "%s layer %zu: palette %zu, expected %u",
+                              names[c], l, sc.layers[l].palette_len, pal);
+
+                    /* Every index, against the reference's own bytes. */
+                    if (idx != NULL && idx_len >= off + 8192) {
+                        size_t u;
+                        for (u = 0; u < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++u) {
+                            uint16_t want = (uint16_t)(idx[off + 2 * u]
+                                         | (idx[off + 2 * u + 1] << 8));
+                            if (sc.layers[l].indices[u] != want) break;
+                        }
+                        CHECK_MSG(u == MCME_BEDROCK_SUBCHUNK_BLOCKS,
+                                  "%s layer %zu: index %zu is %u, "
+                                  "reference says %u", names[c], l, u,
+                                  u < MCME_BEDROCK_SUBCHUNK_BLOCKS
+                                      ? sc.layers[l].indices[u] : 0,
+                                  u < MCME_BEDROCK_SUBCHUNK_BLOCKS
+                                      ? (unsigned)(idx[off + 2 * u]
+                                         | (idx[off + 2 * u + 1] << 8)) : 0);
+                    } else {
+                        CHECK_MSG(false, "%s.idx too small for layer %zu "
+                                  "at offset %lu", names[c], l, off);
+                    }
+                } else if (sscanf(cursor, "snbt %u %n", &n, &rest) == 1) {
+                    /* `%n` records where the SNBT begins: the rest of the
+                       line is the expected compact SNBT verbatim. */
+                    const char *want = cursor + rest;
+                    if (n < sc.layers[layer].palette_len) {
+                        McmeBuffer got;
+                        mcme_buffer_init(&got);
+                        CHECK(mcme_nbt_write_snbt(
+                            sc.layers[layer].palette[n].root, &got, 0));
+                        CHECK_MSG(got.len == strlen(want) &&
+                                  memcmp(got.data, want, got.len) == 0,
+                                  "%s layer %zu palette %u SNBT differs\n"
+                                  "    got  %.*s\n    want %s",
+                                  names[c], layer, n,
+                                  (int)got.len, (const char *)got.data, want);
+                        mcme_buffer_free(&got);
+                    } else {
+                        CHECK_MSG(false, "%s layer %zu: snbt entry %u but "
+                                  "palette has %zu", names[c], layer, n,
+                                  sc.layers[layer].palette_len);
+                    }
+                }
+
+                cursor = nl != NULL ? nl + 1 : cursor + len;
+            }
+        } else if (text == NULL) {
+            printf("  SKIP %s.txt\n", path);
+        }
+
+        mcme_arena_free(arena);
+        free(bin);
+        free(idx);
+        free(text);
+    }
+}
+
+static void test_subchunk_refusals(void)
+{
+    printf("  subchunk refusals\n");
+
+    McmeArena *arena = mcme_arena_new();
+    McmeBedrockSubchunk sc;
+
+    /* Refusing must also SAY WHY — an error message is the only diagnosis
+       someone gets from a world that will not open. */
+#define REFUSE(bytes, len)                                                    \
+    do {                                                                      \
+        if (mcme_bedrock_subchunk_decode(&sc, arena, (bytes), (len))) {       \
+            g_failed++;                                                       \
+            printf("  FAIL %s:%d malformed payload decoded cleanly\n",        \
+                   __FILE__, __LINE__);                                       \
+        } else {                                                              \
+            CHECK_MSG(mcme_last_error()[0] != '\0',                           \
+                      "refusal with empty error message");                    \
+        }                                                                     \
+    } while (0)
+
+    /* Empty and one byte short of a wrapper. */
+    REFUSE("", 0);
+    { static const uint8_t b[] = { 0x08 }; REFUSE(b, sizeof b); }
+    { static const uint8_t b[] = { 0x09, 1 }; REFUSE(b, sizeof b); }
+
+    /* Versions this build does not decode: the legacy flat format and
+       anything invented after 9. */
+    { static const uint8_t b[] = { 0x05, 0, 0 }; REFUSE(b, sizeof b); }
+    { static const uint8_t b[] = { 0x0a, 0, 0 }; REFUSE(b, sizeof b); }
+
+    /* Widths outside the game's enum: 7 sits in a gap the game never writes,
+       127 is the biome-only "copy palette" header whose meaning for
+       subchunks even mcbe-leveldb flags as unverified. */
+    { static const uint8_t b[] = { 0x08, 1, 0x0e }; REFUSE(b, sizeof b); }
+    { static const uint8_t b[] = { 0x08, 1, 0xfe }; REFUSE(b, sizeof b); }
+
+    /* Runtime palettes are network data; their "palette" is runtime IDs,
+       not NBT, and a world file never holds one. */
+    { static const uint8_t b[] = { 0x08, 1, 0x03 }; REFUSE(b, sizeof b); }
+
+    /* A bits-1 layer needs 512 bytes of index words (32 indices per word,
+       128 words). One byte short must fail rather than read past. */
+    {
+        static uint8_t b[3 + 511];
+        memset(b, 0, sizeof b);
+        b[0] = 0x08; b[1] = 1; b[2] = 2;      /* header: bits 1, persistent */
+        REFUSE(b, sizeof b);
+    }
+
+    /* Full words, then a palette length that cannot fit — refused before it
+       can drive an allocation. */
+    {
+        static uint8_t b[3 + 512 + 4];
+        memset(b, 0, sizeof b);
+        b[0] = 0x08; b[1] = 1; b[2] = 2;
+        b[3 + 512 + 3] = 0xff;                /* palette length 0xffffffff */
+        REFUSE(b, sizeof b);
+    }
+
+    /* Length 0 with indices that need a palette. */
+    {
+        static uint8_t b[3 + 512 + 4];
+        memset(b, 0, sizeof b);
+        b[0] = 0x08; b[1] = 1; b[2] = 2;
+        REFUSE(b, sizeof b);
+    }
+
+    /* Length 1, but the NBT that follows is not NBT. */
+    {
+        static uint8_t b[3 + 512 + 4 + 1];
+        memset(b, 0, sizeof b);
+        b[0] = 0x08; b[1] = 1; b[2] = 2;
+        b[3 + 512 + 4] = 0xff;                /* tag type 255 does not exist */
+        REFUSE(b, sizeof b);
+    }
+
+    /* A byte after the last layer: silently dropped by a tolerant decoder,
+       which is exactly how a tail disappears on the way back out. */
+    { static const uint8_t b[] = { 0x08, 0, 0 }; REFUSE(b, sizeof b); }
+
+    /* --- Accepted shapes, stated as precisely as the refusals. --- */
+
+    /* Layer count 0: the legal all-air marker, zero layers, nothing else. */
+    {
+        static const uint8_t b[] = { 0x08, 0 };
+        CHECK(mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b));
+        CHECK(sc.version == 8 && sc.layer_count == 0);
+        CHECK(!sc.has_index);
+    }
+
+    /* Version 1: no count byte, one layer. Here a bits-0 layer whose only
+       entry is an empty compound — the smallest legal payload that still
+       carries a palette. */
+    {
+        static const uint8_t b[] = { 0x01, 0x00, 0x0a, 0x00, 0x00, 0x00 };
+        CHECK(mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b));
+        CHECK(sc.version == 1 && sc.layer_count == 1);
+        CHECK(sc.layers[0].bits == 0 && sc.layers[0].palette_len == 1);
+        CHECK(sc.layers[0].palette[0].root != NULL);
+        bool all_zero = true;
+        for (size_t u = 0; u < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++u) {
+            if (sc.layers[0].indices[u] != 0) { all_zero = false; break; }
+        }
+        CHECK(all_zero);   /* a bits-0 layer materialises 4096 zeros */
+    }
+
+    /* A version-9 wrapper carries its subchunk Y index, sign-extended. */
+    {
+        static const uint8_t b[] = { 0x09, 1, 0xfc, 0x00, 0x0a,
+                                     0x00, 0x00, 0x00 };
+        CHECK(mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b));
+        CHECK(sc.version == 9 && sc.has_index && sc.index == -4);
+    }
+
+#undef REFUSE
+    mcme_arena_free(arena);
+}
+
+/* ========================================================================
  * Chunk inventory over the forged store
  * ======================================================================== */
 
@@ -577,6 +870,8 @@ int mcme_test_world(void)
     printf("world\n");
 
     test_bedrock_keys();
+    test_bedrock_subchunks();
+    test_subchunk_refusals();
     test_bedrock_inventory();
 
     if (!mcme_fs_exists(kWorldDir)) {

@@ -324,6 +324,13 @@ static bool parse_payload(NbtReader *r, uint8_t type, McmeTag *t)
 bool mcme_nbt_parse(McmeNbtDoc *doc, McmeArena *arena,
                     const void *data, size_t size, bool little_endian)
 {
+    return mcme_nbt_parse_prefix(doc, arena, data, size, little_endian, NULL);
+}
+
+bool mcme_nbt_parse_prefix(McmeNbtDoc *doc, McmeArena *arena,
+                           const void *data, size_t size, bool little_endian,
+                           size_t *consumed)
+{
     if (!doc || !arena || (!data && size > 0)) {
         mcme_set_error("nbt: null argument");
         return false;
@@ -366,6 +373,7 @@ bool mcme_nbt_parse(McmeNbtDoc *doc, McmeArena *arena,
     doc->root = root;
     doc->root_name = name;
     doc->little_endian = little_endian;
+    if (consumed) *consumed = r.pos;
     return true;
 }
 
