@@ -116,14 +116,12 @@ x (4 LE)  z (4 LE)  [dimension (4 LE)]  tag (1 byte)  [subchunk index]
 ```
 
 The dimension field is **omitted entirely when it is 0** (the overworld), so
-overworld keys are 9 bytes and other dimensions are 13. Chunk tags seen in the
-wild so far in the reference fixture: `0x2d` (biome/heightmap, 768 bytes),
-`0x36` (chunk version), `0x76`.
-
-`mcme info` still reports `database: present` rather than a chunk count, because
-counting chunks means classifying keys by tag and that has not been written
-yet. Reporting a number we have not computed would be worse than saying the
-reader is not wired up.
+overworld keys are 9 bytes and other dimensions are 13. Chunk markers are
+`0x2c` (pre-1.18 subchunk), `0x2f` (1.18+ subchunk) and `0x76` (chunk version);
+`0x2d` (biome/heightmap, 768 bytes) rides along with a chunk but never marks
+one. `src/world/bedrock_keys.c` holds the tag set and the key decoder;
+`mcme info` and `mcme chunks` count distinct marked coordinates through it
+(see [cli.md](cli.md)).
 
 Compression inside chunk *payloads* (as opposed to inside table blocks) is
 zlib, or raw LZ4 block from 1.18.2 on. The LZ4 *block* format has no header,

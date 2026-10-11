@@ -9,8 +9,12 @@ If you are an agent or a human picking this up cold, read in this order:
 2. [dev-log.md](dev-log.md) — what is done, what is next, what broke.
 3. [decisions.md](decisions.md) — one file per architectural decision, with the
    rejected alternatives. Check here before inventing a new pattern.
-4. [porting/](porting/) — the reference map of the original Python project and
-   the per-subsystem parity checklist.
+
+There is no `porting/` directory. The reference map of the original Python
+project lives in [decisions.md](decisions.md) where each choice was made, and
+in the per-phase pages below; the parity checklist promised by earlier drafts
+of this page was never written, and a link to a page that does not exist is
+worse than no link.
 
 ## How to keep this wiki honest
 
@@ -31,7 +35,4 @@ If you are an agent or a human picking this up cold, read in this order:
 | [cli.md](cli.md) | What is the command-line contract for users and agents? |
 | [nbt.md](nbt.md) | What exactly does the NBT/SNBT format contract require? |
 | [world.md](world.md) | How is a world directory recognised and read? |
-| [porting/amulet-architecture.md](porting/amulet-architecture.md) | How did the original Python app work? |
-| [porting/parity.md](porting/parity.md) | Which features are ported, which are not? |
-| [porting/data-formats.md](porting/data-formats.md) | What must we parse and write correctly? |
 

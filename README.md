@@ -12,9 +12,10 @@ Amulet Map Editor's *behaviour*, not its code.
 
 ## Status
 
-Early. Core primitives and the CLI contract are working. No world formats yet.
-See [wiki/dev-log.md](wiki/dev-log.md) for what is actually done, and
-[wiki/porting/parity.md](wiki/porting/parity.md) for the feature checklist.
+Early but reading. Core primitives, the CLI contract, NBT, Anvil regions and
+the Bedrock LevelDB store (read-only) all work, each byte-checked against the
+Python reference. See [wiki/dev-log.md](wiki/dev-log.md) for what is actually
+done and what is next. Writing is not implemented for any format.
 
 ## Build
 
@@ -55,7 +56,7 @@ wiki/              the project's memory
 Personal study project. The original Amulet Map Editor is proprietary; this is
 an independent reimplementation that reads the same file formats. Commercial
 code from the original (licence nag, update check, sponsor blocks) is
-deliberately not ported — see [wiki/porting/amulet-architecture.md](wiki/porting/amulet-architecture.md#cut-list).
+deliberately not ported.
 
 Vendored libraries keep their own permissive licences (public domain / MIT /
 BSD-2) in `third_party/`.

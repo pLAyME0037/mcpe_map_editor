@@ -415,8 +415,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dst", default="tests/golden/worlds/bedrock-forge/db")
     ap.add_argument("--out", default="tests/golden/leveldb/bedrock-forge.txt")
+    # Defaults to <out>-batch.txt. An empty default was tried and lost: the
+    # store and live dump were regenerated while the raw-log dump kept the old
+    # design's tombstones, and the fixtures stopped describing each other.
     ap.add_argument("--batch-out", default="")
     args = ap.parse_args()
+    if not args.batch_out:
+        base = args.out[:-4] if args.out.endswith(".txt") else args.out
+        args.batch_out = base + "-batch.txt"
 
     entries = internal_entries()
     user_keys = [k[:-8] for k, _ in entries]

@@ -177,7 +177,7 @@ static void test_fs(void)
 
     /* Round trip through a temp file. */
     const char *path = "build/selftest_fs.txt";
-    const char *payload = "the quick brown fox\n";
+    const char *payload = "the quick brown fox jumps over the lazy dog.\n";
     CHECK(mcme_fs_mkdir_p("build"));
     CHECK(mcme_fs_write(path, payload, strlen(payload)));
 
