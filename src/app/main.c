@@ -63,6 +63,10 @@ static void print_usage(FILE *out)
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
+        "  db <op> <world> <key-hex> [value-hex]\n"
+        "                    Raw Bedrock store access. op = get | put | del.\n"
+        "                    Keys and values are hex; get prints value-hex.\n"
+        "                    put/del take the store LOCK; get does not.\n"
         "  nbt dump <file> Print NBT as SNBT (or JSON with --json)\n"
         "                    --le            read little-endian (Bedrock)\n"
         "                    --path <dotted> print only that subtree\n"
@@ -847,6 +851,128 @@ static int cmd_chunks(int argc, char **argv)
 }
 
 /* ========================================================================
+ * db — raw key/value access to a Bedrock store
+ * ======================================================================== */
+
+/*
+ * `mcme db <get|put|del> <world> <key-hex> [value-hex]`.
+ *
+ * This exists so the write path is reachable from a script, per D3: anything
+ * worth doing is a verb. It is deliberately raw — keys and values are hex
+ * because Bedrock keys carry binary chunk coordinates — and deliberately
+ * dangerous-looking: it writes to the store the way the game would, so it
+ * takes the LOCK and refuses a store the game has open.
+ *
+ * get prints the value as hex, or nothing and exit 2 if the key is absent
+ * (distinguishing "gone" from "broken" via mcme_last_error()).
+ */
+
+static int hex_decode(const char *hex, uint8_t **out, size_t *out_len)
+{
+    size_t len = strlen(hex);
+    if (len % 2 != 0) {
+        mcme_set_error("db: hex string has an odd length");
+        return 0;
+    }
+    uint8_t *buf = (uint8_t *)malloc(len / 2 + 1);
+    if (buf == NULL) {
+        mcme_set_error("db: out of memory");
+        return 0;
+    }
+    for (size_t i = 0; i < len / 2; ++i) {
+        unsigned v = 0;
+        if (sscanf(hex + i * 2, "%2x", &v) != 1) {
+            free(buf);
+            mcme_set_error("db: '%s' is not hex", hex);
+            return 0;
+        }
+        buf[i] = (uint8_t)v;
+    }
+    *out = buf;
+    *out_len = len / 2;
+    return 1;
+}
+
+static int cmd_db(int argc, char **argv)
+{
+    if (argc < 3) {
+        mcme_set_error("db: usage: db <get|put|del> <world> <key-hex> [value-hex]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *op = argv[0];
+    const char *path = argv[1];
+    const char *key_hex = argv[2];
+    const char *val_hex = argc > 3 ? argv[3] : NULL;
+
+    bool is_get = strcmp(op, "get") == 0;
+    bool is_put = strcmp(op, "put") == 0;
+    bool is_del = strcmp(op, "del") == 0;
+    if (!is_get && !is_put && !is_del) {
+        mcme_set_error("db: unknown operation '%s'", op);
+        return MCME_EXIT_USAGE;
+    }
+    if ((is_put && val_hex == NULL) || (!is_put && argc > 3)) {
+        mcme_set_error("db: put takes a value; get and del do not");
+        return MCME_EXIT_USAGE;
+    }
+
+    uint8_t *key = NULL, *val = NULL;
+    size_t key_len = 0, val_len = 0;
+    if (!hex_decode(key_hex, &key, &key_len)) return MCME_EXIT_USAGE;
+    if (val_hex != NULL && !hex_decode(val_hex, &val, &val_len)) {
+        free(key);
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        free(key); free(val);
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
+        mcme_set_error("db: '%s' is not a Bedrock world", path);
+        free(key); free(val);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    /* get reads through a read-only handle: no LOCK, so it works on a store
+       the game has open. put and del take the lock the game would. */
+    McmeLevelDb *db = NULL;
+    bool opened = is_get ? mcme_leveldb_open(&db, info.db_path)
+                         : mcme_leveldb_open_rw(&db, info.db_path);
+    mcme_world_info_free(&info);
+    if (!opened) {
+        free(key); free(val);
+        return MCME_EXIT_IO;
+    }
+
+    int rc = MCME_OK;
+    if (is_get) {
+        McmeBuffer buf;
+        mcme_buffer_init(&buf);
+        bool deleted = false;
+        if (!mcme_leveldb_get(db, key, key_len, &buf, &deleted)) {
+            rc = MCME_EXIT_NOT_FOUND;
+        } else if (deleted) {
+            rc = MCME_EXIT_NOT_FOUND;
+        } else {
+            for (size_t i = 0; i < buf.len; ++i) printf("%02x", buf.data[i]);
+            printf("\n");
+        }
+        mcme_buffer_free(&buf);
+    } else if (is_put) {
+        if (!mcme_leveldb_put(db, key, key_len, val, val_len)) rc = MCME_EXIT_IO;
+    } else {
+        if (!mcme_leveldb_delete(db, key, key_len)) rc = MCME_EXIT_IO;
+    }
+
+    mcme_leveldb_close(db);
+    free(key); free(val);
+    return rc;
+}
+
+/* ========================================================================
  * Reserved commands
  * ======================================================================== */
 
@@ -857,7 +983,7 @@ static int cmd_not_implemented(const char *name, const char *phase)
                name, phase);
     } else {
         fprintf(stderr, "mcme: '%s' is not implemented yet (planned for %s).\n"
-                        "      See wiki/porting/parity.md for status.\n",
+                        "      See wiki/dev-log.md for status.\n",
                 name, phase);
     }
     return MCME_EXIT_NOT_IMPLEMENTED;
@@ -957,6 +1083,7 @@ static int dispatch(int argc, char **argv)
     }
     if (strcmp(cmd, "convert") == 0) return cmd_not_implemented("convert", "Phase 4");
     if (strcmp(cmd, "chunks") == 0)  return cmd_chunks(rest, args);
+    if (strcmp(cmd, "db") == 0)      return cmd_db(rest, args);
 
     mcme_set_error("unknown command '%s'", cmd);
     return MCME_EXIT_USAGE;

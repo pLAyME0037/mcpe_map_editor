@@ -43,10 +43,14 @@
 #include "internal.h"
 
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "stb_ds.h"
 
@@ -94,6 +98,22 @@ struct McmeLevelDb {
     LiveEntry *live;         /* stb_ds: sorted, deduplicated, points into keybuf */
     size_t     table_count;
     size_t     log_count;
+
+    /* Writable-handle state. Zeroed and unused for a read-only open, which is
+       still the common case: nothing outside the edit path writes, and a
+       handle that cannot write cannot corrupt anything by being misused. */
+    bool     writable;
+    bool     broken;         /* a write landed but the view could not be
+                                rebuilt; every read now refuses rather than
+                                answering from a view missing that write */
+    int      lock_fd;        /* exclusive flock on LOCK, -1 when unheld */
+    char    *manifest_name;  /* e.g. "MANIFEST-000001"                    */
+    FILE    *log;            /* the append handle for log_number          */
+    size_t   log_size;       /* bytes in it, for the block offset and for
+                                refusing a log the reader could no longer
+                                open                                        */
+    uint64_t log_number;     /* the log file this handle appends to       */
+    uint64_t last_sequence;  /* max of the MANIFEST's and the data's      */
 };
 
 /* stb_ds's arrlen is ptrdiff_t. Comparing it against a size_t is a sign-compare
@@ -123,6 +143,10 @@ static bool read_length_prefixed(const uint8_t **p, const uint8_t *end,
 typedef struct {
     char     **comparator;
     uint64_t *table_numbers;   /* stb_ds */
+    uint64_t  log_number;      /* last one wins, as the MANIFEST is a sequence
+                                  of edits rather than a single document */
+    uint64_t  next_file_number;
+    uint64_t  last_sequence;
 } ManifestCtx;
 
 /*
@@ -167,9 +191,42 @@ static bool parse_version_edit(const uint8_t *data, size_t len, ManifestCtx *ctx
             break;
         }
 
-        case LDB_TAG_LOG_NUMBER:
-        case LDB_TAG_NEXT_FILE:
-        case LDB_TAG_LAST_SEQUENCE:
+        case LDB_TAG_LOG_NUMBER: {
+            uint64_t v = 0;
+            n = mcme_ldb_varint_get(p, end, &v);
+            if (n == 0) {
+                mcme_set_error("leveldb: truncated number in MANIFEST");
+                return false;
+            }
+            p += n;
+            ctx->log_number = v;
+            break;
+        }
+
+        case LDB_TAG_NEXT_FILE: {
+            uint64_t v = 0;
+            n = mcme_ldb_varint_get(p, end, &v);
+            if (n == 0) {
+                mcme_set_error("leveldb: truncated number in MANIFEST");
+                return false;
+            }
+            p += n;
+            ctx->next_file_number = v;
+            break;
+        }
+
+        case LDB_TAG_LAST_SEQUENCE: {
+            uint64_t v = 0;
+            n = mcme_ldb_varint_get(p, end, &v);
+            if (n == 0) {
+                mcme_set_error("leveldb: truncated number in MANIFEST");
+                return false;
+            }
+            p += n;
+            ctx->last_sequence = v;
+            break;
+        }
+
         case LDB_TAG_PREV_LOG: {
             uint64_t v = 0;
             n = mcme_ldb_varint_get(p, end, &v);
@@ -410,6 +467,24 @@ static bool collect_files(const char *dir, const char *ext, char ***out)
     return true;
 }
 
+/* Collects every file number currently in the directory, for choosing a fresh
+   log file number that cannot collide with anything on disk. */
+static uint64_t max_file_number(const char *dir)
+{
+    uint64_t max = 0;
+    DIR *d = opendir(dir);
+    if (d == NULL) return 0;
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        uint64_t n = 0;
+        if (!mcme_ldb_file_number(e->d_name, &n)) continue;
+        if (n >= max) max = n + 1;
+    }
+    closedir(d);
+    return max;
+}
+
 static void free_names(char ***names)
 {
     for (size_t i = 0; i < LDB_LEN(*names); ++i) free((*names)[i]);
@@ -502,7 +577,7 @@ static bool finalize(McmeLevelDb *db)
 }
 
 /* ========================================================================
- * Open / close
+ * CURRENT / MANIFEST
  * ======================================================================== */
 
 /*
@@ -535,16 +610,29 @@ static bool read_manifest(McmeLevelDb *db, uint64_t **table_numbers)
     } else if (mcme_ldb_path(path, sizeof path, db->dir, text) == NULL) {
         mcme_set_error("leveldb: directory path too long: %s", db->dir);
     } else {
+        /* Remembered because a writable handle appends to this file: a new
+           VersionEdit goes in the MANIFEST CURRENT names, not in whichever
+           MANIFEST happens to sort first. */
+        free(db->manifest_name);
+        db->manifest_name = strdup(text);
+        if (db->manifest_name == NULL) {
+            mcme_set_error("leveldb: out of memory");
+            free(text);
+            return false;
+        }
+
         uint8_t *data = NULL;
         size_t data_len = 0;
         if (!mcme_ldb_read_file(path, &data, &data_len, MCME_LDB_LOG_MAX)) {
             /* fall through with the error already set */
         } else {
-            ManifestCtx ctx = { &db->comparator, *table_numbers };
+            ManifestCtx ctx = { &db->comparator, *table_numbers, 0, 0, 0 };
             size_t records = 0;
             ok = mcme_ldb_log_read(data, data_len, on_manifest_record, &ctx,
                                    &records);
             *table_numbers = ctx.table_numbers;
+            db->log_number = ctx.log_number;
+            db->last_sequence = ctx.last_sequence;
             free(data);
             if (ok && db->comparator == NULL) {
                 /* Every MANIFEST records a comparator; one that does not is
@@ -560,31 +648,32 @@ static bool read_manifest(McmeLevelDb *db, uint64_t **table_numbers)
     return ok;
 }
 
-bool mcme_leveldb_open(McmeLevelDb **out, const char *dir)
+/*
+ * (Re)reads every source into the merged view.
+ *
+ * Called on open and again after each successful append, because the merged
+ * view is the store's only read surface and a write that the view does not
+ * reflect would be a write the caller cannot see. Rebuilding from disk is the
+ * blunt, obviously-correct choice — the same code path as open, so there is no
+ * second merge implementation to keep in agreement — and its cost is the same
+ * O(entries) the open already paid.
+ *
+ * On failure the store is left `broken`: the write is on disk and a reopen
+ * will see it, but this handle's view no longer matches the store, so every
+ * read refuses rather than answering from a view missing that write.
+ */
+static bool load(McmeLevelDb *db)
 {
-    /* *out is cleared on every path that returns false, including this one.
-       Clearing it after the argument check instead would leave a caller's
-       stale pointer in place on the most common mistake — passing a NULL
-       directory — which is exactly the case where a caller is most likely to
-       have skipped initialising it. */
-    if (out != NULL) *out = NULL;
-
-    if (out == NULL || dir == NULL) {
-        mcme_set_error("leveldb: NULL argument");
-        return false;
-    }
-
-    McmeLevelDb *db = (McmeLevelDb *)calloc(1, sizeof *db);
-    if (db == NULL) {
-        mcme_set_error("leveldb: out of memory");
-        return false;
-    }
-    db->dir = strdup(dir);
-    if (db->dir == NULL) {
-        free(db);
-        mcme_set_error("leveldb: out of memory");
-        return false;
-    }
+    arrfree(db->raw);   db->raw = NULL;
+    arrfree(db->live);  db->live = NULL;
+    /* Length zero rather than freed: the buffers keep their capacity across a
+       reload, and a literal 0 here would trip -Wtype-limits inside stb_ds's
+       unsigned capacity comparison. */
+    size_t reset = 0;
+    arrsetlen(db->keybuf, reset);
+    arrsetlen(db->valbuf, reset);
+    db->table_count = 0;
+    db->log_count = 0;
 
     uint64_t *table_numbers = NULL;
     if (!read_manifest(db, &table_numbers)) goto fail;
@@ -693,23 +782,135 @@ bool mcme_leveldb_open(McmeLevelDb **out, const char *dir)
 
     if (!finalize(db)) goto fail;
 
-    *out = db;
+    /* The sequence the next write must use. The MANIFEST's last_sequence can
+       be ahead of the data (a batch may be written and the MANIFEST updated
+       before anything is flushed) and the data can be ahead of the MANIFEST
+       (a crash between the two), so the answer is the max of both — never
+       either alone, or a re-used sequence number would make an old copy of a
+       key sort newer than the write that replaced it. */
+    for (size_t i = 0; i < LDB_LEN(db->live); ++i) {
+        if (db->live[i].sequence > db->last_sequence) {
+            db->last_sequence = db->live[i].sequence;
+        }
+    }
     return true;
 
 fail:
     arrfree(table_numbers);
-    mcme_leveldb_close(db);
     return false;
+}
+
+/* ========================================================================
+ * Open / close
+ * ======================================================================== */
+
+/*
+ * Takes an exclusive flock on LOCK, the same lock Minecraft and stock LevelDB
+ * take. flock is released by the kernel when the fd closes, including on a
+ * crash, so there is no stale-lock state to recover from — the cost is that
+ * it is advisory, and a program that ignores LOCK can still write. That is
+ * LevelDB's own position on it, and it is enough to keep mcme from opening a
+ * store the game currently has open.
+ */
+static bool ldb_lock(McmeLevelDb *db)
+{
+    char path[4096];
+    if (mcme_ldb_path(path, sizeof path, db->dir, "LOCK") == NULL) {
+        mcme_set_error("leveldb: directory path too long: %s", db->dir);
+        return false;
+    }
+
+    int fd = open(path, O_RDWR | O_CREAT, 0644);
+    if (fd < 0) {
+        mcme_set_error("leveldb: cannot open '%s': %s", path, strerror(errno));
+        return false;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        mcme_set_error("leveldb: '%s' is locked; close whatever else has it "
+                       "open (the game?) and retry", db->dir);
+        close(fd);
+        return false;
+    }
+    db->lock_fd = fd;
+    return true;
+}
+
+/*
+ * Shared body of mcme_leveldb_open and mcme_leveldb_open_rw.
+ *
+ * `writable` additionally takes an exclusive flock on LOCK, which is the one
+ * thing a read-only open deliberately does not do: two readers of one store
+ * are harmless, and a reader next to a writer is how LevelDB itself is used,
+ * but two writers are how a world gets corrupted. Minecraft holds the same
+ * lock while the game has the world open, so this doubles as "the game is not
+ * running against this directory".
+ */
+static bool open_common(McmeLevelDb **out, const char *dir, bool writable)
+{
+    /* *out is cleared on every path that returns false, including this one.
+       Clearing it after the argument check instead would leave a caller's
+       stale pointer in place on the most common mistake — passing a NULL
+       directory — which is exactly the case where a caller is most likely to
+       have skipped initialising it. */
+    if (out != NULL) *out = NULL;
+
+    if (out == NULL || dir == NULL) {
+        mcme_set_error("leveldb: NULL argument");
+        return false;
+    }
+
+    McmeLevelDb *db = (McmeLevelDb *)calloc(1, sizeof *db);
+    if (db == NULL) {
+        mcme_set_error("leveldb: out of memory");
+        return false;
+    }
+    db->dir = strdup(dir);
+    if (db->dir == NULL) {
+        free(db);
+        mcme_set_error("leveldb: out of memory");
+        return false;
+    }
+    db->lock_fd = -1;
+    db->writable = writable;
+
+    if (writable && !ldb_lock(db)) {
+        mcme_leveldb_close(db);
+        return false;
+    }
+
+    if (!load(db)) {
+        mcme_leveldb_close(db);
+        return false;
+    }
+
+    *out = db;
+    return true;
+}
+
+bool mcme_leveldb_open(McmeLevelDb **out, const char *dir)
+{
+    return open_common(out, dir, false);
+}
+
+bool mcme_leveldb_open_rw(McmeLevelDb **out, const char *dir)
+{
+    return open_common(out, dir, true);
 }
 
 void mcme_leveldb_close(McmeLevelDb *db)
 {
     if (db == NULL) return;
+    if (db->log != NULL) {
+        fflush(db->log);
+        fclose(db->log);
+    }
+    if (db->lock_fd >= 0) close(db->lock_fd);
     arrfree(db->raw);
     arrfree(db->live);
     arrfree(db->keybuf);
     arrfree(db->valbuf);
     free(db->comparator);
+    free(db->manifest_name);
     free(db->dir);
     free(db);
 }
@@ -836,4 +1037,199 @@ size_t mcme_leveldb_log_count(const McmeLevelDb *db)
 const char *mcme_leveldb_comparator(const McmeLevelDb *db)
 {
     return db == NULL ? NULL : db->comparator;
+}
+
+/* ========================================================================
+ * Writing
+ *
+ * The shape is log-append and nothing else, which is decision D9's stated
+ * scope: LevelDB replays a log on open and compacts it into tables later, so
+ * a writer that only ever appends records produces a store every LevelDB
+ * reads correctly — mcme's own reader included, because it merges the log
+ * with the tables exactly as the real library does.
+ *
+ * What is deliberately NOT here: table writing, compaction, log rotation.
+ * Rotation in particular is not a missing feature but an unsafe one at this
+ * scope — LevelDB recovers only the logs numbered at or above the MANIFEST's
+ * log number, on the assumption that everything older was flushed into a
+ * table first. A writer that starts a new log without that flush would leave
+ * the previous log's records invisible to every reader that trusts the
+ * MANIFEST. Appending to one log until the process exits has none of that
+ * problem, and the ceiling below turns "forever" into an error message
+ * instead of a 64 MiB file this reader then refuses to reopen.
+ * ======================================================================== */
+
+/* Refuse a log past what mcme_ldb_read_file will take on reopen, so a session
+   of edits cannot grow a store that only the session that wrote it can read.
+   Half the ceiling leaves room for the record being appended. */
+#define MCME_LDB_LOG_WRITE_MAX ((size_t)32u * 1024u * 1024u)
+
+/*
+ * Opens (or creates) the log this handle appends to and positions for
+ * append. The MANIFEST's log file may be gone — a store that was compacted
+ * then closed often has none — in which case a fresh one is created under a
+ * number nothing on disk uses, and the MANIFEST is told about it by the
+ * caller. That edit matters: without it, the next reader is told there is no
+ * log and must not go looking for one, and every record appended here would
+ * be invisible.
+ */
+static bool open_log(McmeLevelDb *db)
+{
+    if (db->log != NULL) return true;
+
+    char name[64];
+    if (db->log_number == 0) {
+        db->log_number = max_file_number(db->dir);
+        if (db->log_number == 0) db->log_number = 1;
+    }
+    snprintf(name, sizeof name, "%06llu.log",
+             (unsigned long long)db->log_number);
+
+    char path[4096];
+    if (mcme_ldb_path(path, sizeof path, db->dir, name) == NULL) {
+        mcme_set_error("leveldb: directory path too long: %s", db->dir);
+        return false;
+    }
+
+    struct stat st;
+    bool existed = (stat(path, &st) == 0 && S_ISREG(st.st_mode));
+    if (existed) db->log_size = (size_t)st.st_size;
+
+    db->log = fopen(path, "ab");
+    if (db->log == NULL) {
+        mcme_set_error("leveldb: cannot open '%s' for append: %s",
+                       path, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Appends one WriteBatch as a single log record and reloads the view.
+ *
+ * `ops` is one atomic unit: a single record, so a reader that stops at a torn
+ * tail drops the whole batch rather than half of it, which is the same
+ * guarantee stock LevelDB gives. Sequence numbers are handed out in order
+ * from the store's high-water mark, so within a batch the sort order is the
+ * array order — a caller overwriting one key twice in a batch gets the last
+ * write, as it must.
+ */
+bool mcme_leveldb_write(McmeLevelDb *db, const McmeLevelOp *ops, size_t n)
+{
+    if (db == NULL || ops == NULL || n == 0) {
+        mcme_set_error("leveldb: NULL argument or empty batch");
+        return false;
+    }
+    if (!db->writable) {
+        mcme_set_error("leveldb: store was opened read-only");
+        return false;
+    }
+    if (db->broken) {
+        mcme_set_error("leveldb: a previous write landed but the view could "
+                       "not be rebuilt; reopen the store before writing again");
+        return false;
+    }
+
+    /* The batch payload, built in full before anything touches the file: an
+       allocation failure here must not leave half a record on disk. Layout is
+       the 8-byte sequence, the 4-byte count, then one record per operation. */
+    McmeBuffer payload;
+    mcme_buffer_init(&payload);
+
+    uint64_t base = db->last_sequence + 1;
+    uint8_t header[12];
+    for (int i = 0; i < 8; ++i) {
+        header[i] = (uint8_t)((base >> (i * 8)) & 0xff);
+    }
+    for (int i = 0; i < 4; ++i) {
+        header[8 + i] = (uint8_t)(((uint32_t)n >> (i * 8)) & 0xff);
+    }
+
+    bool ok = mcme_buffer_append(&payload, header, sizeof header);
+    for (size_t i = 0; ok && i < n; ++i) {
+        if (ops[i].key == NULL || (ops[i].val == NULL && ops[i].val_len > 0)) {
+            mcme_set_error("leveldb: batch entry %zu has no key or a NULL value",
+                           i);
+            ok = false;
+            break;
+        }
+        uint8_t type = ops[i].deleted ? MCME_LDB_DELETION : MCME_LDB_VALUE;
+        ok = mcme_buffer_append_u8(&payload, type) &&
+             mcme_ldb_varint_put(&payload, ops[i].key_len) &&
+             mcme_buffer_append(&payload, ops[i].key, ops[i].key_len);
+        if (ok && !ops[i].deleted) {
+            ok = mcme_ldb_varint_put(&payload, ops[i].val_len) &&
+                 mcme_buffer_append(&payload, ops[i].val, ops[i].val_len);
+        }
+    }
+
+    if (!ok) {
+        mcme_buffer_free(&payload);
+        return false;
+    }
+
+    if (db->log_size + payload.len + 7 > MCME_LDB_LOG_WRITE_MAX) {
+        mcme_set_error("leveldb: log would exceed %u bytes; close and reopen "
+                       "the store (a future version will compact)",
+                       (unsigned)MCME_LDB_LOG_WRITE_MAX);
+        mcme_buffer_free(&payload);
+        return false;
+    }
+
+    if (!open_log(db)) {
+        mcme_buffer_free(&payload);
+        return false;
+    }
+
+    /* The writer resumes where the file left off, mid-block if that is where
+       it was: the offset is the file size modulo the block size, and the
+       record may cross any number of block boundaries from there. */
+    size_t block_offset = db->log_size % MCME_LDB_BLOCK_SIZE;
+    ok = mcme_ldb_log_append(db->log, payload.data, payload.len, &block_offset);
+    long pos = ok ? ftell(db->log) : -1;
+    mcme_buffer_free(&payload);
+    if (!ok || pos < 0) {
+        if (ok) mcme_set_error("leveldb: cannot track log position: %s",
+                               strerror(errno));
+        db->broken = true;
+        return false;
+    }
+
+    /* The file position after the append is the new size, padding included —
+       which is exactly what the next append's block offset and the reopen
+       ceiling both need, and one number instead of a second implementation
+       of what emit_fragment just wrote. */
+    db->log_size = (size_t)pos;
+
+    /* Flush before claiming success: the record is in the OS's page cache
+       after fflush, which is the durability stock LevelDB promises without
+       its sync option, and it is what keeps the next append from landing
+       before this one in the file. */
+    if (fflush(db->log) != 0) {
+        mcme_set_error("leveldb: flush after write failed: %s",
+                       strerror(errno));
+        db->broken = true;
+        return false;
+    }
+
+    db->last_sequence = base + n - 1;
+
+    if (!load(db)) {
+        db->broken = true;
+        return false;
+    }
+    return true;
+}
+
+bool mcme_leveldb_put(McmeLevelDb *db, const void *key, size_t key_len,
+                      const void *val, size_t val_len)
+{
+    McmeLevelOp op = { key, key_len, val, val_len, false };
+    return mcme_leveldb_write(db, &op, 1);
+}
+
+bool mcme_leveldb_delete(McmeLevelDb *db, const void *key, size_t key_len)
+{
+    McmeLevelOp op = { key, key_len, NULL, 0, true };
+    return mcme_leveldb_write(db, &op, 1);
 }

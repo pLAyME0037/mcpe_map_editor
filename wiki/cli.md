@@ -201,6 +201,37 @@ Chunk markers are the subchunk prefix in both spellings the game has used
 ride along with a chunk — 0x2d biome/heightmap — are not markers and are never
 counted.
 
+### `mcme db`
+
+Raw key/value access to a Bedrock store. This is the write path's CLI surface
+(D3: anything worth doing is a verb) and it is deliberately raw — Bedrock keys
+carry binary chunk coordinates, so keys and values are hex on the command
+line.
+
+```
+mcme db get <world> <key-hex>             # print value-hex, or exit 2
+mcme db put <world> <key-hex> <value-hex>
+mcme db del <world> <key-hex>
+```
+
+```
+$ mcme db get mybedrock 656467652f73696e676c65
+6e6577657220696e20746865206c6f67
+$ mcme db del mybedrock 656467652f73696e676c65 ; echo $?
+0
+```
+
+`get` opens read-only and does **not** take the store's LOCK, so it works on a
+world the game has open. `put` and `del` open writable, take an exclusive
+`flock` on `LOCK` (the same lock Minecraft takes), and refuse with exit 4 if
+the store is locked. Writes append to the store's log as one WriteBatch
+record each, which is the whole of the write support: no table writing, no
+compaction, and past 32 MiB the log the write refuses rather than growing a
+store only that session could read (see [dev-log.md](dev-log.md)).
+
+Exit codes: `0` ok, `1` usage, `2` key absent (for `get`), `4` store locked or
+unreadable.
+
 ### Reserved, not yet implemented
 
 Parses and then exits `MCME_EXIT_NOT_IMPLEMENTED`. It exists so the surface is

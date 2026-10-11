@@ -268,3 +268,52 @@ dependency.
 with no zlib. Then vendor miniz and generate the header once, behind
 `mc_compress.h` — which is why all compression goes through that header and
 nothing else in the tree calls `zlib.h` directly.
+
+---
+
+## D10 — LevelDB writes are log-append only; no rotation, no compaction
+
+**Chosen.** Writing appends WriteBatch records to the store's log, one record
+per batch, and stops there. Sequence numbers come from `max(MANIFEST's
+last_sequence, highest sequence in the data)`. A writable handle takes an
+exclusive `flock` on `LOCK` — the lock Minecraft takes — for its lifetime.
+Appending past 32 MiB refuses with an error instead of rotating the log.
+
+**Why.** LevelDB replays a log on open, so a store built purely by appending
+is correct for every reader without this code implementing compaction at all
+(see D9's scope). The sequence max matters because either source alone can be
+stale: the MANIFEST can be ahead of the data (batch written, MANIFEST updated,
+crash before flush) and the data ahead of the MANIFEST (crash between the
+two). Re-using a sequence number would make an old copy of a key sort newer
+than the write that replaced it — a corruption that reads correctly.
+
+Rotation is the load-bearing omission. LevelDB recovers only the logs numbered
+at or above the MANIFEST's log number, because it assumes everything older was
+flushed into a table first. A writer that starts a new log without that flush
+makes every record in the old log invisible to every reader that trusts the
+MANIFEST — including mcme's own reader. So there is none: one log for the life
+of the handle, and a ceiling low enough (half the reader's 64 MiB intake limit)
+that a session cannot grow a store only that session can read.
+
+**Rejected.**
+- *Rotating the log with a MANIFEST edit*: exactly the orphaning described
+  above, unless paired with a table flush — which is compaction, the thing D9
+  deferred.
+- *Writing SSTables directly*: correct output, but a table writer is the
+  single most corruption-prone piece of the format (index, restart array,
+  filters, per-block checksums). Log-append is verifiable by reading it back
+  with the reference library, which is what was done.
+- *Mirroring upstream's memtable/write-buffer machinery*: a memtable only pays
+  off if something eventually flushes it. Nothing here does.
+- *Taking the lock on read-only opens too*: two readers are harmless, and
+  `mcme info`/`mcme chunks` on a world the game has open is a normal use.
+
+**Cost accepted.** A long editing session ends at 32 MiB of log with an error
+telling it to reopen, and reopening does not help until compaction exists —
+that is next. Reads also rebuild the merged view after every write, O(entries)
+each time, which is blunt but reuses the open path rather than growing a
+second merge implementation.
+
+**Reverses if:** table writing lands, at which point rotation becomes safe and
+the ceiling can go. The `mcme_leveldb.h` surface is where that swap belongs,
+per D9.

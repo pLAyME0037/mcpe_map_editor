@@ -105,11 +105,12 @@ found and fails, rather than returning bytes that are not NBT.
 
 ## Bedrock LevelDB
 
-The store is read. `include/mcme/leveldb.h` opens the `db/` directory read-only
-and enumerates every live key, merging log records, SSTables and the MANIFEST's
-live set by internal key. Details of the format and of the four places it
-diverges from upstream LevelDB are in `decisions.md#D9`; what follows is the
-key layout the chunk layer will build on.
+The store is read and, through a writable handle, appended to.
+`include/mcme/leveldb.h` opens the `db/` directory and enumerates every live
+key, merging log records, SSTables and the MANIFEST's live set by internal
+key. Details of the format and of the four places it diverges from upstream
+LevelDB are in `decisions.md#D9`; what follows is the key layout the chunk
+layer will build on.
 
 ```
 x (4 LE)  z (4 LE)  [dimension (4 LE)]  tag (1 byte)  [subchunk index]

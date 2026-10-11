@@ -26,6 +26,8 @@
 
 #include "internal.h"
 
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -167,4 +169,110 @@ done:
     mcme_buffer_free(&record);
     if (out_records != NULL) *out_records = records;
     return ok;
+}
+
+/* ========================================================================
+ * Log writer
+ *
+ * The mirror of the reader above, and of upstream's Writer::AddRecord: one
+ * logical record is emitted as fragments of at most (32768 - 7) bytes, and a
+ * fragment that would not fit in the space left in this block is followed by
+ * zero padding to the block end, with the record continuing in the next block.
+ *
+ * Two details are load-bearing and easy to get wrong in either direction:
+ *
+ *   - The writer NEVER leaves fewer than 7 bytes in a block. A reader that
+ *     finds 3 leftover bytes cannot tell padding from a truncated header, and
+ *     upstream solves it by writing exactly those 3 bytes and moving on.
+ *   - Each fragment carries its own checksum over (its type byte, its payload)
+ *     — never over the whole logical record. This is the same rule the reader
+ *     verifies, and the fixture generator (tools/ref_leveldb_table.py) writes
+ *     it independently, so all three agree or the tests say which one moved.
+ *
+ * `block_offset` is the file's current size modulo the block size: appending
+ * to a log that already has records means resuming mid-block, exactly as
+ * upstream's Writer(dest, dest_length) constructor does.
+ */
+
+/* Appends one physical fragment: 7-byte header, then payload. */
+static bool emit_fragment(FILE *fh, uint8_t type,
+                          const uint8_t *payload, size_t len)
+{
+    if (len > 0xffff) {
+        mcme_set_error("leveldb log: fragment over 65535 bytes");
+        return false;
+    }
+
+    uint8_t header[7];
+    header[4] = (uint8_t)(len & 0xff);
+    header[5] = (uint8_t)(len >> 8);
+    header[6] = type;
+
+    uint32_t crc = mcme_ldb_crc32c(0, &type, 1);
+    crc = mcme_ldb_crc32c(crc, payload, len);
+    crc = mcme_ldb_mask_crc(crc);
+    header[0] = (uint8_t)(crc & 0xff);
+    header[1] = (uint8_t)((crc >> 8) & 0xff);
+    header[2] = (uint8_t)((crc >> 16) & 0xff);
+    header[3] = (uint8_t)((crc >> 24) & 0xff);
+
+    if (fwrite(header, 1, sizeof header, fh) != sizeof header) return false;
+    if (len > 0 && fwrite(payload, 1, len, fh) != len) return false;
+    return true;
+}
+
+bool mcme_ldb_log_append(FILE *fh, const void *record, size_t len,
+                         size_t *block_offset)
+{
+    if (fh == NULL || block_offset == NULL || (record == NULL && len > 0)) {
+        mcme_set_error("leveldb log: NULL argument");
+        return false;
+    }
+    if (*block_offset >= MCME_LDB_BLOCK_SIZE) {
+        mcme_set_error("leveldb log: block offset %zu past the block end",
+                       *block_offset);
+        return false;
+    }
+
+    const uint8_t *ptr = (const uint8_t *)record;
+    size_t left = len;
+    bool begin = true;
+
+    do {
+        size_t leftover = MCME_LDB_BLOCK_SIZE - *block_offset;
+        if (leftover < 7) {
+            /* Fill the trailer with exactly the bytes left, so the next
+               fragment starts on a block boundary. Skipping them instead
+               would leave a reader three bytes of nothing to parse. */
+            static const uint8_t zeros[7] = {0};
+            if (leftover > 0 &&
+                fwrite(zeros, 1, leftover, fh) != leftover) {
+                mcme_set_error("leveldb log: short write padding a block");
+                return false;
+            }
+            *block_offset = 0;
+            leftover = MCME_LDB_BLOCK_SIZE;
+        }
+
+        size_t avail = leftover - 7;
+        size_t frag = left < avail ? left : avail;
+        bool end = (left == frag);
+
+        uint8_t type = begin && end ? LDB_REC_FULL
+                     : begin        ? LDB_REC_FIRST
+                     : end          ? LDB_REC_LAST
+                                    : LDB_REC_MIDDLE;
+
+        if (!emit_fragment(fh, type, ptr, frag)) {
+            mcme_set_error("leveldb log: short write: %s", strerror(errno));
+            return false;
+        }
+
+        ptr += frag;
+        left -= frag;
+        *block_offset += 7 + frag;
+        begin = false;
+    } while (left > 0);
+
+    return true;
 }

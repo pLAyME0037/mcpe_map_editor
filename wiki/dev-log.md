@@ -9,6 +9,60 @@ Status vocabulary:
 
 ---
 
+## 2026-10-11 — LevelDB writes: log-append, and what rotation would have cost
+
+### Built
+
+- `mcme_leveldb_open_rw` + `mcme_leveldb_write` (batch), `_put`, `_delete`.
+  One WriteBatch = one log record, so a torn tail drops the whole batch and
+  never half of it — the same guarantee stock LevelDB gives.
+- `mcme_ldb_log_append` in `log.c`: fragments records across 32 KiB blocks
+  exactly the way upstream's `Writer::AddRecord` does, padding the trailer
+  with the leftover bytes when fewer than seven remain. Its correctness is
+  checked by writing with it and reading back with `mcme_ldb_log_read`, and
+  by the reference library reading a store `mcme db put` produced — including
+  a 33 KB value that crosses a block boundary.
+- `mcme db get|put|del <world> <key-hex> [value-hex]` — the CLI surface, per
+  D3: the write path is scriptable, and `get` is read-only so it works on a
+  store the game has open while `put`/`del` take the lock.
+- Sequence numbers come from `max(MANIFEST's last_sequence, highest in the
+  data)`. Either alone is wrong: the MANIFEST can be ahead of the data (batch
+  written, manifest updated, crash before flush) and the data ahead of the
+  MANIFEST (crash between the two). Re-using a sequence would make an old
+  copy of a key sort newer than the write that replaced it.
+- Every writable handle takes an exclusive `flock` on `LOCK` — the lock
+  Minecraft takes — and refuses a store the game has open. `flock` dies with
+  the fd, so a crash leaves no stale-lock state.
+
+### Why there is no log rotation
+
+LevelDB recovers only logs numbered at or above the MANIFEST's log number,
+because it assumes everything older was flushed into a table first. A writer
+that starts a new log without that flush makes every record in the old log
+invisible to every reader that trusts the MANIFEST — including mcme's own.
+So: one log, appended for the life of the handle, and past 32 MiB the write
+refuses with an error rather than growing a store only this session could
+read. Rotation is not a missing feature at this scope; it is an unsafe one
+until table writing and compaction exist.
+
+### Bugs found
+
+- `arrsetlen(buf, 0)` trips `-Wtype-limits` inside stb_ds's unsigned
+  capacity comparison. A length-zero reset needs a variable, not a literal.
+- The first write test pointed at the world folder rather than its `db/`
+  subfolder; `mcme_fs_read` refused the directory, which is the tool working
+  as designed and the test not.
+
+### Known gaps
+
+- **No table writing, no compaction.** The log is the only write surface.
+- **The 32 MiB ceiling is a session limit.** A world edited past it needs a
+  reopen and, eventually, a compactor.
+- **`mcme db` is raw.** It takes hex keys; friendlier verbs come with the
+  chunk-edit layer.
+
+---
+
 ## 2026-10-11 — `mcme chunks`: Bedrock chunk inventory
 
 ### Built

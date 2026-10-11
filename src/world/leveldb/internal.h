@@ -11,6 +11,8 @@
 #include "mcme/core.h"
 #include "mcme/leveldb.h"
 
+#include <stdio.h>
+
 /* LevelDB writes a log, a MANIFEST and table files in 32 KiB blocks. */
 #define MCME_LDB_BLOCK_SIZE 32768u
 
@@ -113,6 +115,16 @@ typedef bool (*McmeLdbRecordFn)(void *userdata,
 
 bool mcme_ldb_log_read(const uint8_t *data, size_t len,
                        McmeLdbRecordFn fn, void *ud, size_t *out_records);
+
+/*
+ * Appends one logical record to `fh`, fragmenting across 32 KiB blocks the
+ * same way upstream's Writer does. `*block_offset` is the file size modulo the
+ * block size — pass the size of what is already in the file so an append
+ * resumes mid-block instead of stomping the block structure. The caller owns
+ * flushing; this function does not fflush or fsync.
+ */
+bool mcme_ldb_log_append(FILE *fh, const void *record, size_t len,
+                         size_t *block_offset);
 
 /* ========================================================================
  * Tables (.ldb / .sst)

@@ -14,18 +14,25 @@
  * What is implemented, and what is deliberately not
  * ---------------------------------------------------------------------------
  *
- * READ ONLY, and that is not an accident. A read-only store that refuses to
- * write cannot corrupt a user's world; a half-implemented writer can. Writing
- * lands after reads are proven, and the intended shape is appending log
- * records — LevelDB replays a log on open — rather than implementing
- * compaction.
+ * READS FIRST, then log-append writes, and neither is an accident. A read-only
+ * store that refuses to write cannot corrupt a user's world; a half-implemented
+ * writer can. Reads were proven against the Python binding before a single
+ * write existed, and the writer appends log records only — LevelDB replays a
+ * log on open, so a store built that way is correct for every reader without
+ * this code having to implement compaction. See decisions.md#D9.
  *
- * Supported: log records (FULL, FIRST, MIDDLE, LAST) with per-fragment
- * checksums; SSTable data blocks with prefix compression and restart points;
- * index blocks; the footer; the metaindex; block checksum verification; block
- * decompression for the codecs Minecraft actually writes; and reads of the
- * CURRENT file and MANIFEST version edits. Both table file spellings (.ldb and
- * .sst) are the same format and both are read.
+ * Supported for reading: log records (FULL, FIRST, MIDDLE, LAST) with
+ * per-fragment checksums; SSTable data blocks with prefix compression and
+ * restart points; index blocks; the footer; the metaindex; block checksum
+ * verification; block decompression for the codecs Minecraft actually writes;
+ * and reads of the CURRENT file and MANIFEST version edits. Both table file
+ * spellings (.ldb and .sst) are the same format and both are read.
+ *
+ * Supported for writing: whole WriteBatches as single log records, put and
+ * delete as one-entry batches, sequence assignment from the store's
+ * high-water mark, and an exclusive LOCK while the handle is open. After each
+ * write the merged view is rebuilt, so a writable handle reads its own writes
+ * and nothing else in the process can observe a half-applied batch.
  *
  * Not supported, each of which makes an affected DB fail loudly rather than
  * silently return wrong data:
@@ -41,6 +48,11 @@
  *   - comparators other than "leveldb.BytewiseComparator". The merge assumes
  *     user-key-ascending then sequence-descending, which is only the truth for
  *     the default comparator.
+ *   - writing tables, compacting, or rotating the log. A log that grows past
+ *     MCME_LDB_LOG_WRITE_MAX is refused with an error rather than grown into a
+ *     store only this session could read. Rotation without a flush would also
+ *     orphan every record in the old log, because readers trust the MANIFEST's
+ *     log number; that is why there is none.
  *
  * ---------------------------------------------------------------------------
  * Key layout (Bedrock's, not LevelDB's)
@@ -86,6 +98,16 @@ typedef struct McmeLevelDb McmeLevelDb;
  * store says so.
  */
 bool mcme_leveldb_open(McmeLevelDb **out, const char *dir);
+
+/*
+ * Opens a store for writing. Same view as mcme_leveldb_open, plus an exclusive
+ * flock on LOCK that is held until close — the lock Minecraft takes, so this
+ * fails rather than editing a world the game has open. Creates the LOCK file
+ * if it does not exist.
+ *
+ * Only one writable handle per store should exist; the lock enforces it.
+ */
+bool mcme_leveldb_open_rw(McmeLevelDb **out, const char *dir);
 void mcme_leveldb_close(McmeLevelDb *db);
 
 /*
@@ -136,5 +158,41 @@ size_t mcme_leveldb_log_count(const McmeLevelDb *db);
 /* The comparator name the MANIFEST recorded, e.g. "leveldb.BytewiseComparator".
    Borrowed; valid until close. NULL if the MANIFEST was unreadable. */
 const char *mcme_leveldb_comparator(const McmeLevelDb *db);
+
+/* ========================================================================
+ * Writing
+ * ======================================================================== */
+
+/* One operation in a batch. `val`/`val_len` are ignored when `deleted`. */
+typedef struct {
+    const void *key;
+    size_t      key_len;
+    const void *val;
+    size_t      val_len;
+    bool        deleted;
+} McmeLevelOp;
+
+/*
+ * Applies `n` operations as one atomic WriteBatch, appended to the store's log
+ * and made visible to this handle before returning.
+ *
+ * Atomic means what it does in LevelDB: one log record, so a reader that stops
+ * at a torn tail drops the whole batch, never half of it. Within a batch,
+ * later entries sort newer, so overwriting one key twice yields the last.
+ *
+ * Refuses a store opened read-only, an empty batch, and a NULL key. Returns
+ * false with mcme_last_error() explaining which. After a false return the
+ * handle is still usable unless the error says the view could not be
+ * rebuilt — in that case every subsequent read and write refuses, because the
+ * store on disk has the write and this handle's view does not.
+ */
+bool mcme_leveldb_write(McmeLevelDb *db, const McmeLevelOp *ops, size_t n);
+
+/* One-entry batch conveniences. An empty value is legal and distinct from a
+   deletion; a deletion of a key that does not exist is also legal and is
+   recorded, exactly as stock LevelDB records it. */
+bool mcme_leveldb_put(McmeLevelDb *db, const void *key, size_t key_len,
+                      const void *val, size_t val_len);
+bool mcme_leveldb_delete(McmeLevelDb *db, const void *key, size_t key_len);
 
 #endif /* MCME_LEVELDB_H */

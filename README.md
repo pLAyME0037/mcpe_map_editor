@@ -15,7 +15,8 @@ Amulet Map Editor's *behaviour*, not its code.
 Early but reading. Core primitives, the CLI contract, NBT, Anvil regions and
 the Bedrock LevelDB store (read-only) all work, each byte-checked against the
 Python reference. See [wiki/dev-log.md](wiki/dev-log.md) for what is actually
-done and what is next. Writing is not implemented for any format.
+done and what is next. Writing exists only for Bedrock and only as log-append
+(`mcme db`); Java formats and compaction are not implemented.
 
 ## Build
 

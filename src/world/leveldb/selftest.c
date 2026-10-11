@@ -33,9 +33,11 @@
 
 #include "internal.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "stb_ds.h"
 
@@ -583,6 +585,109 @@ static void test_log(void)
         size_t records = 0;
         CHECK(!mcme_ldb_log_read(NULL, 10, on_log_record_capture, NULL, &records));
     }
+
+    /* --- The writer round-trips through the reader, including the two paths
+           that are easy to get wrong: a record that ends within six bytes of
+           a block end (the writer must pad the trailer, or the reader sees a
+           seven-byte header made of garbage) and a record bigger than one
+           block (FIRST/MIDDLE/LAST, each fragment checksummed alone). This
+           writes with mcme_ldb_log_append and reads with mcme_ldb_log_read —
+           both ours — so the external check is that the reference library
+           reads what `mcme db put` produces, done in the store test's
+           golden comparison, not here. --- */
+    {
+        /* 32768 - 7 - 4: after this FULL record, four bytes remain — fewer
+           than a seven-byte header — so the writer must pad the trailer to
+           the block end and the next record starts a block over. Four, not
+           ten: ten would fit the next header, and nothing would be tested. */
+        enum { TAIL = 4 };
+        size_t payload_len = MCME_LDB_BLOCK_SIZE - 7 - TAIL;
+        uint8_t *payload = (uint8_t *)malloc(payload_len);
+        CHECK(payload != NULL);
+        if (payload != NULL) {
+            for (size_t i = 0; i < payload_len; ++i) {
+                payload[i] = (uint8_t)(i * 31);
+            }
+
+            char path[] = "/tmp/opencode/mcme_ldb_log_XXXXXX";
+            int fd = mkstemp(path);
+            CHECK(fd >= 0);
+            FILE *fh = fd >= 0 ? fdopen(fd, "w+b") : NULL;
+            CHECK(fh != NULL);
+
+            if (fh != NULL) {
+                size_t off = 0;
+                CHECK(mcme_ldb_log_append(fh, payload, payload_len, &off));
+                /* Second record: must land at the next block boundary, after
+                   exactly TAIL zero bytes. */
+                const uint8_t second[] = { 0xca, 0xfe };
+                CHECK(mcme_ldb_log_append(fh, second, sizeof second, &off));
+
+                /* Third: bigger than a block, so it fragments. */
+                size_t big_len = MCME_LDB_BLOCK_SIZE + 100;
+                uint8_t *big = (uint8_t *)malloc(big_len);
+                CHECK(big != NULL);
+                if (big != NULL) {
+                    for (size_t i = 0; i < big_len; ++i) big[i] = (uint8_t)(i * 7);
+                    CHECK(mcme_ldb_log_append(fh, big, big_len, &off));
+
+                    CHECK(fflush(fh) == 0);
+                    fseek(fh, 0, SEEK_END);
+                    long size = ftell(fh);
+                    /* payload + 7, then TAIL padding, then second + 7, then
+                       the big record: full blocks on each side of it. */
+                    CHECK(size == (long)(payload_len + 7 + TAIL + 2 + 7) +
+                                  (long)big_len + 7 + 7);
+                    fseek(fh, 0, SEEK_SET);
+
+                    uint8_t *data = (uint8_t *)malloc((size_t)size);
+                    CHECK(data != NULL);
+                    if (data != NULL) {
+                        CHECK(fread(data, 1, (size_t)size, fh) == (size_t)size);
+
+                        /* The padding is exactly TAIL zero bytes and the
+                           reader must step over them into the next block. */
+                        size_t pad_at = payload_len + 7;
+                        for (size_t i = 0; i < TAIL; ++i) {
+                            CHECK(data[pad_at + i] == 0);
+                        }
+
+                        LogCapture cap;
+                        mcme_buffer_init(&cap.seen);
+                        cap.count = 0;
+                        cap.stop_after_first = false;
+                        size_t records = 0;
+                        CHECK(mcme_ldb_log_read(data, (size_t)size,
+                                                on_log_record_capture, &cap,
+                                                &records));
+                        /* Three logical records, whatever the fragmentation
+                           underneath. cap.seen holds all three joined by
+                           '|', in order — so the check is that the reader
+                           reassembled each one's exact bytes, not merely
+                           that it found three of them. */
+                        CHECK(records == 3);
+                        size_t want_len = payload_len + 1 + 2 + 1 + big_len;
+                        CHECK(cap.seen.len == want_len);
+                        if (cap.seen.data != NULL && cap.seen.len == want_len) {
+                            CHECK(memcmp(cap.seen.data, payload, payload_len) == 0);
+                            CHECK(cap.seen.data[payload_len] == '|');
+                            CHECK(memcmp(cap.seen.data + payload_len + 1,
+                                         second, 2) == 0);
+                            CHECK(cap.seen.data[payload_len + 3] == '|');
+                            CHECK(memcmp(cap.seen.data + payload_len + 4,
+                                         big, big_len) == 0);
+                        }
+                        mcme_buffer_free(&cap.seen);
+                        free(data);
+                    }
+                    free(big);
+                }
+                fclose(fh);
+            }
+            remove(path);
+            free(payload);
+        }
+    }
 }
 
 /* ========================================================================
@@ -991,6 +1096,199 @@ static void test_refusals(void)
 }
 
 /* ========================================================================
+ * Writing
+ * ======================================================================== */
+
+/* Copies a whole db/ directory to `dst` so a write test never touches the
+   fixture. Only regular files; the store layout is flat. */
+static bool copy_store(const char *src, const char *dst)
+{
+    if (!mcme_fs_mkdir_p(dst)) return false;
+
+    DIR *d = opendir(src);
+    if (d == NULL) return false;
+
+    struct dirent *e;
+    bool ok = true;
+    while (ok && (e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+
+        char from[4096], to[4096];
+        snprintf(from, sizeof from, "%s/%s", src, e->d_name);
+        snprintf(to, sizeof to, "%s/%s", dst, e->d_name);
+
+        void *data = NULL;
+        size_t len = 0;
+        if (!mcme_fs_read(from, &data, &len)) { ok = false; break; }
+        ok = mcme_fs_write(to, data, len);
+        free(data);
+    }
+    closedir(d);
+    return ok;
+}
+
+static void remove_store(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL) return;
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char path[4096];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        remove(path);
+    }
+    closedir(d);
+    rmdir(dir);
+}
+
+static void test_write(void)
+{
+    const char *src = "tests/golden/worlds/bedrock-forge/db";
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP write tests (%s not found)\n", src);
+        return;
+    }
+
+    char tmp[] = "/tmp/opencode/mcme_ldb_write_XXXXXX";
+    CHECK(mkdtemp(tmp) != NULL);
+    char dbdir[512];
+    snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+    CHECK(copy_store(src, dbdir));
+
+    /* --- A read-only handle refuses to write, and says so. --- */
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(!mcme_leveldb_put(db, "k", 1, "v", 1));
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_leveldb_close(db);
+    }
+
+    /* --- put, then read the same key back through the same handle. --- */
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+
+        size_t before = mcme_leveldb_count(db);
+        CHECK(mcme_leveldb_put(db, "write/new", 9, "hello", 5));
+
+        McmeBuffer buf;
+        mcme_buffer_init(&buf);
+        bool deleted = true;
+        CHECK(mcme_leveldb_get(db, "write/new", 9, &buf, &deleted));
+        CHECK(!deleted);
+        CHECK(buf.len == 5 && memcmp(buf.data, "hello", 5) == 0);
+        mcme_buffer_free(&buf);
+        CHECK(mcme_leveldb_count(db) == before + 1);
+
+        /* --- Overwrite through the same handle: newest wins. --- */
+        CHECK(mcme_leveldb_put(db, "write/new", 9, "world", 5));
+        mcme_buffer_init(&buf);
+        CHECK(mcme_leveldb_get(db, "write/new", 9, &buf, &deleted));
+        CHECK(buf.len == 5 && memcmp(buf.data, "world", 5) == 0);
+        mcme_buffer_free(&buf);
+
+        /* --- Empty value is legal and is not a deletion. --- */
+        CHECK(mcme_leveldb_put(db, "write/empty", 10, NULL, 0));
+        mcme_buffer_init(&buf);
+        deleted = true;
+        CHECK(mcme_leveldb_get(db, "write/empty", 10, &buf, &deleted));
+        CHECK(!deleted && buf.len == 0);
+        mcme_buffer_free(&buf);
+
+        /* --- Delete a key that lives in the table: the tombstone must beat
+               it, and the fixture's own log overwrite of the same key must
+               not resurrect it either. `edge/single` is exactly such a key:
+               in the table, overwritten in the fixture's log, still live. --- */
+        CHECK(mcme_leveldb_has(db, "edge/single", 11));
+        CHECK(mcme_leveldb_delete(db, "edge/single", 11));
+        mcme_buffer_init(&buf);
+        deleted = false;
+        CHECK(mcme_leveldb_get(db, "edge/single", 11, &buf, &deleted));
+        CHECK(deleted && buf.len == 0);
+        mcme_buffer_free(&buf);
+        /* has() counts a tombstone as present — the store does know the key —
+           which is the documented answer, not an accident of the merge. */
+        CHECK(mcme_leveldb_has(db, "edge/single", 11));
+
+        /* --- A batch applies as one unit, later entries newer. --- */
+        {
+            McmeLevelOp ops[3];
+            ops[0] = (McmeLevelOp){ "write/batch", 11, "one", 3, false };
+            ops[1] = (McmeLevelOp){ "write/batch", 11, "two", 3, false };
+            ops[2] = (McmeLevelOp){ "write/gone", 10, NULL, 0, false };
+            ops[2].deleted = true;
+            CHECK(mcme_leveldb_write(db, ops, 3));
+
+            mcme_buffer_init(&buf);
+            CHECK(mcme_leveldb_get(db, "write/batch", 11, &buf, &deleted));
+            CHECK(buf.len == 3 && memcmp(buf.data, "two", 3) == 0);
+            mcme_buffer_free(&buf);
+
+            mcme_buffer_init(&buf);
+            deleted = false;
+            CHECK(mcme_leveldb_get(db, "write/gone", 10, &buf, &deleted));
+            CHECK(deleted && buf.len == 0);
+            mcme_buffer_free(&buf);
+        }
+
+        /* --- Refusals: NULL key, empty batch. --- */
+        CHECK(!mcme_leveldb_put(db, NULL, 1, "v", 1));
+        McmeLevelOp none = { "x", 1, "y", 1, false };
+        CHECK(!mcme_leveldb_write(db, &none, 0));
+
+        mcme_leveldb_close(db);
+    }
+
+    /* --- Reopen read-only: everything the writable handle wrote is there,
+           which is the whole point of writing records rather than state. --- */
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open(&db, dbdir));
+
+        McmeBuffer buf;
+        mcme_buffer_init(&buf);
+        bool deleted = true;
+        CHECK(mcme_leveldb_get(db, "write/new", 9, &buf, &deleted));
+        CHECK(!deleted);
+        CHECK(buf.len == 5 && memcmp(buf.data, "world", 5) == 0);
+        mcme_buffer_free(&buf);
+
+        mcme_buffer_init(&buf);
+        CHECK(mcme_leveldb_get(db, "write/empty", 10, &buf, &deleted));
+        CHECK(!deleted && buf.len == 0);
+        mcme_buffer_free(&buf);
+
+        mcme_buffer_init(&buf);
+        deleted = false;
+        CHECK(mcme_leveldb_get(db, "write/gone", 10, &buf, &deleted));
+        CHECK(deleted);
+        mcme_buffer_free(&buf);
+
+        mcme_leveldb_close(db);
+    }
+
+    /* --- The LOCK is exclusive: a second writable handle refuses. --- */
+    {
+        McmeLevelDb *a = NULL, *b = NULL;
+        CHECK(mcme_leveldb_open_rw(&a, dbdir));
+        CHECK(!mcme_leveldb_open_rw(&b, dbdir));
+        CHECK(b == NULL);
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_leveldb_close(a);
+
+        /* And after close, the lock is gone: flock dies with the fd. */
+        CHECK(mcme_leveldb_open_rw(&b, dbdir));
+        mcme_leveldb_close(b);
+    }
+
+    remove_store(dbdir);
+    rmdir(tmp);
+}
+
+/* ========================================================================
  * Entry point
  * ======================================================================== */
 
@@ -1012,6 +1310,9 @@ int mcme_test_leveldb(void)
 
     printf("  refusals\n");
     test_refusals();
+
+    printf("  write\n");
+    test_write();
 
     test_store();
 
