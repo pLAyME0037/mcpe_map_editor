@@ -166,4 +166,26 @@ bool mcme_ldb_table_scan(McmeLdbTable *t,
                          uint8_t **keybuf, uint8_t **valbuf,
                          McmeLdbRawEntry **entries);
 
+/* One entry as handed to the writer: an internal key and its value, with the
+   pointers owned by the caller. Compaction passes its merged view in this
+   shape; keys and values are stable for the duration of the call. */
+typedef struct {
+    const uint8_t *key;      /* internal key: user key + 8-byte tag */
+    size_t         klen;
+    const uint8_t *val;
+    size_t         vlen;
+} McmeLdbTableEntry;
+
+/*
+ * Writes `entries` as one SSTable to `path`, uncompressed blocks, and returns
+ * with the file complete on disk (mcme_fs_write does the atomic rename).
+ *
+ * Entries must be in ascending internal-key order; the writer does not sort
+ * and does not check. The resulting file is readable by this directory's
+ * reader and by stock LevelDB — the latter verified against Minecraft's own
+ * binding, not assumed.
+ */
+bool mcme_ldb_table_write(const char *path,
+                          const McmeLdbTableEntry *entries, size_t n);
+
 #endif /* MCME_LEVELDB_INTERNAL_H */

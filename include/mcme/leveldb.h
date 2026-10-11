@@ -14,12 +14,15 @@
  * What is implemented, and what is deliberately not
  * ---------------------------------------------------------------------------
  *
- * READS FIRST, then log-append writes, and neither is an accident. A read-only
- * store that refuses to write cannot corrupt a user's world; a half-implemented
- * writer can. Reads were proven against the Python binding before a single
- * write existed, and the writer appends log records only — LevelDB replays a
- * log on open, so a store built that way is correct for every reader without
- * this code having to implement compaction. See decisions.md#D9.
+ * READS FIRST, then log-append writes, then compaction, and the order is not
+ * an accident. A read-only store that refuses to write cannot corrupt a user's
+ * world; a half-implemented writer can. Reads were proven against the Python
+ * binding before a single write existed, and the writer appends log records
+ * only — LevelDB replays a log on open, so a store built that way is correct
+ * for every reader without this code having to implement compaction. See
+ * decisions.md#D9. Compaction (flushing the log into a table) arrived last,
+ * because a log that only grows is a store that eventually refuses to open;
+ * see decisions.md#D11.
  *
  * Supported for reading: log records (FULL, FIRST, MIDDLE, LAST) with
  * per-fragment checksums; SSTable data blocks with prefix compression and
@@ -30,9 +33,12 @@
  *
  * Supported for writing: whole WriteBatches as single log records, put and
  * delete as one-entry batches, sequence assignment from the store's
- * high-water mark, and an exclusive LOCK while the handle is open. After each
- * write the merged view is rebuilt, so a writable handle reads its own writes
- * and nothing else in the process can observe a half-applied batch.
+ * high-water mark, an exclusive LOCK while the handle is open, and compaction
+ * — rewriting the merged view as one new level-0 table and retiring the old
+ * tables and logs. After each write the merged view is rebuilt, so a writable
+ * handle reads its own writes and nothing else in the process can observe a
+ * half-applied batch. Writes past MCME_LDB_LOG_COMPACT_AT compact first, so a
+ * long editing session does not depend on anyone remembering to flush.
  *
  * Not supported, each of which makes an affected DB fail loudly rather than
  * silently return wrong data:
@@ -48,11 +54,12 @@
  *   - comparators other than "leveldb.BytewiseComparator". The merge assumes
  *     user-key-ascending then sequence-descending, which is only the truth for
  *     the default comparator.
- *   - writing tables, compacting, or rotating the log. A log that grows past
- *     MCME_LDB_LOG_WRITE_MAX is refused with an error rather than grown into a
- *     store only this session could read. Rotation without a flush would also
- *     orphan every record in the old log, because readers trust the MANIFEST's
- *     log number; that is why there is none.
+ *   - rotating the log as a separate operation. The log is retired by
+ *     compaction instead: rotation without a flush would orphan every record
+ *     in the old log, because readers trust the MANIFEST's log number. A log
+ *     that grows past MCME_LDB_LOG_WRITE_MAX with compaction failing (disk
+ *     full, permissions) is refused with an error rather than grown into a
+ *     store only this session could read.
  *
  * ---------------------------------------------------------------------------
  * Key layout (Bedrock's, not LevelDB's)
@@ -194,5 +201,29 @@ bool mcme_leveldb_write(McmeLevelDb *db, const McmeLevelOp *ops, size_t n);
 bool mcme_leveldb_put(McmeLevelDb *db, const void *key, size_t key_len,
                       const void *val, size_t val_len);
 bool mcme_leveldb_delete(McmeLevelDb *db, const void *key, size_t key_len);
+
+/*
+ * Rewrites the store's whole merged view as one new SSTable and retires the
+ * old tables and logs: the flush that a growing log needs to stay openable.
+ *
+ * The view does not change. Every live entry goes into the new table under its
+ * original internal key and sequence number — tombstones included, so has()
+ * and get(deleted) answer the same before and after. What changes is the shape:
+ * N tables plus a log become one table, and mcme_leveldb_log_count() goes to
+ * zero until the next write.
+ *
+ * Crash-safe by ordering, not by hope: the new table is fsync'd, then the
+ * MANIFEST edit is appended and fsync'd, and only then are the old files
+ * deleted. A crash anywhere leaves a store a reader accepts — an unreferenced
+ * table before the edit, unreferenced leftovers after it — never a MANIFEST
+ * naming bytes that might not have reached the disk.
+ *
+ * Refuses a NULL or read-only handle, and a handle whose view could not be
+ * rebuilt after an earlier write (reopen it first). On success the handle's
+ * view is current; on failure before the MANIFEST edit the store is untouched,
+ * and a failure after it leaves the store consistent on disk but this handle
+ * marked broken — reopen it.
+ */
+bool mcme_leveldb_compact(McmeLevelDb *db);
 
 #endif /* MCME_LEVELDB_H */

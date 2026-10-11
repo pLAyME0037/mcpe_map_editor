@@ -67,6 +67,9 @@ static void print_usage(FILE *out)
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
         "                    put/del take the store LOCK; get does not.\n"
+        "  db compact <world>\n"
+        "                    Flush the store's log into one new table and\n"
+        "                    remove what it replaces. Takes the LOCK.\n"
         "  nbt dump <file> Print NBT as SNBT (or JSON with --json)\n"
         "                    --le            read little-endian (Bedrock)\n"
         "                    --path <dotted> print only that subtree\n"
@@ -855,7 +858,8 @@ static int cmd_chunks(int argc, char **argv)
  * ======================================================================== */
 
 /*
- * `mcme db <get|put|del> <world> <key-hex> [value-hex]`.
+ * `mcme db <get|put|del> <world> <key-hex> [value-hex]` and
+ * `mcme db compact <world>`.
  *
  * This exists so the write path is reachable from a script, per D3: anything
  * worth doing is a verb. It is deliberately raw — keys and values are hex
@@ -865,6 +869,11 @@ static int cmd_chunks(int argc, char **argv)
  *
  * get prints the value as hex, or nothing and exit 2 if the key is absent
  * (distinguishing "gone" from "broken" via mcme_last_error()).
+ *
+ * compact is the manual form of the flush mcme_leveldb_write does by itself
+ * past the compaction trigger; it exists because a script should not have to
+ * write a dummy key to flush a log, and because the observable result —
+ * one table, no logs, same view — is worth asserting from the shell.
  */
 
 static int hex_decode(const char *hex, uint8_t **out, size_t *out_len)
@@ -895,30 +904,47 @@ static int hex_decode(const char *hex, uint8_t **out, size_t *out_len)
 
 static int cmd_db(int argc, char **argv)
 {
-    if (argc < 3) {
-        mcme_set_error("db: usage: db <get|put|del> <world> <key-hex> [value-hex]");
+    if (argc < 2) {
+        mcme_set_error("db: usage: db <get|put|del> <world> <key-hex> "
+                       "[value-hex] | db compact <world>");
         return MCME_EXIT_USAGE;
     }
     const char *op = argv[0];
     const char *path = argv[1];
-    const char *key_hex = argv[2];
+
+    bool is_compact = strcmp(op, "compact") == 0;
+    if (is_compact) {
+        if (argc != 2) {
+            mcme_set_error("db: compact takes a world and nothing else");
+            return MCME_EXIT_USAGE;
+        }
+    } else {
+        if (argc < 3) {
+            mcme_set_error("db: usage: db <get|put|del> <world> <key-hex> "
+                           "[value-hex] | db compact <world>");
+            return MCME_EXIT_USAGE;
+        }
+    }
+
+    const char *key_hex = is_compact ? NULL : argv[2];
     const char *val_hex = argc > 3 ? argv[3] : NULL;
 
     bool is_get = strcmp(op, "get") == 0;
     bool is_put = strcmp(op, "put") == 0;
     bool is_del = strcmp(op, "del") == 0;
-    if (!is_get && !is_put && !is_del) {
+    if (!is_get && !is_put && !is_del && !is_compact) {
         mcme_set_error("db: unknown operation '%s'", op);
         return MCME_EXIT_USAGE;
     }
-    if ((is_put && val_hex == NULL) || (!is_put && argc > 3)) {
+    if ((!is_compact && (is_put && val_hex == NULL)) ||
+        (!is_put && !is_compact && argc > 3)) {
         mcme_set_error("db: put takes a value; get and del do not");
         return MCME_EXIT_USAGE;
     }
 
     uint8_t *key = NULL, *val = NULL;
     size_t key_len = 0, val_len = 0;
-    if (!hex_decode(key_hex, &key, &key_len)) return MCME_EXIT_USAGE;
+    if (!is_compact && !hex_decode(key_hex, &key, &key_len)) return MCME_EXIT_USAGE;
     if (val_hex != NULL && !hex_decode(val_hex, &val, &val_len)) {
         free(key);
         return MCME_EXIT_USAGE;
@@ -937,7 +963,7 @@ static int cmd_db(int argc, char **argv)
     }
 
     /* get reads through a read-only handle: no LOCK, so it works on a store
-       the game has open. put and del take the lock the game would. */
+       the game has open. put, del and compact take the lock the game would. */
     McmeLevelDb *db = NULL;
     bool opened = is_get ? mcme_leveldb_open(&db, info.db_path)
                          : mcme_leveldb_open_rw(&db, info.db_path);
@@ -948,7 +974,9 @@ static int cmd_db(int argc, char **argv)
     }
 
     int rc = MCME_OK;
-    if (is_get) {
+    if (is_compact) {
+        if (!mcme_leveldb_compact(db)) rc = MCME_EXIT_IO;
+    } else if (is_get) {
         McmeBuffer buf;
         mcme_buffer_init(&buf);
         bool deleted = false;

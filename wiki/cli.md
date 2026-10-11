@@ -212,6 +212,7 @@ line.
 mcme db get <world> <key-hex>             # print value-hex, or exit 2
 mcme db put <world> <key-hex> <value-hex>
 mcme db del <world> <key-hex>
+mcme db compact <world>                   # flush the log into one new table
 ```
 
 ```
@@ -222,12 +223,16 @@ $ mcme db del mybedrock 656467652f73696e676c65 ; echo $?
 ```
 
 `get` opens read-only and does **not** take the store's LOCK, so it works on a
-world the game has open. `put` and `del` open writable, take an exclusive
-`flock` on `LOCK` (the same lock Minecraft takes), and refuse with exit 4 if
-the store is locked. Writes append to the store's log as one WriteBatch
-record each, which is the whole of the write support: no table writing, no
-compaction, and past 32 MiB the log the write refuses rather than growing a
-store only that session could read (see [dev-log.md](dev-log.md)).
+world the game has open. `put`, `del` and `compact` open writable, take an
+exclusive `flock` on `LOCK` (the same lock Minecraft takes), and refuse with
+exit 4 if the store is locked. Writes append to the store's log as one
+WriteBatch record each; past 4 MiB of log the next write flushes everything
+into a new SSTable first (compaction, see
+[decisions.md](decisions.md)#D11), so a long session does not depend on
+anyone remembering to run `compact`. `compact` is that flush as a manual verb:
+the same view, one table, no logs. A write past 32 MiB with compaction failing
+(disk full, permissions) refuses rather than growing a store only that session
+could read.
 
 Exit codes: `0` ok, `1` usage, `2` key absent (for `get`), `4` store locked or
 unreadable.

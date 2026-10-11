@@ -1289,6 +1289,246 @@ static void test_write(void)
 }
 
 /* ========================================================================
+ * Compaction
+ *
+ * The property under test is the one the wiki entry promises: compaction
+ * changes the store's shape, never its answers. Everything compared across a
+ * compaction is copied out first, because compaction rebuilds the buffers a
+ * view's pointers live in — a borrowed pointer taken before one is exactly
+ * the mistake this test must not make.
+ * ======================================================================== */
+
+typedef struct {
+    uint8_t *key; size_t klen;
+    uint8_t *val; size_t vlen;
+    uint64_t seq;
+} OwnedEntry;
+
+static bool capture_owned(void *ud, const McmeLevelEntry *e)
+{
+    OwnedEntry **out = (OwnedEntry **)ud;
+    OwnedEntry o;
+    o.klen = e->key_len;
+    o.vlen = e->val_len;
+    o.seq = e->sequence;
+    o.key = (uint8_t *)malloc(o.klen > 0 ? o.klen : 1);
+    o.val = (uint8_t *)malloc(o.vlen > 0 ? o.vlen : 1);
+    if (o.key == NULL || o.val == NULL) {
+        free(o.key);
+        free(o.val);
+        return false;
+    }
+    memcpy(o.key, e->key, o.klen);
+    memcpy(o.val, e->val, o.vlen);
+    arrput(*out, o);
+    return true;
+}
+
+static void free_owned(OwnedEntry *a)
+{
+    for (size_t i = 0; i < (size_t)arrlen(a); ++i) {
+        free(a[i].key);
+        free(a[i].val);
+    }
+    arrfree(a);
+}
+
+/* Two views are the same store: same keys, same values, same sequences.
+   Sequence equality is not gold-plating — a compaction that renumbered
+   entries would answer the same lookups today and diverge the moment the
+   game wrote a key both copies contain. */
+static bool same_view(const OwnedEntry *a, size_t an,
+                      const OwnedEntry *b, size_t bn)
+{
+    if (an != bn) return false;
+    for (size_t i = 0; i < an; ++i) {
+        if (a[i].klen != b[i].klen || a[i].vlen != b[i].vlen) return false;
+        if (a[i].seq != b[i].seq) return false;
+        if (a[i].klen > 0 && memcmp(a[i].key, b[i].key, a[i].klen) != 0) return false;
+        if (a[i].vlen > 0 && memcmp(a[i].val, b[i].val, a[i].vlen) != 0) return false;
+    }
+    return true;
+}
+
+/* How many files in `dir` end in `suffix`. The shape a compaction promises is
+   observable from the shell: one table, no logs. */
+static size_t count_files_with(const char *dir, const char *suffix)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL) return (size_t)-1;
+
+    size_t n = 0;
+    size_t sl = strlen(suffix);
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        size_t nl = strlen(e->d_name);
+        if (nl >= sl && strcmp(e->d_name + nl - sl, suffix) == 0) n++;
+    }
+    closedir(d);
+    return n;
+}
+
+/* Reads key into buf, asserts it is a live value equal to `want`. */
+static bool expect_value(McmeLevelDb *db, const char *key, const char *want)
+{
+    McmeBuffer buf;
+    mcme_buffer_init(&buf);
+    bool deleted = true;
+    bool ok = mcme_leveldb_get(db, key, strlen(key), &buf, &deleted);
+    ok = ok && !deleted && buf.len == strlen(want) &&
+         memcmp(buf.data, want, buf.len) == 0;
+    mcme_buffer_free(&buf);
+    return ok;
+}
+
+/* Reads key into buf, asserts it is a tombstone. */
+static bool expect_deleted(McmeLevelDb *db, const char *key)
+{
+    McmeBuffer buf;
+    mcme_buffer_init(&buf);
+    bool deleted = false;
+    bool ok = mcme_leveldb_get(db, key, strlen(key), &buf, &deleted);
+    ok = ok && deleted && buf.len == 0;
+    mcme_buffer_free(&buf);
+    return ok;
+}
+
+static void test_compact(void)
+{
+    const char *src = "tests/golden/worlds/bedrock-forge/db";
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP compact tests (%s not found)\n", src);
+        return;
+    }
+
+    char tmp[] = "/tmp/opencode/mcme_ldb_compact_XXXXXX";
+    CHECK(mkdtemp(tmp) != NULL);
+    char dbdir[512];
+    snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+    CHECK(copy_store(src, dbdir));
+
+    OwnedEntry *before = NULL;   /* the view as the fixture + edits left it */
+    OwnedEntry *after1 = NULL;   /* after the first compaction */
+    OwnedEntry *after2 = NULL;   /* after a post-compaction write + compact */
+    OwnedEntry *reopen = NULL;   /* what a fresh handle sees at the end */
+
+    /* --- A read-only handle refuses to compact, and says so. --- */
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(!mcme_leveldb_compact(db));
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_leveldb_close(db);
+    }
+
+    /* --- Edit, then compact: the answers do not change, the shape does. --- */
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+
+        CHECK(mcme_leveldb_put(db, "compact/a", 9, "alpha", 5));
+        /* `edge/single` lives in the fixture's table and was overwritten in
+           its log; deleting it puts a tombstone in the log, and compaction
+           must carry that tombstone into the table rather than drop it and
+           resurrect whatever sits underneath. */
+        CHECK(mcme_leveldb_has(db, "edge/single", 11));
+        CHECK(mcme_leveldb_delete(db, "edge/single", 11));
+
+        size_t tables_before = mcme_leveldb_table_count(db);
+        CHECK(tables_before >= 1);
+        CHECK(mcme_leveldb_log_count(db) >= 1);
+
+        mcme_leveldb_iterate(db, capture_owned, &before);
+        CHECK(before != NULL && (size_t)arrlen(before) > 0);
+
+        CHECK(mcme_leveldb_compact(db));
+
+        /* The shape the wiki promises: one table, no logs, both on disk. */
+        CHECK(mcme_leveldb_table_count(db) == 1);
+        CHECK(mcme_leveldb_log_count(db) == 0);
+        CHECK(count_files_with(dbdir, ".log") == 0);
+        CHECK(count_files_with(dbdir, ".ldb") == 1);
+        CHECK(count_files_with(dbdir, ".sst") == 0);
+
+        /* The answers: byte-identical view, sequences included. */
+        mcme_leveldb_iterate(db, capture_owned, &after1);
+        CHECK(same_view(before, (size_t)arrlen(before),
+                        after1, (size_t)arrlen(after1)));
+
+        CHECK(expect_value(db, "compact/a", "alpha"));
+        CHECK(expect_deleted(db, "edge/single"));
+        CHECK(mcme_leveldb_has(db, "edge/single", 11));
+
+        mcme_leveldb_close(db);
+    }
+
+    /* --- Reopen: the compaction is in the MANIFEST, not in that handle's
+           memory. Then write again and compact again — twice has to be as
+           safe as once, because the auto-trigger will do it repeatedly. --- */
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open(&db, dbdir));
+
+        OwnedEntry *seen = NULL;
+        mcme_leveldb_iterate(db, capture_owned, &seen);
+        CHECK(same_view(after1, (size_t)arrlen(after1),
+                        seen, (size_t)arrlen(seen)));
+        free_owned(seen);
+
+        mcme_leveldb_close(db);
+
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(mcme_leveldb_put(db, "compact/b", 9, "beta", 4));
+        CHECK(mcme_leveldb_log_count(db) == 1);   /* a fresh log, lazily made */
+
+        /* Exactly one more live key than before the write... */
+        OwnedEntry *mid = NULL;
+        mcme_leveldb_iterate(db, capture_owned, &mid);
+        CHECK(mid != NULL && (size_t)arrlen(mid) == (size_t)arrlen(after1) + 1);
+
+        CHECK(mcme_leveldb_compact(db));
+        CHECK(mcme_leveldb_table_count(db) == 1);
+        CHECK(mcme_leveldb_log_count(db) == 0);
+
+        /* ...and the second compaction changed none of them. The comparison
+           is against `mid`, not against `after1` plus an offset: where a key
+           sorts is the merge's business, and the test's business is only
+           that compaction is not it. */
+        mcme_leveldb_iterate(db, capture_owned, &after2);
+        CHECK(same_view(mid, (size_t)arrlen(mid),
+                        after2, (size_t)arrlen(after2)));
+        free_owned(mid);
+        CHECK(expect_value(db, "compact/a", "alpha"));
+        CHECK(expect_value(db, "compact/b", "beta"));
+        CHECK(expect_deleted(db, "edge/single"));
+
+        mcme_leveldb_close(db);
+    }
+
+    /* --- Final reopen: everything, twice compacted, still reads back. --- */
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open(&db, dbdir));
+
+        mcme_leveldb_iterate(db, capture_owned, &reopen);
+        CHECK(same_view(after2, (size_t)arrlen(after2),
+                        reopen, (size_t)arrlen(reopen)));
+        CHECK(expect_value(db, "compact/b", "beta"));
+        CHECK(expect_deleted(db, "edge/single"));
+
+        mcme_leveldb_close(db);
+    }
+
+    free_owned(before);
+    free_owned(after1);
+    free_owned(after2);
+    free_owned(reopen);
+
+    remove_store(dbdir);
+    rmdir(tmp);
+}
+
+/* ========================================================================
  * Entry point
  * ======================================================================== */
 
@@ -1313,6 +1553,9 @@ int mcme_test_leveldb(void)
 
     printf("  write\n");
     test_write();
+
+    printf("  compact\n");
+    test_compact();
 
     test_store();
 

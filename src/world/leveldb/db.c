@@ -87,6 +87,18 @@ typedef struct {
     uint64_t       sequence;
 } LiveEntry;
 
+/* One live table as the MANIFEST describes it: its file number and the level
+   it lives at. The level is not needed to read — a reader that scans every
+   live table in sequence order gets the right answer without it — but a writer
+   that compacts must delete files at the level stock LevelDB recorded them at,
+   because recovery rejects an edit that deletes a file from the wrong level,
+   and the level is the only way to name which copy of a file number an edit
+   means. */
+typedef struct {
+    uint64_t level;
+    uint64_t number;
+} LdbTableRef;
+
 struct McmeLevelDb {
     char    *dir;
     char    *comparator;
@@ -98,6 +110,10 @@ struct McmeLevelDb {
     LiveEntry *live;         /* stb_ds: sorted, deduplicated, points into keybuf */
     size_t     table_count;
     size_t     log_count;
+
+    LdbTableRef *tables;     /* stb_ds: the MANIFEST's live set, with levels */
+    uint64_t     next_file_number; /* from the MANIFEST; compaction mints new
+                                      numbers above it and everything on disk */
 
     /* Writable-handle state. Zeroed and unused for a read-only open, which is
        still the common case: nothing outside the edit path writes, and a
@@ -141,22 +157,21 @@ static bool read_length_prefixed(const uint8_t **p, const uint8_t *end,
 }
 
 typedef struct {
-    char     **comparator;
-    uint64_t *table_numbers;   /* stb_ds */
-    uint64_t  log_number;      /* last one wins, as the MANIFEST is a sequence
-                                  of edits rather than a single document */
-    uint64_t  next_file_number;
-    uint64_t  last_sequence;
+    char         **comparator;
+    LdbTableRef   *tables;      /* stb_ds, in MANIFEST order */
+    uint64_t       log_number;  /* last one wins, as the MANIFEST is a sequence
+                                   of edits rather than a single document */
+    uint64_t       next_file_number;
+    uint64_t       last_sequence;
 } ManifestCtx;
 
 /*
  * Parses one VersionEdit record.
  *
- * Only the comparator name and the live table file numbers are kept. File
- * numbers and level assignments are otherwise not needed — a reader that scans
- * every live table in sequence-number order gets the right answer without
- * knowing which level each came from — but the record still has to be walked
- * correctly to reach the next one.
+ * Keeps the comparator name and the live table set (with levels, adding on
+ * NEW_FILE and removing on DELETED_FILE — the set is what a compaction has to
+ * know it is replacing). Everything else is walked past, because the record
+ * still has to be traversed correctly to reach the next one.
  */
 static bool parse_version_edit(const uint8_t *data, size_t len, ManifestCtx *ctx)
 {
@@ -239,13 +254,35 @@ static bool parse_version_edit(const uint8_t *data, size_t len, ManifestCtx *ctx
         }
 
         case LDB_TAG_DELETED_FILE: {
-            uint64_t a = 0, b = 0;
-            n = mcme_ldb_varint_get(p, end, &a);
-            if (n == 0) return false;
+            /* Level, then file number. Removing the file from the live set is
+               what keeps a compaction honest: the MANIFEST says the file is
+               gone, so a reader that demanded it anyway would fail to open a
+               perfectly healthy store — and a writer that ignored this would
+               resurrect a file every later edit deleted. */
+            uint64_t level = 0, number = 0;
+            n = mcme_ldb_varint_get(p, end, &level);
+            if (n == 0) {
+                mcme_set_error("leveldb: truncated deleted-file record in MANIFEST");
+                return false;
+            }
             p += n;
-            n = mcme_ldb_varint_get(p, end, &b);
-            if (n == 0) return false;
+            n = mcme_ldb_varint_get(p, end, &number);
+            if (n == 0) {
+                mcme_set_error("leveldb: truncated deleted-file record in MANIFEST");
+                return false;
+            }
             p += n;
+
+            for (size_t i = 0; i < LDB_LEN(ctx->tables); ++i) {
+                if (ctx->tables[i].number == number) {
+                    ctx->tables[i] = ctx->tables[LDB_LEN(ctx->tables) - 1];
+                    arrsetlen(ctx->tables, LDB_LEN(ctx->tables) - 1);
+                    break;
+                }
+            }
+            /* A delete naming a file no edit ever added is odd but harmless:
+               the file is not in the live set, which is the state the edit
+               asked for. */
             break;
         }
 
@@ -290,7 +327,21 @@ static bool parse_version_edit(const uint8_t *data, size_t len, ManifestCtx *ctx
             if (!read_length_prefixed(&p, end, &s, &slen)) return false;
             if (!read_length_prefixed(&p, end, &s, &slen)) return false;
 
-            arrput(ctx->table_numbers, number);
+            /* File numbers are never reused, so a number already in the set
+               can only be a re-add after a delete — replace rather than
+               duplicate, which would open the same file twice. */
+            bool seen = false;
+            for (size_t i = 0; i < LDB_LEN(ctx->tables); ++i) {
+                if (ctx->tables[i].number == number) {
+                    ctx->tables[i].level = level;
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                LdbTableRef ref = { level, number };
+                arrput(ctx->tables, ref);
+            }
             break;
         }
 
@@ -581,10 +632,11 @@ static bool finalize(McmeLevelDb *db)
  * ======================================================================== */
 
 /*
- * Reads CURRENT and the MANIFEST it names, filling in `comparator` and
- * `table_numbers`. Returns false with the error set on any real failure.
+ * Reads CURRENT and the MANIFEST it names, filling in `tables` (the live set,
+ * with levels) and the scalar state. Returns false with the error set on any
+ * real failure.
  */
-static bool read_manifest(McmeLevelDb *db, uint64_t **table_numbers)
+static bool read_manifest(McmeLevelDb *db, LdbTableRef **tables)
 {
     char path[4096];
     if (mcme_ldb_path(path, sizeof path, db->dir, "CURRENT") == NULL) {
@@ -626,12 +678,13 @@ static bool read_manifest(McmeLevelDb *db, uint64_t **table_numbers)
         if (!mcme_ldb_read_file(path, &data, &data_len, MCME_LDB_LOG_MAX)) {
             /* fall through with the error already set */
         } else {
-            ManifestCtx ctx = { &db->comparator, *table_numbers, 0, 0, 0 };
+            ManifestCtx ctx = { &db->comparator, *tables, 0, 0, 0 };
             size_t records = 0;
             ok = mcme_ldb_log_read(data, data_len, on_manifest_record, &ctx,
                                    &records);
-            *table_numbers = ctx.table_numbers;
+            *tables = ctx.tables;
             db->log_number = ctx.log_number;
+            db->next_file_number = ctx.next_file_number;
             db->last_sequence = ctx.last_sequence;
             free(data);
             if (ok && db->comparator == NULL) {
@@ -672,11 +725,11 @@ static bool load(McmeLevelDb *db)
     size_t reset = 0;
     arrsetlen(db->keybuf, reset);
     arrsetlen(db->valbuf, reset);
+    arrsetlen(db->tables, reset);
     db->table_count = 0;
     db->log_count = 0;
 
-    uint64_t *table_numbers = NULL;
-    if (!read_manifest(db, &table_numbers)) goto fail;
+    if (!read_manifest(db, &db->tables)) goto fail;
 
     /* Only the default bytewise comparator is implemented. LevelDB orders
        internal keys by user key then sequence, which is exactly what this
@@ -694,13 +747,13 @@ static bool load(McmeLevelDb *db)
     char path[4096];
 
     /* --- Tables, from the manifest's live set. --- */
-    size_t table_total = LDB_LEN(table_numbers);
+    size_t table_total = LDB_LEN(db->tables);
     for (size_t i = 0; i < table_total; ++i) {
         char name[64];
         /* File numbers are zero-padded to six digits; numbers past that are
            written without padding, so snprintf handles both. */
         snprintf(name, sizeof name, "%06llu.ldb",
-                 (unsigned long long)table_numbers[i]);
+                 (unsigned long long)db->tables[i].number);
 
         if (mcme_ldb_path(path, sizeof path, db->dir, name) == NULL) continue;
 
@@ -709,12 +762,12 @@ static bool load(McmeLevelDb *db)
             /* LevelDB calls .sst what it has not yet renamed to .ldb; both
                spellings exist in the wild for the same format. */
             snprintf(name, sizeof name, "%06llu.sst",
-                     (unsigned long long)table_numbers[i]);
+                     (unsigned long long)db->tables[i].number);
             if (mcme_ldb_path(path, sizeof path, db->dir, name) == NULL) continue;
             if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
                 mcme_set_error("leveldb: MANIFEST lists table %llu, which is "
                                "missing from '%s'",
-                               (unsigned long long)table_numbers[i], db->dir);
+                               (unsigned long long)db->tables[i].number, db->dir);
                 goto fail;
             }
         }
@@ -734,8 +787,6 @@ static bool load(McmeLevelDb *db)
             goto fail;
         }
     }
-    arrfree(table_numbers);
-    table_numbers = NULL;
 
     /* --- Logs: records not yet flushed into a table. --- */
     char **logs = NULL;
@@ -796,7 +847,9 @@ static bool load(McmeLevelDb *db)
     return true;
 
 fail:
-    arrfree(table_numbers);
+    /* The table set belongs to the handle now — it is what a later compaction
+       would delete — so a failed load leaves it cleared rather than stale. */
+    arrsetlen(db->tables, reset);
     return false;
 }
 
@@ -909,6 +962,7 @@ void mcme_leveldb_close(McmeLevelDb *db)
     arrfree(db->live);
     arrfree(db->keybuf);
     arrfree(db->valbuf);
+    arrfree(db->tables);
     free(db->comparator);
     free(db->manifest_name);
     free(db->dir);
@@ -1061,8 +1115,15 @@ const char *mcme_leveldb_comparator(const McmeLevelDb *db)
 
 /* Refuse a log past what mcme_ldb_read_file will take on reopen, so a session
    of edits cannot grow a store that only the session that wrote it can read.
-   Half the ceiling leaves room for the record being appended. */
+   Half the ceiling leaves room for the record being appended. This is a
+   backstop now, not the plan: writes compact past MCME_LDB_LOG_COMPACT_AT
+   below, so reaching here means compaction itself has been failing. */
 #define MCME_LDB_LOG_WRITE_MAX ((size_t)32u * 1024u * 1024u)
+
+/* Log size at which the next write flushes everything into a table first.
+   LevelDB's own default write buffer is 4 MiB, so a store that alternates
+   between mcme and the game sees the same shape from either side. */
+#define MCME_LDB_LOG_COMPACT_AT ((size_t)4u * 1024u * 1024u)
 
 /*
  * Opens (or creates) the log this handle appends to and positions for
@@ -1169,9 +1230,16 @@ bool mcme_leveldb_write(McmeLevelDb *db, const McmeLevelOp *ops, size_t n)
     }
 
     if (db->log_size + payload.len + 7 > MCME_LDB_LOG_WRITE_MAX) {
-        mcme_set_error("leveldb: log would exceed %u bytes; close and reopen "
-                       "the store (a future version will compact)",
-                       (unsigned)MCME_LDB_LOG_WRITE_MAX);
+        /* Reachable in two ways: a single batch bigger than the ceiling, or
+           compaction failing to shrink a log that was already large — in
+           which case mcme_last_error() still holds compaction's reason.
+           Copied out before set_error, which writes the same buffer the
+           pointer came from. */
+        char why[1024];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("leveldb: log would exceed %u bytes%s%s",
+                       (unsigned)MCME_LDB_LOG_WRITE_MAX,
+                       why[0] != '\0' ? ": " : "", why);
         mcme_buffer_free(&payload);
         return false;
     }
@@ -1179,6 +1247,25 @@ bool mcme_leveldb_write(McmeLevelDb *db, const McmeLevelOp *ops, size_t n)
     if (!open_log(db)) {
         mcme_buffer_free(&payload);
         return false;
+    }
+
+    /* Flush first when the log has grown past the trigger. Compacting before
+       the append means a failed compaction leaves the store exactly as it
+       was, with this write simply not happened — the alternative, appending
+       first, would leave a record in a log the compaction then deletes, and
+       the caller would have to be told that "failed" sometimes means
+       "landed". This runs on every write because open_log just stat'd the
+       file, so a log grown past the trigger in an earlier session is caught
+       by the first write of the next one too. */
+    if (db->log_size > MCME_LDB_LOG_COMPACT_AT) {
+        if (!mcme_leveldb_compact(db)) {
+            mcme_buffer_free(&payload);
+            return false;
+        }
+        if (!open_log(db)) {
+            mcme_buffer_free(&payload);
+            return false;
+        }
     }
 
     /* The writer resumes where the file left off, mid-block if that is where
@@ -1232,4 +1319,279 @@ bool mcme_leveldb_delete(McmeLevelDb *db, const void *key, size_t key_len)
 {
     McmeLevelOp op = { key, key_len, NULL, 0, true };
     return mcme_leveldb_write(db, &op, 1);
+}
+
+/* ========================================================================
+ * Compaction: flush everything into one new table
+ *
+ * Rewrites the whole merged view as a single new SSTable, records that in the
+ * MANIFEST, and only then removes what it replaces. This is decision D11's
+ * shape — a full rewrite rather than a level-by-level one — and it is what
+ * turns "the log grows until an error" into "the log is flushed whenever it
+ * gets large" (mcme_leveldb_write compacts past MCME_LDB_LOG_COMPACT_AT).
+ *
+ * Two properties are worth stating because the code below is ordered around
+ * them:
+ *
+ *   The view does not change. Every live entry — tombstones included — goes
+ *   into the new table under its original internal key and sequence number.
+ *   Dropping tombstones is what real LevelDB does when compacting the
+ *   bottommost level, but here it would change has() and get(deleted)
+ *   answers across a compaction, and "compaction changed what the store
+ *   says" is a bug class not worth entering for the bytes it saves. An
+ *   emptied key therefore stays deleted across compaction and reopen.
+ *
+ *   A crash at any point leaves a store some reader accepts. The order is
+ *   table (fsync'd) before MANIFEST (fsync'd) before deletion:
+ *     - crash before the MANIFEST edit: the new table is an unreferenced
+ *       file; the old tables and log are still the truth, still on disk;
+ *     - crash after it: the MANIFEST no longer names the old files, so
+ *       readers use the new table and treat the leftovers as garbage
+ *       (stock LevelDB deletes such files on its next open; mcme leaves
+ *       them alone, because its MANIFEST parsing is what decides liveness
+ *       and trusting the directory instead would be the dangerous part);
+ *     - either way no reader ever sees a MANIFEST naming a table whose
+ *       bytes might not have reached the disk — which is the one thing
+ *       that could not be undone by a later open.
+ * The fsyncs are what make those windows real; without them the MANIFEST
+ * could land ahead of the table it points at, and no later recovery can
+ * invent the missing bytes.
+ * ======================================================================== */
+
+/* Appends a length-prefixed slice (varint length, then bytes), the MANIFEST's
+   encoding for the smallest/largest keys inside a NEW_FILE record. */
+static bool append_len_prefixed(McmeBuffer *b, const void *data, size_t len)
+{
+    if (len == 0) data = "";      /* NULL + 0 is undefined, and ASan says so */
+    return mcme_ldb_varint_put(b, len) && mcme_buffer_append(b, data, len);
+}
+
+/* fsyncs a file by path. mcme_fs_write closes what it writes, so the table
+   has to be reopened to be synced — and it must be synced: the MANIFEST edit
+   below makes this file the store, and a MANIFEST that outlives the page
+   cache holding its table is a store that cannot be read back. */
+static bool fsync_path(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        mcme_set_error("leveldb: cannot reopen '%s' to sync it: %s",
+                       path, strerror(errno));
+        return false;
+    }
+    bool ok = fsync(fd) == 0;
+    if (!ok) {
+        mcme_set_error("leveldb: cannot sync '%s': %s", path, strerror(errno));
+    }
+    close(fd);
+    return ok;
+}
+
+bool mcme_leveldb_compact(McmeLevelDb *db)
+{
+    if (db == NULL) {
+        mcme_set_error("leveldb: NULL argument");
+        return false;
+    }
+    if (!db->writable) {
+        mcme_set_error("leveldb: store was opened read-only");
+        return false;
+    }
+    if (db->broken) {
+        mcme_set_error("leveldb: a previous write landed but the view could "
+                       "not be rebuilt; reopen the store before compacting");
+        return false;
+    }
+
+    /* A store with no entries and no tables has nothing to consolidate, and
+       writing an empty table plus a MANIFEST edit for it would be churn that
+       a later reader has to walk past. A log file too small to matter is not
+       a reason to skip: its records are entries, so live is not empty. */
+    size_t total = LDB_LEN(db->live);
+    if (total == 0 && LDB_LEN(db->tables) == 0) return true;
+
+    /* The entries, in the merged view's ascending internal-key order — which
+       is the order the table writer requires and does not check for. Keys
+       point into keybuf and values into valbuf, both frozen until the load()
+       at the end. */
+    McmeLdbTableEntry *entries = NULL;
+    if (total > 0) {
+        entries = (McmeLdbTableEntry *)malloc(total * sizeof *entries);
+        if (entries == NULL) {
+            mcme_set_error("leveldb: out of memory compacting %zu entries", total);
+            return false;
+        }
+        for (size_t i = 0; i < total; ++i) {
+            const LiveEntry *e = &db->live[i];
+            entries[i].key = e->key;
+            entries[i].klen = e->klen;
+            entries[i].val = value_ptr(db, e);
+            entries[i].vlen = e->vlen;
+        }
+    }
+
+    /* Fresh numbers, above everything the MANIFEST has handed out and above
+       everything on disk — an orphan left by a crashed compaction must never
+       be reused, or a later open could find two files wanting one number. */
+    uint64_t next = max_file_number(db->dir);
+    if (db->next_file_number > next) next = db->next_file_number;
+    if (next == 0) next = 1;
+    uint64_t table_number = next;
+    uint64_t log_number = next + 1;
+    uint64_t after = next + 2;
+
+    char name[64];
+    char path[4096];
+    snprintf(name, sizeof name, "%06llu.ldb", (unsigned long long)table_number);
+    bool ok = mcme_ldb_path(path, sizeof path, db->dir, name) != NULL;
+    if (ok) ok = mcme_ldb_table_write(path, entries, total);
+    free(entries);
+    if (!ok) {
+        /* A short write can leave a partial file under this number. Nothing
+           names it, so every reader ignores it; stock LevelDB would delete it
+           on its next open. */
+        return false;
+    }
+
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        mcme_set_error("leveldb: cannot stat new table '%s': %s",
+                       path, strerror(errno));
+        return false;
+    }
+    uint64_t table_size = (uint64_t)st.st_size;
+
+    if (!fsync_path(path)) return false;
+
+    /* The VersionEdit. Tag order is the record's own business — both readers
+       walk it tag by tag — so the deletions come first, then the new file,
+       then the three scalars the recovery of a log-free store depends on. */
+    McmeBuffer rec;
+    mcme_buffer_init(&rec);
+
+    for (size_t i = 0; ok && i < LDB_LEN(db->tables); ++i) {
+        ok = mcme_ldb_varint_put(&rec, LDB_TAG_DELETED_FILE) &&
+             mcme_ldb_varint_put(&rec, db->tables[i].level) &&
+             mcme_ldb_varint_put(&rec, db->tables[i].number);
+    }
+
+    /* The new file, at level 0 like every flush, with the table's smallest
+       and largest internal keys. A level-0 file may overlap anything; the
+       keys still have to be the real first and last, because stock LevelDB
+       skips a file whose range lies entirely below the lookup key, and a
+       wrong range would make keys unreachable rather than merely untidy. */
+    ok = ok &&
+         mcme_ldb_varint_put(&rec, LDB_TAG_NEW_FILE) &&
+         mcme_ldb_varint_put(&rec, 0) &&
+         mcme_ldb_varint_put(&rec, table_number) &&
+         mcme_ldb_varint_put(&rec, table_size) &&
+         append_len_prefixed(&rec, total > 0 ? db->live[0].key : NULL,
+                             total > 0 ? db->live[0].klen : 0) &&
+         append_len_prefixed(&rec, total > 0 ? db->live[total - 1].key : NULL,
+                             total > 0 ? db->live[total - 1].klen : 0);
+
+    /* last_sequence must be written here, not merely kept in memory: every
+       record this store ever had is about to stop existing as a log, so the
+       next writer's sequence floor lives or dies with this field. Reusing a
+       sequence would let an old copy of a key — now sitting in the new table
+       — sort newer than the write that replaces it, which is bug #2 of D9
+       arriving from the other direction. */
+    ok = ok &&
+         mcme_ldb_varint_put(&rec, LDB_TAG_LOG_NUMBER) &&
+         mcme_ldb_varint_put(&rec, log_number) &&
+         mcme_ldb_varint_put(&rec, LDB_TAG_NEXT_FILE) &&
+         mcme_ldb_varint_put(&rec, after) &&
+         mcme_ldb_varint_put(&rec, LDB_TAG_LAST_SEQUENCE) &&
+         mcme_ldb_varint_put(&rec, db->last_sequence);
+
+    if (ok) {
+        char mpath[4096];
+        ok = mcme_ldb_path(mpath, sizeof mpath, db->dir, db->manifest_name) != NULL;
+        if (ok) {
+            struct stat mst;
+            if (stat(mpath, &mst) != 0) {
+                mcme_set_error("leveldb: cannot stat '%s': %s",
+                               mpath, strerror(errno));
+                ok = false;
+            } else {
+                /* The MANIFEST is a log file, so an append has to continue
+                   its block structure from wherever the file currently ends —
+                   the same arithmetic mcme_leveldb_write uses for a data log. */
+                size_t block_offset = (size_t)mst.st_size % MCME_LDB_BLOCK_SIZE;
+                FILE *mf = fopen(mpath, "ab");
+                if (mf == NULL) {
+                    mcme_set_error("leveldb: cannot open '%s' for append: %s",
+                                   mpath, strerror(errno));
+                    ok = false;
+                } else {
+                    ok = mcme_ldb_log_append(mf, rec.data, rec.len, &block_offset);
+                    if (ok) ok = fflush(mf) == 0;
+                    /* Synced before anything is deleted: from here on the
+                       MANIFEST is the store, and a deletion that outlives it
+                       would remove the only copy of the data. */
+                    if (ok) ok = fsync(fileno(mf)) == 0;
+                    if (!ok && mcme_last_error()[0] == '\0') {
+                        mcme_set_error("leveldb: cannot write '%s': %s",
+                                       mpath, strerror(errno));
+                    }
+                    fclose(mf);
+                }
+            }
+        }
+    }
+    mcme_buffer_free(&rec);
+    if (!ok) return false;   /* the store is untouched: nothing was deleted */
+
+    /* Everything above is durable, so the old files are now garbage rather
+       than data. Close the log handle before unlinking its file — the fd
+       would keep a deleted file alive and its space unreclaimed. */
+    if (db->log != NULL) {
+        fflush(db->log);
+        fclose(db->log);
+        db->log = NULL;
+    }
+
+    for (size_t i = 0; i < LDB_LEN(db->tables); ++i) {
+        char old[64], oldpath[4096];
+        /* Both spellings: whichever the MANIFEST named, the file on disk is
+           one of them. ENOENT is not an error — a crashed earlier compaction
+           may already have removed it. */
+        snprintf(old, sizeof old, "%06llu.ldb",
+                 (unsigned long long)db->tables[i].number);
+        if (mcme_ldb_path(oldpath, sizeof oldpath, db->dir, old) != NULL) {
+            unlink(oldpath);
+        }
+        snprintf(old, sizeof old, "%06llu.sst",
+                 (unsigned long long)db->tables[i].number);
+        if (mcme_ldb_path(oldpath, sizeof oldpath, db->dir, old) != NULL) {
+            unlink(oldpath);
+        }
+    }
+
+    /* Every log file, not just the one this handle held: the new table was
+       built from the merged view, which already contained every record in
+       every log on disk, so all of them are fully superseded. This also
+       clears logs an earlier crash left behind. A failed unlink litters; it
+       does not corrupt — the MANIFEST no longer points at any of it. */
+    char **logs = NULL;
+    if (collect_files(db->dir, ".log", &logs)) {
+        for (size_t i = 0; i < LDB_LEN(logs); ++i) {
+            char lpath[4096];
+            if (mcme_ldb_path(lpath, sizeof lpath, db->dir, logs[i]) != NULL) {
+                unlink(lpath);
+            }
+        }
+        free_names(&logs);
+    }
+
+    db->log_number = log_number;
+    db->log_size = 0;
+    db->next_file_number = after;
+
+    if (!load(db)) {
+        /* The MANIFEST edit is on disk and durable, so a reopen sees the
+           compacted store; this handle just cannot show it. */
+        db->broken = true;
+        return false;
+    }
+    return true;
 }

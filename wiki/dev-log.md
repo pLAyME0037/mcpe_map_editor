@@ -9,7 +9,63 @@ Status vocabulary:
 
 ---
 
-## 2026-10-11 — LevelDB writes: log-append, and what rotation would have cost
+## 2026-10-11 — Compaction: the log is now flushed, not just refused
+
+### Built
+
+- A table writer (`mcme_ldb_table_write` in `table.c`): uncompressed blocks,
+  4 KiB target, restart every 16 entries with the array seeded at offset 0,
+  full-last-key index entries rather than upstream's shortest separator, an
+  empty metaindex, and the padded 48-byte footer. It writes files the
+  directory's own reader accepts, which is the only standard this tree has.
+- `mcme_leveldb_compact()`: rewrites the merged view as one new level-0
+  table, appends a VersionEdit to the MANIFEST, and removes what it replaces.
+  `mcme db compact <world>` is the CLI form (D3 again: scriptable, takes the
+  LOCK).
+- Auto-compaction in `mcme_leveldb_write()`: past 4 MiB of log
+  (`MCME_LDB_LOG_COMPACT_AT`, upstream's write-buffer default) the next write
+  compacts first, so a long editing session flushes itself and the 32 MiB
+  ceiling of D10 becomes a backstop rather than a wall.
+- The reader now applies `DELETED_FILE` records with their levels instead of
+  walking past them, and tracks `next_file_number`. Both were latent bugs the
+  compaction edit exposed: a store whose MANIFEST had ever deleted a file —
+  including any world the game itself had compacted — would make the old
+  reader demand files that were correctly gone. Writing the writer is what
+  found the reader wrong.
+
+### The shape (decisions.md#D11)
+
+Full rewrite into one level-0 table; tombstones preserved; the property under
+test is that compaction does not change the merged view, byte for byte,
+sequences included. Crash-safety is ordering — table (fsync), then MANIFEST
+edit (fsync), then deletions — so a crash at any point leaves a store a reader
+accepts: an unreferenced table before the edit, unreferenced leftovers after.
+
+### Verified against the reference, not against ourselves
+
+- The Amulet binding's full dump of the `bedrock-tables` fixture (3775 keys,
+  tables at more than one level, tombstones in both log and table) is
+  byte-identical before and after `mcme db compact` — which also proves the
+  binding accepts the MANIFEST edit and the new table, i.e. Mojang's recovery
+  reads what mcme wrote.
+- The binding then *writes* to the compacted store and mcme reads it back —
+  proving the edit's `NEXT_FILE`/`LOG_NUMBER` do not collide with the next
+  writer's minted numbers — and mcme compacts again on top of those writes,
+  which the binding then reads.
+- 300 CLI `db put`s of 16 KiB crossed the 4 MiB trigger mid-session; the log
+  was replaced by a table and the binding read all 300 values back through
+  the mixed table+log store.
+- The C selftest pins view identity, tombstone survival, repeated
+  compaction, post-compaction writes, and the one-table-no-log shape, each
+  through a reopen — the disk is the state, the handle's memory is not.
+
+### Next
+
+Chunk writing. The store layer can now be grown, shrunk and flushed by the
+code that will need all three.
+
+---
+
 
 ### Built
 

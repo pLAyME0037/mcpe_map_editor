@@ -591,3 +591,255 @@ bool mcme_ldb_table_scan(McmeLdbTable *t,
     }
     return true;
 }
+
+/* ========================================================================
+ * Table writer
+ *
+ * The mirror of everything above, and the piece that lets a log be flushed
+ * into a table so it can then be replaced — compaction rests on this
+ * producing files that this directory's reader and stock LevelDB both accept.
+ *
+ * Uncompressed blocks (type 0). Every block states its own compression in
+ * its trailer, so this is a valid table for every reader; compressing would
+ * save disk at the cost of output the golden fixtures could no longer diff
+ * against a byte-level description.
+ *
+ * Index keys are the full last key of each block rather than upstream's
+ * shortest separator. A separator is a size optimisation; the full key is
+ * always a valid separator, and there is no code here that could get the
+ * shortening subtly wrong in a way that only surfaces in someone else's
+ * index binary search.
+ * ======================================================================== */
+
+/* Upstream's constants: a 4 KiB target per data block, a restart point every
+   16 entries. Minecraft's own fork uses ~100 KiB blocks; readers accept any
+   size, and 4 KiB is what the rest of the ecosystem writes and tests. */
+#define LDB_WRITE_BLOCK_TARGET ((size_t)4096)
+#define LDB_WRITE_RESTART     16
+
+typedef struct {
+    McmeBuffer entries;      /* entry stream, prefix-compressed */
+    McmeBuffer restarts;     /* uint32 LE offsets into `entries` */
+    uint32_t   count;        /* entries since the last restart */
+    bool       has_prev;     /* an entry has been added since init */
+} LdbBlockBuilder;
+
+static void block_builder_init(LdbBlockBuilder *b)
+{
+    mcme_buffer_init(&b->entries);
+    mcme_buffer_init(&b->restarts);
+    b->count = 0;
+    b->has_prev = false;
+
+    /* Upstream seeds the restart array with offset 0, so even an empty block
+       carries one restart and block_is_wellformed() — which rejects a zero
+       restart count — accepts it. That matters for the metaindex, which a
+       filterless table writes empty. */
+    static const uint8_t zero[4] = { 0, 0, 0, 0 };
+    mcme_buffer_append(&b->restarts, zero, 4);
+}
+
+static void block_builder_free(LdbBlockBuilder *b)
+{
+    mcme_buffer_free(&b->entries);
+    mcme_buffer_free(&b->restarts);
+}
+
+/*
+ * Adds one entry. `prev` is the preceding key in the same block, or NULL for
+ * the block's first entry — the shared prefix is measured against it, and a
+ * restart entry always stores its whole key so a seek can land on it without
+ * reconstructing anything.
+ */
+static bool block_builder_add(LdbBlockBuilder *b,
+                              const uint8_t *prev, size_t prev_len,
+                              const uint8_t *key, size_t klen,
+                              const uint8_t *val, size_t vlen)
+{
+    size_t shared = 0;
+    if (b->count >= LDB_WRITE_RESTART) {
+        uint32_t off = (uint32_t)b->entries.len;
+        uint8_t le[4] = { (uint8_t)off, (uint8_t)(off >> 8),
+                          (uint8_t)(off >> 16), (uint8_t)(off >> 24) };
+        if (!mcme_buffer_append(&b->restarts, le, 4)) return false;
+        b->count = 0;
+    } else if (b->has_prev && prev != NULL) {
+        size_t n = prev_len < klen ? prev_len : klen;
+        while (shared < n && prev[shared] == key[shared]) shared++;
+    }
+
+    if (!mcme_ldb_varint_put(&b->entries, shared) ||
+        !mcme_ldb_varint_put(&b->entries, klen - shared) ||
+        !mcme_ldb_varint_put(&b->entries, vlen) ||
+        !mcme_buffer_append(&b->entries, key + shared, klen - shared) ||
+        !mcme_buffer_append(&b->entries, val, vlen)) {
+        return false;
+    }
+
+    b->count++;
+    b->has_prev = true;
+    return true;
+}
+
+/*
+ * Appends the finished block to `out` and reports the handle size a caller
+ * must record: the contents only. The five-byte trailer follows and is
+ * excluded — bug #2 in decisions.md#D9, now written rather than only read.
+ */
+static bool block_builder_finish(LdbBlockBuilder *b, McmeBuffer *out,
+                                 size_t *out_size)
+{
+    size_t start = out->len;
+
+    if (!mcme_buffer_append(out, b->entries.data, b->entries.len) ||
+        !mcme_buffer_append(out, b->restarts.data, b->restarts.len)) {
+        return false;
+    }
+
+    uint32_t nr = (uint32_t)(b->restarts.len / 4);
+    uint8_t le[4] = { (uint8_t)nr, (uint8_t)(nr >> 8),
+                      (uint8_t)(nr >> 16), (uint8_t)(nr >> 24) };
+    if (!mcme_buffer_append(out, le, 4)) return false;
+
+    size_t size = out->len - start;
+
+    /* Trailer: type byte, then the masked CRC32C over contents AND type —
+       bug #3 from D9: the checksum covers what is on disk, not what it
+       decompresses to. read_block() verifies exactly this. */
+    uint8_t type = LDB_BLOCK_NO_COMPRESSION;
+    uint32_t crc = mcme_ldb_crc32c(0, out->data + start, size);
+    crc = mcme_ldb_crc32c(crc, &type, 1);
+    crc = mcme_ldb_mask_crc(crc);
+    uint8_t trailer[LDB_BLOCK_TRAILER] = {
+        type, (uint8_t)crc, (uint8_t)(crc >> 8),
+        (uint8_t)(crc >> 16), (uint8_t)(crc >> 24)
+    };
+    if (!mcme_buffer_append(out, trailer, sizeof trailer)) return false;
+
+    *out_size = size;
+    return true;
+}
+
+/* One index-block entry: the last key of a data block and its handle. */
+typedef struct {
+    const uint8_t *key;      /* points into the caller's entry array */
+    size_t         klen;
+    size_t         off, size;
+} LdbIndexItem;
+
+bool mcme_ldb_table_write(const char *path,
+                          const McmeLdbTableEntry *entries, size_t n)
+{
+    if (path == NULL || (entries == NULL && n > 0)) {
+        mcme_set_error("leveldb: NULL argument writing a table");
+        return false;
+    }
+
+    McmeBuffer file;
+    mcme_buffer_init(&file);
+
+    LdbBlockBuilder block;
+    block_builder_init(&block);
+
+    LdbIndexItem *items = NULL;      /* stb_ds */
+    bool ok = true;
+
+    for (size_t i = 0; ok && i < n; ++i) {
+        const uint8_t *prev = (i > 0) ? entries[i - 1].key : NULL;
+        size_t prev_len = (i > 0) ? entries[i - 1].klen : 0;
+
+        ok = block_builder_add(&block, prev, prev_len,
+                               entries[i].key, entries[i].klen,
+                               entries[i].val, entries[i].vlen);
+        if (!ok) break;
+
+        if (block.entries.len < LDB_WRITE_BLOCK_TARGET) continue;
+
+        LdbIndexItem it;
+        it.key = entries[i].key;     /* caller's storage outlives this call */
+        it.klen = entries[i].klen;
+        it.off = file.len;
+        ok = block_builder_finish(&block, &file, &it.size);
+        if (!ok) break;
+        arrput(items, it);
+        block_builder_free(&block);
+        block_builder_init(&block);
+    }
+
+    /* The trailing half-full block, if any. */
+    if (ok && block.has_prev) {
+        LdbIndexItem it;
+        it.key = entries[n - 1].key;
+        it.klen = entries[n - 1].klen;
+        it.off = file.len;
+        ok = block_builder_finish(&block, &file, &it.size);
+        if (ok) arrput(items, it);
+    }
+
+    /* Metaindex: an empty block. No filter is written, so none is claimed —
+       table_check_meta() walks this and finds nothing to reject. */
+    LdbBlockBuilder meta;
+    block_builder_init(&meta);
+    size_t meta_off = file.len, meta_size = 0;
+    if (ok) ok = block_builder_finish(&meta, &file, &meta_size);
+    block_builder_free(&meta);
+
+    /* Index: one entry per data block, key = the block's last internal key,
+       value = its handle as two varints (offset, contents size). Walking it
+       in order walks the table's keys in order, which is what the reader's
+       scan and stock LevelDB's seeks both rely on. */
+    LdbBlockBuilder index;
+    block_builder_init(&index);
+    size_t index_off = file.len, index_size = 0;
+    for (size_t i = 0; ok && i < (size_t)arrlen(items); ++i) {
+        uint8_t handle[20];
+        size_t hn = mcme_ldb_varint_encode(items[i].off, handle, sizeof handle);
+        size_t k = hn == 0 ? 0
+                 : mcme_ldb_varint_encode(items[i].size, handle + hn,
+                                          sizeof handle - hn);
+        if (hn == 0 || k == 0) { ok = false; break; }
+        hn += k;
+
+        const uint8_t *prev = (i > 0) ? items[i - 1].key : NULL;
+        size_t prev_len = (i > 0) ? items[i - 1].klen : 0;
+        ok = block_builder_add(&index, prev, prev_len,
+                               items[i].key, items[i].klen, handle, hn);
+    }
+    if (ok) ok = block_builder_finish(&index, &file, &index_size);
+    block_builder_free(&index);
+
+    /* Footer: both handles, zero-padded to 40 bytes, then the magic. The
+       reader checks the magic first — the quickest proof the file is a
+       table at all. */
+    if (ok) {
+        McmeBuffer footer;
+        mcme_buffer_init(&footer);
+        ok = mcme_ldb_varint_put(&footer, meta_off) &&
+             mcme_ldb_varint_put(&footer, meta_size) &&
+             mcme_ldb_varint_put(&footer, index_off) &&
+             mcme_ldb_varint_put(&footer, index_size);
+        while (ok && footer.len < LDB_FOOTER_SIZE - 8) {
+            ok = mcme_buffer_append_u8(&footer, 0);
+        }
+        for (int i = 0; ok && i < 8; ++i) {
+            ok = mcme_buffer_append_u8(&footer,
+                                       (uint8_t)((MCME_LDB_MAGIC >> (i * 8)) & 0xff));
+        }
+        if (ok) ok = mcme_buffer_append(&file, footer.data, footer.len);
+        mcme_buffer_free(&footer);
+    }
+
+    /* The file appears under its final name as soon as this returns, and the
+       MANIFEST edit that makes it live is the caller's job — which happens
+       only after this succeeded. A crash mid-write therefore leaves a
+       half-built table nothing trusts: readers open exactly the files the
+       MANIFEST lists, and this one is not listed yet. A temporary-plus-rename
+       would defend against a reader that scanned the directory for table
+       files instead; there is no such reader here to defend against. */
+    if (ok) ok = mcme_fs_write(path, file.data, file.len);
+
+    block_builder_free(&block);
+    arrfree(items);
+    mcme_buffer_free(&file);
+    return ok;
+}

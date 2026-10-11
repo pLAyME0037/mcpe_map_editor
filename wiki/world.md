@@ -105,12 +105,19 @@ found and fails, rather than returning bytes that are not NBT.
 
 ## Bedrock LevelDB
 
-The store is read and, through a writable handle, appended to.
+The store is read and, through a writable handle, appended to — and flushed.
 `include/mcme/leveldb.h` opens the `db/` directory and enumerates every live
 key, merging log records, SSTables and the MANIFEST's live set by internal
 key. Details of the format and of the four places it diverges from upstream
 LevelDB are in `decisions.md#D9`; what follows is the key layout the chunk
 layer will build on.
+
+A writable handle also compacts: past 4 MiB of log the next write rewrites the
+merged view as one new level-0 SSTable, records the swap in the MANIFEST, and
+removes the old tables and logs — the same operation `mcme db compact` runs by
+hand. The view is preserved exactly, tombstones included, so compaction never
+changes what a lookup answers; it only changes the store's shape. The details
+and the crash-ordering argument are in `decisions.md#D11`.
 
 ```
 x (4 LE)  z (4 LE)  [dimension (4 LE)]  tag (1 byte)  [subchunk index]

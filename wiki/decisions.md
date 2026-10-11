@@ -317,3 +317,80 @@ second merge implementation.
 **Reverses if:** table writing lands, at which point rotation becomes safe and
 the ceiling can go. The `mcme_leveldb.h` surface is where that swap belongs,
 per D9.
+
+---
+
+## D11 — Compaction: full rewrite into one level-0 table
+
+**Chosen.** Writing SSTables exists now, and compaction is what uses it: the
+whole merged view is rewritten as one new level-0 table, the MANIFEST is
+edited to point at it and delete the old tables, and only then are the old
+tables and logs removed. `mcme_leveldb_compact()` is the verb;
+`mcme_leveldb_write()` calls it itself once the log passes 4 MiB
+(`MCME_LDB_LOG_COMPACT_AT`), mirroring upstream's default write buffer.
+`mcme db compact <world>` is the CLI form. This supersedes D10's "not
+supported" list and satisfies its reversal condition; D10 stays as written.
+
+**The view does not change.** Every live entry goes into the new table under
+its original internal key and sequence number, tombstones included. Dropping
+tombstones is what upstream does at the bottommost level, but here it would
+change `has()` and `get(deleted)` across a compaction — and a key emptied by
+an edit must stay emptied across compaction and reopen. Preserving everything
+also makes the property testable: compaction is correct exactly when the
+merged view before and after is byte-identical, sequences included.
+
+**Why one level-0 table and not upstream's leveled scheme.** The sizes at
+stake are a single user's world and a store mcme already holds entirely in
+memory to merge it. A leveled compaction needs per-level overlap tracking,
+compaction pointers and picked-file logic — several hundred lines whose
+correctness shows up as data loss in a rare path — to optimize rewrite cost
+on a store that is rewritten whole in well under a second. One table is also
+one file to reason about in the crash story below. The cost is real and
+accepted: every compaction rewrites every byte, so a store edited in one
+region repeatedly pays full rewrite each time. When that hurts, the level
+machinery can be added behind the same verb.
+
+**Index keys are the full last key of each block**, not upstream's shortest
+separator. A separator is a size optimization; the full key is always a
+valid separator, and no code here could get the shortening subtly wrong in a
+way that only surfaces in someone else's index binary search. Blocks are
+uncompressed (type 0), 4 KiB target, restart every 16 entries with the
+restart array seeded at offset 0 — the layout the existing reader already
+proves it can read.
+
+**Crash-safety is ordering, not hope.** New table (fsync'd) → MANIFEST edit
+appended (fsync'd) → old files deleted. A crash before the edit leaves an
+unreferenced table and the old store intact; a crash after it leaves
+unreferenced leftovers the MANIFEST no longer names. What never happens is a
+MANIFEST naming bytes that might not have reached the disk. The fsyncs are
+what make those windows real: without them the MANIFEST could land ahead of
+the table it points at, and no later recovery can invent the missing bytes.
+
+**The MANIFEST edit carries each old table's real level.** Recovery rejects
+a `DELETED_FILE` whose level does not match where the file was added, so the
+reader now tracks `(level, number)` pairs and applies deletions — which also
+fixes reading any store that has ever been compacted by the game, since
+`DELETED_FILE` records were previously walked past and their files demanded
+from disk.
+
+**Rejected.**
+- *Leveled compaction as upstream does it*: see the cost argument above.
+- *Dropping tombstones at the bottom level*: changes observable answers
+  across compaction for bytes that fit in memory anyway.
+- *Rotation without a flush*: D10's orphaning argument, unchanged — the log
+  is retired by compaction, never renamed.
+- *Writing the new MANIFEST rather than appending an edit*: a fresh MANIFEST
+  must restate the whole version; an appended edit is smaller, is what the
+  log-reader already handles, and cannot lose the old state by being torn
+  mid-write.
+
+**Cost accepted.** Full rewrites, and MANIFEST growth of one edit (tens of
+bytes) per compaction. Both are invisible at these sizes.
+
+**Verified against the reference, not against ourselves.** The binding that
+generates the golden fixtures reads a store `mcme db compact` produced with a
+byte-identical 3775-key dump, writes to that store afterwards (which fails
+if the edit's file numbers collide with what the next writer mints), and
+reads a store mcme compacted again on top of those writes. The C selftest
+pins the view-identity property, tombstone survival, repeated compaction,
+post-compaction writes, and the one-table-no-log shape, all through reopen.
