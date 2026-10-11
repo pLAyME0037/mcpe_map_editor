@@ -47,10 +47,11 @@
  * A layer count of 0 (version 8/9) is a legal "this subchunk is all air"
  * marker and decodes to zero layers.
  *
- * The payload reaching this module is already decompressed: zlib / raw LZ4
- * framing is the store layer's business (see world.md), and keeping that
- * boundary here would make it impossible to decode a payload out of the
- * middle of a dump.
+ * The payload reaching this module is the store value verbatim:
+ * chunk payload values are stored uncompressed (the fork's
+ * compression lives inside the database's table blocks, not in
+ * the values — see world.md), so there is no framing to strip
+ * here.
  *
  * Strictness is deliberate. Everything is bounds-checked, and anything this
  * decoder does not fully understand — legacy versions, unknown widths,

@@ -61,6 +61,24 @@ typedef struct {
  */
 bool mcme_bedrock_key_parse(const uint8_t *key, size_t len, McmeBedrockKey *out);
 
+/*
+ * Builds one chunk key — the inverse of mcme_bedrock_key_parse.
+ *
+ * The dimension is written only when nonzero, because that is what
+ * the game does: a zero dimension is omitted, never stored as four
+ * zero bytes. `has_index` appends the signed subchunk Y byte, which
+ * only the two subchunk prefixes carry; asking for one on any other
+ * tag is refused, because no other record has a byte to spend.
+ *
+ * On success `*len` is the length written (9, 10, 13 or 14) and the
+ * bytes are in `out`. Returns false, with mcme_last_error() saying
+ * why, when the arguments are NULL, the tag cannot carry an index,
+ * or `cap` is too small to hold the key.
+ */
+bool mcme_bedrock_key_build(uint8_t *out, size_t cap, size_t *len,
+                                  int32_t x, int32_t z, int32_t dimension,
+                                  uint8_t tag, bool has_index, int8_t index);
+
 /* Short name for a tag byte: "subchunk", "subchunk-old", "version", "biome".
    Returns NULL for a tag this build does not know, which callers should print
    as a hex value rather than hide — an unrecognised tag in a store is exactly

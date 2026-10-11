@@ -463,6 +463,78 @@ static void test_bedrock_keys(void)
     CHECK(strcmp(mcme_bedrock_tag_name(MCME_BEDROCK_TAG_CHUNK_VERSION),
                  "version") == 0);
     CHECK(mcme_bedrock_tag_name(0x35) == NULL);
+
+    /* --- The builder. Checked against hand-written bytes, not
+           through the parser, so a builder bug cannot hide inside
+           a parse that shares it. --- */
+    {
+        size_t n = 0;
+        static const uint8_t want[] = {
+            0xff, 0xff, 0xff, 0xff,   /* x = -1 */
+            0x02, 0x00, 0x00, 0x00,   /* z =  2 */
+            0x2f,                     /* 1.18+ subchunk prefix */
+            0xfc,                     /* Y index -4 */
+        };
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &n,
+                                         -1, 2, 0,
+                                         MCME_BEDROCK_TAG_SUBCHUNK,
+                                         true, -4));
+        CHECK(n == sizeof want);
+        CHECK(memcmp(key, want, sizeof want) == 0);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(k.is_chunk && !k.has_dimension && k.dimension == 0);
+        CHECK(k.x == -1 && k.z == 2 && k.tag == MCME_BEDROCK_TAG_SUBCHUNK);
+    }
+
+    /* A nonzero dimension keeps its four bytes; a zero one is
+       omitted, never written as four zeros. */
+    {
+        size_t n = 0;
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &n,
+                                         0, 0, 1,
+                                         MCME_BEDROCK_TAG_CHUNK_VERSION,
+                                         false, 0));
+        CHECK(n == 13);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(k.has_dimension && k.dimension == 1);
+        CHECK(k.tag == MCME_BEDROCK_TAG_CHUNK_VERSION);
+
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &n,
+                                         0, 0, 0,
+                                         MCME_BEDROCK_TAG_CHUNK_VERSION,
+                                         false, 0));
+        CHECK(n == 9);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(!k.has_dimension);
+    }
+
+    /* An exact-fit buffer holds the key; a shorter one refuses.
+       And an index byte on a record that has none — the version
+       record, say — is refused before anything is written. */
+    mcme_clear_error();
+    {
+        uint8_t exact[10];
+        size_t n = 0;
+        CHECK(mcme_bedrock_key_build(exact, sizeof exact, &n,
+                                         0, 0, 0,
+                                         MCME_BEDROCK_TAG_SUBCHUNK,
+                                         true, 0));
+        CHECK(n == sizeof exact);
+
+        CHECK(!mcme_bedrock_key_build(key, sizeof key, &n,
+                                          0, 0, 0,
+                                          MCME_BEDROCK_TAG_CHUNK_VERSION,
+                                          true, 0));
+        CHECK(!mcme_bedrock_key_build(key, 8, &n,
+                                          0, 0, 0,
+                                          MCME_BEDROCK_TAG_SUBCHUNK,
+                                          true, 0));
+        CHECK(!mcme_bedrock_key_build(NULL, sizeof key, &n,
+                                          0, 0, 0,
+                                          MCME_BEDROCK_TAG_SUBCHUNK,
+                                          false, 0));
+        CHECK(mcme_last_error()[0] != '\0');
+    }
 }
 
 /* ========================================================================

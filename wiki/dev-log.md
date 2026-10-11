@@ -9,6 +9,51 @@ Status vocabulary:
 
 ---
 
+## 2026-10-11 — Chunk keys: the builder, and a wiki correction
+
+### Built
+
+- `mcme_bedrock_key_build()` (`src/world/bedrock_keys.c`):
+  the inverse of the key parser. Dimension written only when
+  nonzero — the game omits a zero dimension, never stores four
+  zero bytes. The signed Y index byte only on the two subchunk
+  prefixes; any other tag with an index is refused, because no
+  other record has a byte to spend. The selftest checks the
+  built bytes against hand-written arrays, not through the
+  parser, so a builder bug cannot hide inside a parse that
+  shares it; the parser's own cases keep building their keys
+  with the test-local builder, as before.
+
+### Corrected
+
+- world.md claimed chunk payload values are zlib, or raw LZ4
+  block from 1.18.2 on. They are stored uncompressed. Every
+  implementation this tree is validated against hands the value
+  straight to the subchunk parser — amulet-core and
+  mcbe-leveldb decompress nothing — and amulet-leveldb, built
+  from Minecraft's own LevelDB fork, stores `put` values byte
+  for byte. The fork's compression lives inside the database
+  files: table blocks, bare DEFLATE type 4, which table.c
+  already reads. compress.h and bedrock_chunk.h corrected to
+  match. The write path is being built on this fact, so it had
+  to be right first.
+
+### Process lesson
+
+- amulet-leveldb's `LevelDB()` constructor compacts on open:
+  probing a golden store directly rewrote it (new MANIFEST, new
+  table, retired log). Golden stores are opened read-only or
+  copied to /tmp first — the fixture discipline the store tests
+  follow, which the probe skipped.
+
+### Next
+
+The first editing verb: set one block — read a subchunk,
+decode, find-or-add the palette entry, set the index, re-encode,
+write the value back.
+
+---
+
 ## 2026-10-11 — Subchunk codec: encode now inverts decode, byte for byte
 
 ### Built

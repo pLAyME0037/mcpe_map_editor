@@ -131,17 +131,23 @@ one. `src/world/bedrock_keys.c` holds the tag set and the key decoder;
 `mcme info` and `mcme chunks` count distinct marked coordinates through it
 (see [cli.md](cli.md)).
 
-Compression inside chunk *payloads* (as opposed to inside table blocks) is
-zlib, or raw LZ4 block from 1.18.2 on. The LZ4 *block* format has no header,
-which is why `mcme_compression_detectable` returns false for it and callers
-must name the codec explicitly. Table blocks are a separate matter: they are
-bare DEFLATE, labelled type 4, which is Minecraft's own addition to the format.
+Chunk *payload* values are stored **uncompressed** — the subchunk
+bytes go into the LevelDB value verbatim. This was long recorded
+here as zlib, or raw LZ4 block from 1.18.2 on, and every
+implementation this tree is validated against disproves it:
+amulet-core and mcbe-leveldb both hand the value straight to the
+subchunk parser with no decompression anywhere in the path, and
+amulet-leveldb — built from Minecraft's own LevelDB fork — stores
+`put` values byte for byte. The fork's compression lives *inside
+the database files*: table blocks are bare DEFLATE, labelled type
+4, which is Minecraft's own addition to the format and which
+`src/world/leveldb/table.c` reads.
 
 ### Subchunk payloads
 
 `include/mcme/bedrock_chunk.h`, `src/world/bedrock_chunk.c`. The value under
-a subchunk key, **after** decompression, is a small binary wrapper around one
-or more *paletted storage* layers:
+a subchunk key **is** a small binary wrapper around one or more
+*paletted storage* layers:
 
 ```
 byte 0        subchunk version: 1, 8 or 9 (0-7 are the legacy pre-palette

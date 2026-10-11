@@ -47,6 +47,55 @@ bool mcme_bedrock_key_parse(const uint8_t *key, size_t len, McmeBedrockKey *out)
     return true;
 }
 
+/* Writes one little-endian int32, the mirror of read_le32: the build
+   machine is not guaranteed to be little-endian either. */
+static void write_le32(uint8_t *p, int32_t v)
+{
+    uint32_t u = (uint32_t)v;
+    p[0] = (uint8_t)u;
+    p[1] = (uint8_t)(u >> 8);
+    p[2] = (uint8_t)(u >> 16);
+    p[3] = (uint8_t)(u >> 24);
+}
+
+bool mcme_bedrock_key_build(uint8_t *out, size_t cap, size_t *len,
+                                  int32_t x, int32_t z, int32_t dimension,
+                                  uint8_t tag, bool has_index, int8_t index)
+{
+    if (out == NULL || len == NULL) {
+        mcme_set_error("bedrock key: null argument");
+        return false;
+    }
+    if (has_index && tag != MCME_BEDROCK_TAG_SUBCHUNK
+                 && tag != MCME_BEDROCK_TAG_SUBCHUNK_OLD) {
+        mcme_set_error("bedrock key: tag 0x%02x carries no subchunk "
+                       "Y index", tag);
+        return false;
+    }
+
+    size_t need = 8 + (dimension != 0 ? 4 : 0) + 1 + (has_index ? 1 : 0);
+    if (cap < need) {
+        mcme_set_error("bedrock key: %zu bytes needed, buffer holds %zu",
+                       need, cap);
+        return false;
+    }
+
+    size_t pos = 0;
+    write_le32(out + pos, x);
+    pos += 4;
+    write_le32(out + pos, z);
+    pos += 4;
+    if (dimension != 0) {
+        write_le32(out + pos, dimension);
+        pos += 4;
+    }
+    out[pos++] = tag;
+    if (has_index) out[pos++] = (uint8_t)index;
+
+    *len = pos;
+    return true;
+}
+
 const char *mcme_bedrock_tag_name(uint8_t tag)
 {
     switch (tag) {

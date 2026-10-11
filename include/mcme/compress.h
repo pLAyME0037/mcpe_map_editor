@@ -9,7 +9,11 @@
  *                                          chunk header. See wiki/world.md.
  *   Java level.dat  gzip
  *   Bedrock level.dat gzip
- *   Bedrock subchunk zlib, or raw LZ4 block from 1.18.2 on. Very old worlds
+ *   Bedrock subchunk values are stored uncompressed; the fork's
+ *                  compression lives inside the database files
+ *                  (table blocks, bare DEFLATE type 4). LZ4 block
+ *                  is implemented for completeness — no format this
+ *                  tree reads writes it today. Very old worlds
  *                  used snappy; not implemented yet, see below.
  *
  * This header is the ONLY place in mcme allowed to know about zlib or lz4.
