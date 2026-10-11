@@ -178,10 +178,14 @@ stored and bare-DEFLATE. The generator reads its own output back with the
 reference library and refuses to dump golden data unless the real library
 accepts the forgery.
 
-The chunk coordinates in the fixture are chosen deliberately: `(0,0)`, `(1,0)`,
-`(0,1)`, `(31,31)` and `(-1,-1)`. They span two region files and put a chunk in
-the last slot of each, so both the sharding rule and the slot arithmetic are
-exercised rather than trivially satisfied.
+Its keys are designed for the chunk inventory rather than for realism: nine
+chunks across three dimensions (overworld, nether, end), several marker keys
+per chunk, negative coordinates in the last slot of a region, and two chunks
+written only under tag 0x2f — the subchunk prefix Amulet 0.10.64 does not
+know. Amulet counts 7 chunks in it; mcme counts 9. Both numbers are pinned in
+the golden dump's header, and `src/world/selftest.c` asserts mcme's against
+the store. That pair exists because "the editor sees an empty world" and "the
+world is empty" must be distinguishable without reading the format spec.
 
 For each chunk, `src/world/selftest.c` asserts the same thing Phase 2 did for
 NBT documents: parse the payload, re-serialise it, and require the bytes to
@@ -196,9 +200,14 @@ venv/bin/python tools/ref_worlds.py    --out tests/golden/worlds
 venv/bin/python tools/ref_region.py    --world tests/golden/worlds/java --out tests/golden/world
 python3         tools/ref_compress.py  --out tests/golden/compress
 venv/bin/python tools/ref_leveldb_compact.py   # bedrock-tables store
-venv/bin/python tools/ref_leveldb_table.py     # bedrock-forge store (forged)
+venv/bin/python tools/ref_leveldb_table.py \
+    --batch-out tests/golden/leveldb/bedrock-forge-batch.txt   # bedrock-forge (forged)
 venv/bin/python tools/ref_leveldb.py --batch-out tests/golden/leveldb/bedrock-batch.txt
 ```
+
+Note `ref_leveldb_table.py`'s `--batch-out` default is empty: without it the
+store and its live dump are regenerated but the raw-log dump is not, and a
+stale batch file describes tombstones the store no longer has.
 
 Tests skip rather than fail when the golden data is absent, so `mcme selftest`
 stays runnable from any directory.

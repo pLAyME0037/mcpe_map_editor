@@ -66,9 +66,12 @@ typedef struct {
     size_t   region_files;
     size_t   chunks;
 
-    /* Bedrock inventory. db_keys stays 0 until the LevelDB layer lands; the
-       store is only detected, not opened, here. */
+    /* Bedrock inventory. `db_path` is the db/ directory itself, which is what
+       mcme_leveldb_open expects — not the world folder above it, which is the
+       mistake callers make most often and which this module has already
+       resolved so they do not have to. NULL when there is no store. */
     bool     has_db;
+    char    *db_path;
     bool     has_level_dat;
 } McmeWorldInfo;
 

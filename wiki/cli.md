@@ -159,18 +159,55 @@ Fields vary by edition and only appear when present. Java reports
 truncated to a plausible-looking depth. `leveldat:` reports how the file was
 framed, which is the most useful clue when a world is mis-detected.
 
-For Bedrock, chunk inventory is **not** printed yet: the LevelDB reader is not
-built, and a `chunks: 0` for a world that has chunks would be worse than saying
-so.
+For Bedrock, chunk inventory comes from the LevelDB store: `keys:` is every
+live key, `chunks:` is the distinct (dimension, x, z) that any chunk-marker key
+marks. Several markers can address one chunk, so the two numbers differ and
+neither is derivable from the other. A store that cannot be opened prints
+`database: present, unreadable: <reason>` rather than a chunk count of zero —
+zero would say the world is empty, which is the one thing that is not known.
+
+### `mcme chunks`
+
+What chunks a world contains. Counts distinct chunk coordinates; for Bedrock a
+chunk counts once no matter how many marker keys address it, and the count is
+grouped by dimension because a store mixes dimensions in one flat keyspace.
+
+```
+mcme chunks <world>            # text summary, per-dimension breakdown
+mcme chunks <world> --count    # one number and nothing else
+mcme --json chunks <world>     # path, format, keys, chunks_by_dimension
+```
+
+```
+$ mcme chunks mybedrock
+format:   bedrock (leveldb)
+keys:     23
+chunks:   9
+by dimension:
+  overworld  5
+  nether     2
+  end        2
+```
+
+`--count` prints a bare number so `mcme chunks w --count | xargs ...` needs no
+parsing. Under `--json` the number is a field instead; the two are not printed
+together.
+
+Exit codes: `0` counted, `1` usage, `2` not a world, `4` store present but
+unreadable.
+
+Chunk markers are the subchunk prefix in both spellings the game has used
+(0x2c pre-1.18, 0x2f after) and the chunk-version record (0x76). Tags that
+ride along with a chunk — 0x2d biome/heightmap — are not markers and are never
+counted.
 
 ### Reserved, not yet implemented
 
-These parse and then exit `MCME_EXIT_NOT_IMPLEMENTED`. They exist so the surface
-is settled early and tests can assert the gap.
+Parses and then exits `MCME_EXIT_NOT_IMPLEMENTED`. It exists so the surface is
+settled early and tests can assert the gap.
 
 ```
 mcme convert <in> <out> --to <platform>/<version>   # Phase 4
-mcme chunks <world> --count                         # needs the LevelDB reader
 ```
 
 ## Writing agent-friendly commands

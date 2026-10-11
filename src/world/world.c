@@ -329,6 +329,7 @@ void mcme_world_info_free(McmeWorldInfo *info)
     free(info->path);
     free(info->name);
     free(info->version);
+    free(info->db_path);
     memset(info, 0, sizeof *info);
 }
 
@@ -374,6 +375,18 @@ bool mcme_world_probe(McmeWorldInfo *out, const char *path)
         has_session_lock = path_is_file(marker);
     }
     out->has_db = has_db;
+    if (has_db) {
+        /* Re-join rather than reuse `marker`, which the session.lock probe
+           above has already overwritten. */
+        if (join2(marker, sizeof marker, path, "db") != NULL) {
+            out->db_path = strdup(marker);
+            if (out->db_path == NULL) {
+                mcme_set_error("world: out of memory");
+                mcme_world_info_free(out);
+                return false;
+            }
+        }
+    }
     if (join2(level_dat, sizeof level_dat, path, "level.dat") != NULL) {
         out->has_level_dat = path_is_file(level_dat);
     }

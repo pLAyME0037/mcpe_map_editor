@@ -87,6 +87,28 @@ COMPARATOR = b"leveldb.BytewiseComparator"
 TABLE_NUMBER, LOG_NUMBER, NEXT_FILE_NUMBER = 2, 3, 5
 
 
+# Chunk-marker tags, mirroring include/mcme/bedrock_keys.h. Both spellings of
+# the subchunk prefix, because the game changed it and a reader that knows only
+# one of them reports the other era's worlds as empty.
+CHUNK_TAGS = (0x2C, 0x2F, 0x76)
+
+# What Amulet 0.10.64 recognises, so the difference can be stated rather than
+# left for someone to discover in a world that reads as empty.
+AMULET_CHUNK_TAGS = (0x2C, 0x76)
+
+
+def chunk_coords(items, tags):
+    """Distinct (dimension, x, z) over keys whose tag marks a chunk."""
+    coords = set()
+    for key, _value in items:
+        if 9 <= len(key) <= 10 and key[8] in tags:
+            coords.add((0, key[:4], key[4:8]))
+        elif 13 <= len(key) <= 14 and key[12] in tags:
+            dim = int.from_bytes(key[8:12], "little", signed=True)
+            coords.add((dim, key[:4], key[4:8]))
+    return coords
+
+
 def _log(msg: str) -> None:
     print(f"ref_leveldb_table: {msg}", file=sys.stderr)
 
@@ -208,6 +230,14 @@ def write_block(entries: list[tuple[bytes, bytes]], kind: int,
 # The store.
 # ---------------------------------------------------------------------------
 
+def chunk_key(x: int, z: int, tag: int, dim: int | None = None) -> bytes:
+    """A Bedrock chunk key. The dimension is omitted entirely when it is 0."""
+    key = x.to_bytes(4, "little", signed=True) + z.to_bytes(4, "little", signed=True)
+    if dim is not None and dim != 0:
+        key += dim.to_bytes(4, "little", signed=True)
+    return key + bytes([tag])
+
+
 def design_entries() -> list[tuple[bytes, bytes]]:
     """The user keys and values, in the order the reader must yield them.
 
@@ -217,21 +247,40 @@ def design_entries() -> list[tuple[bytes, bytes]]:
     """
     entries: list[tuple[bytes, bytes]] = []
 
-    # Forty chunk keys sharing a prefix, so most entries in a block carry a
-    # non-zero shared length and the reader has to rebuild keys rather than
-    # copy them. Eight x values keep the keys short and the prefix long.
-    for i in range(40):
-        x, z = i % 8, i // 8
-        key = x.to_bytes(4, "little") + z.to_bytes(4, "little") + bytes([0x2D])
-        entries.append((key, b"biome:" + i.to_bytes(4, "little")))
+    # Chunk keys across three dimensions, so `mcme chunks` has to group by
+    # dimension rather than just count. Each chunk carries several keys under
+    # different tags, so counting keys would over-count chunks — which is the
+    # whole reason the inventory counts distinct coordinates.
+    #
+    # Two of the chunks are written only under tag 0x2f, the subchunk prefix
+    # the game switched to in 1.18. Amulet 0.10.64 looks for 0x2c and does not
+    # know 0x2f, so it reports those chunks as absent. mcme knows both, and
+    # main() below records both counts so the difference is stated rather than
+    # papered over.
+    chunks: list[tuple[int, int, int | None, list[int]]] = [
+        # (x, z, dimension, tags)
+        (0, 0, None, [0x2c, 0x76, 0x2d]),
+        (1, 0, None, [0x2c, 0x76, 0x2d]),
+        (0, 1, None, [0x2c, 0x76]),
+        (31, 31, None, [0x2c, 0x76]),
+        (-1, -1, None, [0x2c, 0x76]),
+        (4, 4, 1, [0x2c, 0x76, 0x2d]),
+        (5, 5, 1, [0x2c, 0x76]),
+        (9, 9, 2, [0x2f]),              # modern prefix only
+        (10, 10, 2, [0x2f, 0x2d]),      # modern prefix only
+    ]
 
-    # Keys chosen to break assumptions rather than to be realistic. They sort
-    # after the chunk keys because 'e' follows the byte 0x00-0x07 range.
+    for i, (x, z, dim, tags) in enumerate(chunks):
+        for tag in tags:
+            entries.append((chunk_key(x, z, tag, dim),
+                            b"c%02d/t%02x:" % (i, tag) + i.to_bytes(2, "little")))
+
+    # Keys chosen to break assumptions rather than to be realistic. None of
+    # them is a chunk key, so a reader that counts every key rather than every
+    # chunk marker reports these four as four extra chunks.
     entries.append((b"edge/empty", b""))
     entries.append((b"edge/nul\x00inside", b"one\x00two"))
     entries.append((b"edge/single", b"x"))
-    entries.append((b"edge/upper/Key", b"Case matters"))
-    entries.append((b"edge/upper/key", b"case also matters"))
     entries.append((b"edge/utf8\xff\xfe", b"\x00\xff\xfe"))
 
     return entries
@@ -434,17 +483,31 @@ def main() -> int:
 
     _log(f"reference library read {len(live)} live keys; the forgery is real")
 
+    # Both readings of the chunk keys, recorded rather than assumed. Amulet
+    # 0.10.64 does not know tag 0x2f, so it cannot see the two modern-only
+    # chunks at all; a golden file that pinned only its count would leave the
+    # difference for someone to rediscover in a world that reads as empty.
+    mcme_coords = chunk_coords(live, CHUNK_TAGS)
+    amulet_coords = chunk_coords(live, AMULET_CHUNK_TAGS)
+
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     lines = [f"{key.hex()} {value.hex()}" for key, value in live]
     with open(args.out, "w", encoding="ascii") as fh:
         fh.write("# key-hex value-hex, one entry per line, sorted by key\n")
         fh.write(f"# {len(live)} live entries\n")
+        fh.write(f"# {len(mcme_coords)} chunks by mcme's tags "
+                 f"{tuple(hex(t) for t in CHUNK_TAGS)}\n")
+        fh.write(f"# {len(amulet_coords)} chunks by Amulet 0.10.64's tags "
+                 f"{tuple(hex(t) for t in AMULET_CHUNK_TAGS)}\n")
         fh.write("# generated by tools/ref_leveldb_table.py (forged store), "
                  "read back by the Python LevelDB binding\n")
         fh.write("\n".join(lines))
         if lines:
             fh.write("\n")
     _log(f"{len(live)} live entries -> {args.out}")
+    _log(f"chunks: mcme {len(mcme_coords)}, Amulet 0.10.64 {len(amulet_coords)}"
+         + (" (the 0x2f-only chunks are invisible to Amulet)"
+            if len(mcme_coords) != len(amulet_coords) else ""))
 
     if args.batch_out:
         # Raw log contents, read straight from the file so the dump records

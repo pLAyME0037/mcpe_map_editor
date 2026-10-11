@@ -1,7 +1,10 @@
+#include "mcme/bedrock_keys.h"
 #include "mcme/core.h"
 #include "mcme/compress.h"
+#include "mcme/leveldb.h"
 #include "mcme/nbt.h"
 #include "mcme/region.h"
+#include "mcme/world.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -339,10 +342,242 @@ static void test_chunks(void)
     if (reg_open) mcme_region_close(&reg);
 }
 
+/* ========================================================================
+ * Bedrock chunk keys
+ * ======================================================================== */
+
+static const char kForgeWorld[] = "tests/golden/worlds/bedrock-forge";
+
+/* Builds a chunk key the way a store holds one: x, z, [dimension], tag,
+   [index]. Kept local so the test states the layout it expects rather than
+   calling the code under test to build its own input. */
+static size_t make_chunk_key(uint8_t *out, int32_t x, int32_t z,
+                             int32_t dim, bool has_dim, uint8_t tag,
+                             bool has_index, uint8_t index)
+{
+    size_t n = 0;
+    for (int i = 0; i < 4; ++i) out[n++] = (uint8_t)((uint32_t)x >> (8 * i));
+    for (int i = 0; i < 4; ++i) out[n++] = (uint8_t)((uint32_t)z >> (8 * i));
+    if (has_dim) {
+        for (int i = 0; i < 4; ++i) out[n++] = (uint8_t)((uint32_t)dim >> (8 * i));
+    }
+    out[n++] = tag;
+    if (has_index) out[n++] = index;
+    return n;
+}
+
+static void test_bedrock_keys(void)
+{
+    uint8_t key[16];
+    McmeBedrockKey k;
+
+    /* --- The overworld omission: no dimension bytes at all, and the reader
+           must not mistake the spare index byte for the start of one. --- */
+    {
+        size_t n = make_chunk_key(key, 0, 0, 0, false,
+                                  MCME_BEDROCK_TAG_SUBCHUNK_OLD, false, 0);
+        CHECK(n == 9);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(k.is_chunk);
+        CHECK(!k.has_dimension);
+        CHECK(k.dimension == 0);
+        CHECK(k.x == 0 && k.z == 0);
+        CHECK(k.tag == MCME_BEDROCK_TAG_SUBCHUNK_OLD);
+    }
+
+    /* --- 1.18+ subchunk prefix, with the subchunk index byte. --- */
+    {
+        size_t n = make_chunk_key(key, 4, 5, 0, false,
+                                  MCME_BEDROCK_TAG_SUBCHUNK, true, 3);
+        CHECK(n == 10);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(k.is_chunk);
+        CHECK(!k.has_dimension);
+        CHECK(k.tag == MCME_BEDROCK_TAG_SUBCHUNK);
+    }
+
+    /* --- A dimension that is present and non-zero keeps its bytes. --- */
+    {
+        size_t n = make_chunk_key(key, 4, 4, 1, true,
+                                  MCME_BEDROCK_TAG_CHUNK_VERSION, false, 0);
+        CHECK(n == 13);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(k.is_chunk);
+        CHECK(k.has_dimension);
+        CHECK(k.dimension == 1);
+        CHECK(k.x == 4 && k.z == 4);
+    }
+
+    /* --- Negative coordinates survive: chunk (-1, -1) is the last slot in a
+           region file, and a reader that masked rather than sign-extended
+           would look for it at (4294967295, 4294967295). --- */
+    {
+        size_t n = make_chunk_key(key, -1, -1, 2, true,
+                                  MCME_BEDROCK_TAG_SUBCHUNK, true, 1);
+        CHECK(n == 14);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(k.is_chunk);
+        CHECK(k.dimension == 2);
+        CHECK(k.x == -1 && k.z == -1);
+    }
+
+    /* --- A chunk-shaped key under a tag that does not identify a chunk.
+           Parsed, named, and never counted. --- */
+    {
+        size_t n = make_chunk_key(key, 9, 9, 0, false, MCME_BEDROCK_TAG_BIOME,
+                                  false, 0);
+        CHECK(mcme_bedrock_key_parse(key, n, &k));
+        CHECK(!k.is_chunk);
+        CHECK(k.tag == MCME_BEDROCK_TAG_BIOME);
+        CHECK(strcmp(mcme_bedrock_tag_name(k.tag), "biome") == 0);
+    }
+
+    /* --- Lengths that belong to no chunk key at all: a level record, an
+           actor, a portallist. "Not a chunk", not an error. --- */
+    mcme_clear_error();
+    {
+        uint8_t eight[8] = {0};
+        CHECK(!mcme_bedrock_key_parse(eight, sizeof eight, &k));
+
+        size_t n = make_chunk_key(key, 0, 0, 0, false,
+                                  MCME_BEDROCK_TAG_SUBCHUNK_OLD, false, 0);
+        CHECK(!mcme_bedrock_key_parse(key, n - 1, &k));   /* 8  */
+        CHECK(!mcme_bedrock_key_parse(key, n + 2, &k));   /* 11 */
+        CHECK(!mcme_bedrock_key_parse(key, n + 3, &k));   /* 12: 9 bytes with
+                                                                a stray tail */
+        /* "Not a chunk" must leave the error string alone: these keys are a
+           normal part of any store, and an error here would surface as a
+           failure to read a world that read fine. */
+        CHECK(mcme_last_error()[0] == '\0');
+        CHECK(!mcme_bedrock_key_parse(NULL, 9, &k));
+    }
+
+    /* --- Tag names, including the ones this build does not know. An
+           unrecognised tag is what someone debugging a version mismatch needs
+           to see, so it must come back NULL and not a made-up name. --- */
+    CHECK(strcmp(mcme_bedrock_tag_name(MCME_BEDROCK_TAG_SUBCHUNK_OLD),
+                 "subchunk-old") == 0);
+    CHECK(strcmp(mcme_bedrock_tag_name(MCME_BEDROCK_TAG_SUBCHUNK),
+                 "subchunk") == 0);
+    CHECK(strcmp(mcme_bedrock_tag_name(MCME_BEDROCK_TAG_CHUNK_VERSION),
+                 "version") == 0);
+    CHECK(mcme_bedrock_tag_name(0x35) == NULL);
+}
+
+/* ========================================================================
+ * Chunk inventory over the forged store
+ * ======================================================================== */
+
+typedef struct {
+    size_t keys;
+    size_t chunks;                       /* distinct (dim, x, z), any marker */
+    size_t modern_only;                  /* chunks only tag 0x2f knows       */
+    size_t by_dim[4];                    /* overworld / nether / end         */
+    size_t n_coords;
+    struct { int32_t dim, x, z; } coords[64];
+} Inventory;
+
+/* Mirrors the counting rule in src/app/main.c: a chunk is present if any
+   *marker* key marks it, so several keys on one chunk count once. Tag 0x2d
+   belongs to a chunk without identifying one and must never be counted. */
+static bool inventory_key(void *ud, const McmeLevelEntry *e)
+{
+    Inventory *inv = (Inventory *)ud;
+    inv->keys++;
+
+    McmeBedrockKey k;
+    if (!mcme_bedrock_key_parse(e->key, e->key_len, &k) || !k.is_chunk) {
+        return true;
+    }
+
+    bool seen = false;
+    for (size_t i = 0; i < inv->n_coords; ++i) {
+        if (inv->coords[i].dim == k.dimension &&
+            inv->coords[i].x == k.x && inv->coords[i].z == k.z) {
+            seen = true;
+            break;
+        }
+    }
+    if (seen) return true;
+
+    if (inv->n_coords < sizeof inv->coords / sizeof inv->coords[0]) {
+        inv->coords[inv->n_coords].dim = k.dimension;
+        inv->coords[inv->n_coords].x = k.x;
+        inv->coords[inv->n_coords].z = k.z;
+        inv->n_coords++;
+    }
+    inv->chunks++;
+    if (k.tag == MCME_BEDROCK_TAG_SUBCHUNK) inv->modern_only++;
+    if (k.dimension >= 0 && k.dimension < 4) inv->by_dim[k.dimension]++;
+    return true;
+}
+
+/*
+ * The forged fixture is the only store whose chunk set is designed, so it is
+ * the one this test can assert exact numbers against. tools/ref_leveldb_table.py
+ * writes nine chunks over three dimensions; two of them exist only under tag
+ * 0x2f, which Amulet 0.10.64 does not know and reports as absent (its count
+ * is pinned in the golden dump's header). Counting keys rather than distinct
+ * coordinates would report 24, and counting the 0x2d biome records as chunks
+ * would double several of them — both are the bugs this test exists to catch.
+ */
+static void test_bedrock_inventory(void)
+{
+    if (!mcme_fs_exists(kForgeWorld)) {
+        printf("  SKIP forged store (%s not found; run "
+               "tools/ref_leveldb_table.py)\n", kForgeWorld);
+        return;
+    }
+
+    /* The probe must hand the reader the db/ directory itself, not the world
+       folder above it — the mistake callers make most often. */
+    McmeWorldInfo info;
+    char want_db[640];
+    snprintf(want_db, sizeof want_db, "%s/db", kForgeWorld);
+    CHECK(mcme_world_probe(&info, kForgeWorld));
+    CHECK(info.kind == MCME_WORLD_BEDROCK);
+    CHECK(info.has_db);
+    CHECK_MSG(info.db_path != NULL && strcmp(info.db_path, want_db) == 0,
+              "db_path is '%s', want '%s'",
+              info.db_path ? info.db_path : "(null)", want_db);
+    if (info.db_path == NULL) {
+        mcme_world_info_free(&info);
+        return;
+    }
+    char db_path[512];
+    snprintf(db_path, sizeof db_path, "%s", info.db_path);
+    mcme_world_info_free(&info);
+
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, db_path)) {
+        CHECK_MSG(false, "cannot open %s: %s", db_path, mcme_last_error());
+        return;
+    }
+
+    Inventory inv;
+    memset(&inv, 0, sizeof inv);
+    mcme_leveldb_iterate(db, inventory_key, &inv);
+    mcme_leveldb_close(db);
+
+    CHECK_MSG(inv.keys == 23, "store holds %zu live keys, want 23", inv.keys);
+    CHECK_MSG(inv.chunks == 9, "%zu chunks, want 9", inv.chunks);
+    CHECK_MSG(inv.by_dim[0] == 5, "%zu overworld chunks, want 5", inv.by_dim[0]);
+    CHECK_MSG(inv.by_dim[1] == 2, "%zu nether chunks, want 2", inv.by_dim[1]);
+    CHECK_MSG(inv.by_dim[2] == 2, "%zu end chunks, want 2", inv.by_dim[2]);
+
+    /* The two modern-only chunks are exactly what Amulet 0.10.64 cannot see:
+       seven rather than nine. Both counts are pinned in the golden dump. */
+    CHECK_MSG(inv.modern_only == 2,
+              "%zu chunks marked only by 0x2f, want 2", inv.modern_only);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
     printf("world\n");
+
+    test_bedrock_keys();
+    test_bedrock_inventory();
 
     if (!mcme_fs_exists(kWorldDir)) {
         printf("  SKIP golden world (%s not found; run tools/ref_worlds.py)\n",

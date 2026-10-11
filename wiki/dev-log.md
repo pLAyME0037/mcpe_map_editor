@@ -9,6 +9,64 @@ Status vocabulary:
 
 ---
 
+## 2026-10-11 — `mcme chunks`: Bedrock chunk inventory
+
+### Built
+
+- `src/world/bedrock_keys.c` + header: decodes a store key into
+  (dimension, x, z, tag). Handles the format's one awkwardness — the dimension
+  is omitted entirely when it is 0, so a 9-byte key is an overworld chunk and a
+  13-byte one has a dimension, and only the tag says which. Chunk markers are
+  0x2c (pre-1.18 subchunk), 0x2f (1.18+ subchunk) and 0x76 (chunk version).
+  0x2d (biome/heightmap) parses but is never a marker: a chunk with a biome
+  record and no subchunk is still one chunk.
+- `mcme info` now prints `keys:` and `chunks:` for Bedrock, plus
+  `chunks_by_dimension` in JSON. The old "database: present" placeholder is
+  gone; an unreadable store says so rather than reporting zero chunks.
+- `mcme chunks <world>` (was reserved): text, `--count` (one number, nothing
+  else), and `--json`. Works for Java too, off the region manifest.
+- `mcme_world_probe` now fills `db_path`, the `db/` directory itself, which is
+  what `mcme_leveldb_open` wants. Callers were forming the world folder path
+  and failing; the module resolves it once instead.
+
+### The count is derived, and the derivation is the whole test
+
+"How many chunks" is not a number a store keeps. A chunk is present if any
+*marker* key marks it, so the inventory collects coordinates and counts them
+distinct: the forge fixture's 23 live keys include several markers per chunk,
+and counting keys reports 24 chunks in a nine-chunk world.
+
+The forged fixture was redesigned for this (`tools/ref_leveldb_table.py`):
+nine chunks across three dimensions, several keys each, two of them written
+only under 0x2f. That last pair is deliberate — Amulet 0.10.64 does not know
+0x2f and reports those chunks absent (7, not 9), and both counts are pinned in
+the golden dump's header so the difference is stated rather than left for
+someone to discover in a modern world that reads as empty.
+
+`src/world/selftest.c` asserts the exact numbers against the fixture — 9
+chunks, 5/2/2 by dimension, 2 modern-only — and asserts `db_path` resolves to
+`db/`.
+
+### Bugs found
+
+- The regenerated fixture was dumped without `--batch-out` (default is empty),
+  so the golden batch file kept the old design's tombstones while the store had
+  new ones. Three leveldb selftest failures, all pointing at a fixture that no
+  longer described itself. The default should probably be derived from `--out`.
+- An assertion that `mcme_last_error() == NULL` — it never returns NULL, only
+  an empty string. The "not a chunk is not an error" contract is now checked
+  against `[0] == '\0'`.
+
+### Known gaps
+
+- **No writes.** Unchanged; log-append is next in the LevelDB layer.
+- **`chunks` re-opens the store for `info`.** Two commands, two opens. Fine
+  for now; a shared inventory call moves up when a third consumer appears.
+- **Java chunk count comes from the region manifest**, not from walking chunk
+  headers, so a region with unallocated chunks counts them anyway.
+
+---
+
 ## 2026-10-11 — LevelDB reader: real stores, and what they hid
 
 **Status: done.** `mcme_leveldb_open` reads a Bedrock store end to end —
