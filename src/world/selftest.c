@@ -380,13 +380,17 @@ static void test_chunks(void)
         if (!reg_open || strcmp(open_region, e->region) != 0) {
             if (reg_open) mcme_region_close(&reg);
             char path[512];
-            snprintf(path, sizeof path, "%s/region/%s.mca", kWorldDir, e->region);
+            int sn = snprintf(path, sizeof path,
+                              "%s/region/%s.mca", kWorldDir, e->region);
+            CHECK(sn > 0 && (size_t)sn < sizeof path);
             if (!mcme_region_open(&reg, path)) {
                 printf("  SKIP %s (%s)\n", e->region, mcme_last_error());
                 continue;
             }
             reg_open = true;
-            snprintf(open_region, sizeof open_region, "%s", e->region);
+            sn = snprintf(open_region, sizeof open_region, "%s",
+                          e->region);
+            CHECK(sn > 0 && (size_t)sn < sizeof open_region);
         }
 
         McmeCompression codec = MCME_COMPRESS_UNKNOWN;
@@ -424,8 +428,9 @@ static void test_chunks(void)
 
         if (ok) {
             char base[256];
-            snprintf(base, sizeof base, "%s/%s.%d.%d", kChunkDir,
-                     e->region, e->cx, e->cz);
+            int sn = snprintf(base, sizeof base, "%s/%s.%d.%d",
+                              kChunkDir, e->region, e->cx, e->cz);
+            CHECK(sn > 0 && (size_t)sn < sizeof base);
 
             char nbt_path[512];
             snprintf(nbt_path, sizeof nbt_path, "%s.nbt", base);
@@ -1549,7 +1554,9 @@ static void test_bedrock_subchunks(void)
 
     for (size_t c = 0; c < count; ++c) {
         char base[512];
-        snprintf(base, sizeof base, "%s/%s", kSubchunkDir, names[c]);
+        int sn = snprintf(base, sizeof base, "%s/%s", kSubchunkDir,
+                          names[c]);
+        CHECK(sn > 0 && (size_t)sn < sizeof base);
 
         char path[600];
         snprintf(path, sizeof path, "%s.bin", base);
