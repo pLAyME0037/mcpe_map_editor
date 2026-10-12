@@ -9,6 +9,59 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — The first editing verb: `mcme chunk set`
+
+### Built
+
+- `mcme chunk set <world> <x> <y> <z> <block>`
+  (`src/app/main.c`): sets one block, D3's first
+  editing verb. The block is a namespaced name with
+  optional SNBT states in braces —
+  `minecraft:oak_log{pillar_axis:"x"}` — parsed with
+  the existing SNBT parser. No registry: the name
+  goes into the palette as given, the way the
+  reference tools carry it. A subchunk that is not
+  stored exits 2, not 4: the edit refuses to create
+  chunks, so the CLI checks before the edit decides.
+  Success prints nothing, like `db put`. Overworld
+  only — the `--dimension` flag waits for the verb
+  that needs it.
+- `mcme_bedrock_subchunk_key()` (bedrock_write.c/h):
+  the subchunk addressing — floor-div 16 for
+  negatives, Y-range check — pulled out of
+  `mcme_bedrock_set_block` so the CLI's pre-check and
+  the write itself share one key computation and
+  cannot drift apart.
+- `tools/ref_bedrock_write.py`: the reference
+  cross-check, opposite direction to the store
+  tests. mcme writes through the verb; amulet reads
+  the world back through `_load_palette_blocks` —
+  the path that loads worlds Minecraft loads. It
+  asserts the edited position holds the new block,
+  every other position in the subchunk unchanged,
+  the new palette entry byte for byte what amulet
+  itself would write for the same block (so
+  `pillar_axis: "y"` appends instead of reusing the
+  stored `"x"` entry), the version-9 wrapper keeps
+  its Y index, the neighbouring chunk is untouched,
+  and a refused edit exits 2 having created nothing.
+
+### Fixed
+
+- Continuation-line alignment across the write-path
+  files. The house rule is continuation under the
+  opening argument; several declarations — including
+  two from the previous commit — sat a few columns
+  off. Alignment only, no behaviour changed.
+
+### Next
+
+A verb that exercises more than one block (a box
+fill, or `--dimension`), or reading blocks back
+(`chunk get`) so an agent can verify its own edits.
+
+---
+
 ## 2026-10-11 — First write: set one block
 
 ### Built

@@ -22,6 +22,22 @@
 #include "mcme/nbt.h"
 
 /*
+ * Builds the key of the subchunk a block coordinate falls
+ * in — the key mcme_bedrock_set_block writes. The chunk is
+ * floor(x/16), floor(z/16) and the subchunk is floor(y/16),
+ * which for a negative coordinate is the chunk below it,
+ * not the one C's truncating division would name.
+ *
+ * Returns false, with mcme_last_error() saying why, when the
+ * subchunk's Y does not fit the key's signed byte or the
+ * buffer arguments are bad.
+ */
+bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
+                               int32_t z, int32_t dimension,
+                               uint8_t *out, size_t cap,
+                               size_t *len);
+
+/*
  * Sets one block in a Bedrock world's store.
  *
  * `db_dir` is the world's db/ directory; `x`, `y`, `z` are
@@ -46,9 +62,9 @@
  * refused.
  */
 bool mcme_bedrock_set_block(const char *db_dir,
-                              int32_t x, int32_t y, int32_t z,
-                              int32_t dimension,
-                              const McmeNbtDoc *block);
+                            int32_t x, int32_t y, int32_t z,
+                            int32_t dimension,
+                            const McmeNbtDoc *block);
 
 /*
  * Builds a palette-entry document for `name` with `states`
@@ -62,8 +78,8 @@ bool mcme_bedrock_set_block(const char *db_dir,
  * reference writes them: name, states, version.
  */
 bool mcme_bedrock_block_entry(McmeArena *arena,
-                                const char *name,
-                                const McmeTag *states,
-                                McmeNbtDoc *out);
+                              const char *name,
+                              const McmeTag *states,
+                              McmeNbtDoc *out);
 
 #endif /* MCME_BEDROCK_WRITE_H */

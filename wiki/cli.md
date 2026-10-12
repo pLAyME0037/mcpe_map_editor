@@ -201,6 +201,41 @@ Chunk markers are the subchunk prefix in both spellings the game has used
 ride along with a chunk — 0x2d biome/heightmap — are not markers and are never
 counted.
 
+### `mcme chunk set`
+
+Sets one block in a Bedrock world. The first editing verb (D3: anything worth
+doing is a verb) and deliberately the smallest one: one coordinate, one block,
+no undo.
+
+```
+mcme chunk set <world> <x> <y> <z> <block>
+```
+
+The block is a namespaced name, optionally with SNBT states in braces:
+
+```
+$ mcme chunk set mybedrock 12 64 -30 'minecraft:stone'
+$ mcme chunk set mybedrock 12 64 -30 'minecraft:oak_log{pillar_axis:"x"}'
+```
+
+States must parse as one SNBT compound; the whole spec is otherwise unvalidated
+— mcme has no block registry and stores the name as given, the way the
+reference tools do. The version written for a new palette entry is 17694720
+("1, 14, 0, 0"), amulet's default for a block that arrives without one.
+
+The subchunk must already exist. The edit refuses to create chunks, so an
+absent subchunk is exit 2, not exit 4: the caller asked to edit what is there,
+and what is not there is "not found". A no-op edit — the same block that is
+already stored — is exit 0 and leaves the payload byte-identical.
+
+Overworld only; a `--dimension` flag belongs with the verb that needs it. The
+store is opened with the game's own LOCK for the write, so a world Minecraft
+has open is refused, like `db put`.
+
+Exit codes: `0` set, `1` usage (bad coordinate, bad block spec), `2` not a
+world, not a Bedrock world, or the subchunk is not stored, `4` store error.
+Success prints nothing.
+
 ### `mcme db`
 
 Raw key/value access to a Bedrock store. This is the write path's CLI surface

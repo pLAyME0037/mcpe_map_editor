@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "mcme/bedrock_keys.h"
+#include "mcme/bedrock_write.h"
 #include "mcme/cli.h"
 #include "mcme/compress.h"
 #include "mcme/core.h"
@@ -63,6 +64,13 @@ static void print_usage(FILE *out)
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
+        "  chunk set <world> <x> <y> <z> <block>\n"
+        "                    Set one block in a Bedrock world.\n"
+        "                    <block> is a name, or a name with SNBT\n"
+        "                    states in braces:\n"
+        "                    minecraft:oak_log{pillar_axis:\"x\"}\n"
+        "                    The subchunk must already exist. Takes\n"
+        "                    the LOCK.\n"
         "  db <op> <world> <key-hex> [value-hex]\n"
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
@@ -121,11 +129,11 @@ static int run_selftest(void)
         const char *name;
         int (*fn)(void);
     } suites[] = {
-        { "core", mcme_test_core },
-        { "nbt", mcme_test_nbt },
+        { "core"    , mcme_test_core },
+        { "nbt"     , mcme_test_nbt },
         { "compress", mcme_test_compress },
-        { "world", mcme_test_world },
-        { "leveldb", mcme_test_leveldb },
+        { "world"   , mcme_test_world },
+        { "leveldb" , mcme_test_leveldb },
     };
 
     const size_t n = sizeof(suites) / sizeof(suites[0]);
@@ -854,6 +862,181 @@ static int cmd_chunks(int argc, char **argv)
 }
 
 /* ========================================================================
+ * chunk set — the first editing verb
+ * ======================================================================== */
+
+/*
+ * `mcme chunk set <world> <x> <y> <z> <block>` sets one block in a
+ * Bedrock world, per D3: anything worth doing is a verb.
+ *
+ * The block is a namespaced name, optionally with SNBT states in
+ * braces — `minecraft:stone` or `minecraft:oak_log{pillar_axis:"x"}`.
+ *
+ * A subchunk that is not stored is exit 2, not exit 4: the edit
+ * refuses to create chunks, so the CLI checks first and reports
+ * "not found" for what the caller asked to edit. Everything else is
+ * exit 4 with mcme_last_error() on stderr. Success prints nothing,
+ * like `db put`.
+ *
+ * The overworld only: a `--dimension` flag belongs with the verb
+ * that needs it, not before it.
+ */
+
+/* Splits a block spec into name and states. States, when present,
+   must parse as one SNBT compound; the tag is arena-rooted and
+   borrowed for the call that uses it. */
+static int parse_block_spec(const char *spec, McmeArena *arena,
+                            char *name, size_t name_cap,
+                            const McmeTag **states)
+{
+    const char *open = strchr(spec, '{');
+    size_t spec_len = strlen(spec);
+    size_t name_len;
+
+    if (open == NULL) {
+        name_len = spec_len;
+        *states = NULL;
+    } else {
+        name_len = (size_t)(open - spec);
+        if (spec_len == 0 || spec[spec_len - 1] != '}') {
+            mcme_set_error("chunk: block '%s' has '{' without a "
+                           "closing '}'", spec);
+            return MCME_EXIT_USAGE;
+        }
+        McmeTag *tag = NULL;
+        if (!mcme_nbt_parse_snbt(arena, open,
+                                  spec_len - name_len, &tag)) {
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk: states of block '%s' do not "
+                           "parse: %s", spec, why);
+            return MCME_EXIT_USAGE;
+        }
+        if (tag == NULL || tag->type != MCME_TAG_Compound) {
+            mcme_set_error("chunk: states of block '%s' are not "
+                           "a compound", spec);
+            return MCME_EXIT_USAGE;
+        }
+        *states = tag;
+    }
+
+    if (name_len == 0) {
+        mcme_set_error("chunk: block '%s' has an empty name", spec);
+        return MCME_EXIT_USAGE;
+    }
+    if (name_len >= name_cap) {
+        mcme_set_error("chunk: block name '%s' is too long", spec);
+        return MCME_EXIT_USAGE;
+    }
+    memcpy(name, spec, name_len);
+    name[name_len] = '\0';
+    return MCME_OK;
+}
+
+/* A coordinate as a whole block position. strtol, not atoi: the
+   text is untrusted and "12x" is not 12. */
+static bool parse_coord(const char *text, long *out)
+{
+    char *end = NULL;
+    long v = strtol(text, &end, 10);
+    if (end == text || *end != '\0') {
+        mcme_set_error("chunk: '%s' is not a whole number", text);
+        return false;
+    }
+    if (v < INT32_MIN || v > INT32_MAX) {
+        mcme_set_error("chunk: '%s' is outside the coordinate "
+                       "range", text);
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+static int cmd_chunk_set(int argc, char **argv)
+{
+    if (argc != 5) {
+        mcme_set_error("chunk: usage: chunk set <world> <x> <y> <z> "
+                       "<block>");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long x, y, z;
+    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord(argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord(argv[3], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
+        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    char name[256];
+    const McmeTag *states = NULL;
+    int rc = parse_block_spec(argv[4], arena, name, sizeof name,
+                                   &states);
+    if (rc == MCME_OK) {
+        /* A missing subchunk is "not found", not "i/o": the
+           edit refuses to create one, so check before the
+           edit decides. The store can change between this
+           check and the LOCK — set_block then refuses, and
+           then it is genuinely i/o. */
+        uint8_t key[14];
+        size_t key_len = 0;
+        if (!mcme_bedrock_subchunk_key((int32_t)x, (int32_t)y,
+                                       (int32_t)z, 0,
+                                       key, sizeof key, &key_len)) {
+            rc = MCME_EXIT_USAGE;
+        } else {
+            McmeLevelDb *db = NULL;
+            if (!mcme_leveldb_open(&db, info.db_path)) {
+                rc = MCME_EXIT_IO;
+            } else {
+                bool present = mcme_leveldb_has(db, key, key_len);
+                mcme_leveldb_close(db);
+                if (!present) {
+                    mcme_set_error(
+                        "chunk: the subchunk of block "
+                        "(%ld, %ld, %ld) is not stored in "
+                        "this world; mcme does not create "
+                        "chunks", x, y, z);
+                    rc = MCME_EXIT_NOT_FOUND;
+                }
+            }
+        }
+    }
+
+    if (rc == MCME_OK) {
+        McmeNbtDoc entry;
+        if (!mcme_bedrock_block_entry(arena, name, states, &entry)) {
+            rc = MCME_EXIT_INTERNAL;
+        } else if (!mcme_bedrock_set_block(info.db_path,
+                                             (int32_t)x, (int32_t)y,
+                                             (int32_t)z, 0, &entry)) {
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk: %s", why);
+            rc = MCME_EXIT_IO;
+        }
+    }
+
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
+/* ========================================================================
  * db — raw key/value access to a Bedrock store
  * ======================================================================== */
 
@@ -1111,6 +1294,18 @@ static int dispatch(int argc, char **argv)
     }
     if (strcmp(cmd, "convert") == 0) return cmd_not_implemented("convert", "Phase 4");
     if (strcmp(cmd, "chunks") == 0)  return cmd_chunks(rest, args);
+    if (strcmp(cmd, "chunk") == 0) {
+        if (rest == 0) {
+            mcme_set_error("chunk: missing subcommand (expected set)");
+            return MCME_EXIT_USAGE;
+        }
+        if (strcmp(args[0], "set") == 0) {
+            return cmd_chunk_set(rest - 1, args + 1);
+        }
+        mcme_set_error("chunk: unknown subcommand '%s' (expected set)",
+                       args[0]);
+        return MCME_EXIT_USAGE;
+    }
     if (strcmp(cmd, "db") == 0)      return cmd_db(rest, args);
 
     mcme_set_error("unknown command '%s'", cmd);

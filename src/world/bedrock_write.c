@@ -31,10 +31,35 @@ static int32_t mod16(int32_t v)
     return r < 0 ? r + 16 : r;
 }
 
+bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
+                               int32_t z, int32_t dimension,
+                               uint8_t *out, size_t cap,
+                               size_t *len)
+{
+    if (out == NULL || len == NULL) {
+        mcme_set_error("subchunk key: null argument");
+        return false;
+    }
+
+    int32_t cy = floor_div16(y);
+    if (cy < INT8_MIN || cy > INT8_MAX) {
+        mcme_set_error("subchunk key: subchunk Y %d does "
+                       "not fit the key's signed byte", cy);
+        return false;
+    }
+
+    return mcme_bedrock_key_build(out, cap, len,
+                                  floor_div16(x),
+                                  floor_div16(z),
+                                  dimension,
+                                  MCME_BEDROCK_TAG_SUBCHUNK,
+                                  true, (int8_t)cy);
+}
+
 bool mcme_bedrock_block_entry(McmeArena *arena,
-                                  const char *name,
-                                  const McmeTag *states,
-                                  McmeNbtDoc *out)
+                              const char *name,
+                              const McmeTag *states,
+                              McmeNbtDoc *out)
 {
     if (arena == NULL || name == NULL || out == NULL) {
         mcme_set_error("block entry: null argument");
@@ -113,9 +138,9 @@ bool mcme_bedrock_block_entry(McmeArena *arena,
 }
 
 bool mcme_bedrock_set_block(const char *db_dir,
-                                  int32_t x, int32_t y, int32_t z,
-                                  int32_t dimension,
-                                  const McmeNbtDoc *block)
+                            int32_t x, int32_t y, int32_t z,
+                            int32_t dimension,
+                            const McmeNbtDoc *block)
 {
     if (db_dir == NULL || block == NULL) {
         mcme_set_error("set block: null argument");
@@ -132,10 +157,9 @@ bool mcme_bedrock_set_block(const char *db_dir,
 
     uint8_t key[14];
     size_t key_len = 0;
-    if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
-                                      cx, cz, dimension,
-                                      MCME_BEDROCK_TAG_SUBCHUNK,
-                                      true, (int8_t)cy)) {
+    if (!mcme_bedrock_subchunk_key(x, y, z, dimension,
+                                   key, sizeof key,
+                                   &key_len)) {
         return false;
     }
 
@@ -177,7 +201,7 @@ bool mcme_bedrock_set_block(const char *db_dir,
 
     McmeBedrockSubchunk sc;
     if (!mcme_bedrock_subchunk_decode(&sc, arena,
-                                           payload.data, payload.len)) {
+                                      payload.data, payload.len)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
         mcme_set_error("set block: subchunk (%d, %d, %d) does "
@@ -186,8 +210,8 @@ bool mcme_bedrock_set_block(const char *db_dir,
     }
 
     if (!mcme_bedrock_subchunk_set(&sc, arena,
-                                        mod16(x), mod16(y), mod16(z),
-                                        block)) {
+                                  mod16(x), mod16(y),
+                                  mod16(z), block)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
         mcme_set_error("set block: block (%d, %d, %d): %s",
@@ -204,7 +228,7 @@ bool mcme_bedrock_set_block(const char *db_dir,
     }
 
     if (!mcme_leveldb_put(db, key, key_len,
-                               encoded.data, encoded.len)) {
+                          encoded.data, encoded.len)) {
         goto done;       /* the store's own error stands */
     }
     ok = true;
