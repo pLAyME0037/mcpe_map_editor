@@ -160,6 +160,60 @@ size_t mcme_region_slots(const McmeRegion *r, int *out_slots, size_t cap)
  * Chunk payload
  * ======================================================================== */
 
+bool mcme_region_chunk_payload(const McmeRegion *r, int cx, int cz,
+                               McmeChunkPayload *out)
+{
+    if (r == NULL || r->data == NULL) {
+        mcme_set_error("region: not open");
+        return false;
+    }
+    if (out == NULL) {
+        mcme_set_error("region: output is NULL");
+        return false;
+    }
+
+    McmeChunkLoc loc = mcme_region_chunk_loc(r, cx, cz);
+    if (loc.sector_offset == 0) {
+        mcme_set_error("region: no chunk at (%d, %d) in %s", cx, cz,
+                       r->path ? r->path : "?");
+        return false;
+    }
+
+    size_t at = (size_t)loc.sector_offset * MCME_REGION_SECTOR;
+
+    /* mcme_region_open proved at + 5 <= size, same as read_chunk below. */
+    if (at + 5 > r->size) {
+        mcme_set_error("region: chunk at (%d, %d) is past the end of the file", cx, cz);
+        return false;
+    }
+
+    uint32_t length = rd_u32be(r->data + at);
+
+    /* The header read stops where read_chunk starts validating compression:
+       an inventory reports the file's own byte whether or not mcme can open
+       what it names, but the length must still describe a payload that fits
+       this file, or it would report a size that does not exist. */
+    if (length == 0) {
+        mcme_set_error("region: chunk at (%d, %d) declares length 0", cx, cz);
+        return false;
+    }
+    if (length > MCME_REGION_MAX_SECTORS * MCME_REGION_SECTOR) {
+        mcme_set_error("region: chunk at (%d, %d) declares %u bytes, over the region limit",
+                       cx, cz, length);
+        return false;
+    }
+    if (at + 5 + (size_t)length - 1u > r->size) {
+        mcme_set_error("region: chunk at (%d, %d) needs %zu bytes at offset %zu, "
+                       "past the %zu-byte file",
+                       cx, cz, (size_t)length - 1u, at + 5, r->size);
+        return false;
+    }
+
+    out->length = length - 1u;
+    out->compression = r->data[at + 4];
+    return true;
+}
+
 bool mcme_region_read_chunk(const McmeRegion *r, int cx, int cz,
                             McmeCompression *out_codec, McmeBuffer *out)
 {

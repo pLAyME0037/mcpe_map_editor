@@ -201,6 +201,59 @@ Chunk markers are the subchunk prefix in both spellings the game has used
 ride along with a chunk — 0x2d biome/heightmap — are not markers and are never
 counted.
 
+### `mcme region`
+
+What one Java region file holds: which chunks, how each is compressed, how
+large its payload is, and when the file says it was written. The container
+only — no chunk's NBT is decompressed or parsed, so the listing is what the
+sector table says, not what the chunks contain.
+
+```
+mcme region <world> <rx> <rz> [--dimension <name|number>]
+```
+
+```
+$ mcme region myjava 0 0
+myjava/region/r.0.0.mca: 4 of 1024 chunks, 24576 bytes
+  chunk (0, 0)      zlib       248 bytes  2026-10-10T14:49:49Z
+  chunk (1, 0)      zlib       252 bytes  2026-10-10T14:49:49Z
+  chunk (0, 1)      zlib       252 bytes  2026-10-10T14:49:49Z
+  chunk (31, 31)    zlib       251 bytes  2026-10-10T14:49:49Z
+```
+
+`(rx, rz)` is the region's own coordinate — the file is
+`r.<rx>.<rz>.mca` — and every row is a world chunk coordinate, so the
+listing joins against anything else that speaks in chunks without doing the
+times-32 arithmetic. An empty region is an answer, not a fault: `0 of 1024
+chunks` is what a file with an all-zero header holds, and it lists on exit 0.
+
+`--dimension` picks the Java directory the way the game lays it out: the
+overworld is `region/`, the nether `DIM-1/region/`, the end `DIM1/region/`.
+Java stores nothing else, so any other number is usage rather than a
+directory mcme would invent.
+
+The compression is the file's own byte — `gzip`, `zlib`, `stored`
+(uncompressed), `external` (the payload names a file beside the region) — and
+a byte mcme does not know is printed as the number it is: the inventory
+answers what the file says, not what mcme can open. `bytes` is the payload's
+own length, and `timestamp` the file's seconds since the epoch, printed as
+UTC.
+
+Under `--json`:
+
+```json
+{"path":"myjava/region/r.0.0.mca","rx":0,"rz":0,"chunks":4,"bytes":24576,
+ "entries":[{"x":0,"z":0,"compression":"zlib","bytes":248,
+             "timestamp":1791643789}]}
+```
+
+`entries` is in the file's own slot order. Exit codes: `0` listed, `1`
+usage (bad coordinate, a dimension Java has no directory for), `2` not a
+world, not a Java world, or no region file at that name, `3` the region
+file is not a format mcme reads — shorter than the header, an entry
+pointing past its end, or a present slot whose payload header will not
+read — `4` store error.
+
 ### `mcme chunk set`
 
 Sets one block in a Bedrock world. The first editing verb (D3: anything worth

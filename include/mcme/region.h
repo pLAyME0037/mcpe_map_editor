@@ -80,6 +80,27 @@ size_t mcme_region_chunk_count(const McmeRegion *r);
 size_t mcme_region_slots(const McmeRegion *r, int *out_slots, size_t cap);
 
 /*
+ * What the container says about one chunk without opening it: the
+ * five-byte payload header. `length` is the payload's own byte count —
+ * the file's length field minus the compression byte it counts — and
+ * `compression` is the file's byte, one of MCME_ANVIL_COMP_*. A byte
+ * mcme does not know is reported, not refused: an inventory answers
+ * what the file holds, and read_chunk is what decides what mcme can
+ * open.
+ *
+ * Returns false when the slot holds nothing, or when the header is one
+ * mcme cannot read — a length of zero, or a payload that would run
+ * past the end of the file — with mcme_last_error() saying which.
+ */
+typedef struct {
+    uint32_t length;      /* payload bytes, from the header       */
+    uint8_t  compression; /* the file's own compression byte      */
+} McmeChunkPayload;
+
+bool mcme_region_chunk_payload(const McmeRegion *r, int cx, int cz,
+                               McmeChunkPayload *out);
+
+/*
  * Extract one chunk: decompress its payload into `out` (appended) and report
  * which codec was used in `out_codec` when non-NULL.
  *

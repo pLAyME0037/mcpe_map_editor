@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>     /* gmtime_r, for the region inventory's timestamps */
 
 #include "mcme/bedrock_chunk.h"
 #include "mcme/bedrock_entity.h"
@@ -23,6 +24,7 @@
 #include "mcme/core.h"
 #include "mcme/leveldb.h"
 #include "mcme/nbt.h"
+#include "mcme/region.h"
 #include "mcme/world.h"
 
 #include "cJSON.h"   /* for the config subcommand's tree surgery */
@@ -66,6 +68,12 @@ static void print_usage(FILE *out)
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
+        "  region <world> <rx> <rz>\n"
+        "                    What one Java region file holds: which\n"
+        "                    chunks, each payload's compression and\n"
+        "                    size, each timestamp — the container\n"
+        "                    only, no chunk's NBT opened. Takes\n"
+        "                    --dimension overworld|nether|end|<number>.\n"
         "  chunk set <world> <x> <y> <z> <block>\n"
         "                    Set one block in a Bedrock world.\n"
         "                    <block> is a name, or a name with SNBT\n"
@@ -900,6 +908,7 @@ static int cmd_chunks(int argc, char **argv)
     return MCME_OK;
 }
 
+
 /* ========================================================================
  * chunk set — the first editing verb
  * ======================================================================== */
@@ -975,18 +984,20 @@ static int parse_block_spec(const char *spec, McmeArena *arena,
 }
 
 /* A coordinate as a whole block position. strtol, not atoi: the
-   text is untrusted and "12x" is not 12. */
-static bool parse_coord(const char *text, long *out)
+   text is untrusted and "12x" is not 12. `verb` is the family the
+   error belongs to — the parser is shared, and every message it
+   sets names the command that asked. */
+static bool parse_coord(const char *verb, const char *text, long *out)
 {
     char *end = NULL;
     long v = strtol(text, &end, 10);
     if (end == text || *end != '\0') {
-        mcme_set_error("chunk: '%s' is not a whole number", text);
+        mcme_set_error("%s: '%s' is not a whole number", verb, text);
         return false;
     }
     if (v < INT32_MIN || v > INT32_MAX) {
-        mcme_set_error("chunk: '%s' is outside the coordinate "
-                       "range", text);
+        mcme_set_error("%s: '%s' is outside the coordinate "
+                       "range", verb, text);
         return false;
     }
     *out = v;
@@ -996,15 +1007,17 @@ static bool parse_coord(const char *text, long *out)
 /* Pulls a `--dimension <name|number>` out of the argument vector.
    Names exist because numbers are for machines; 0 is the
    overworld, and the key builder omits a zero dimension the way
-   the game does. Absent, the dimension is the overworld. */
-static bool extract_dimension(int *argc, char **argv, int32_t *dim)
+   the game does. Absent, the dimension is the overworld. `verb`
+   names the command the message belongs to. */
+static bool extract_dimension(const char *verb, int *argc, char **argv,
+                              int32_t *dim)
 {
     for (int i = 0; i < *argc; ++i) {
         if (strcmp(argv[i], "--dimension") != 0) continue;
         if (i + 1 >= *argc) {
-            mcme_set_error("chunk: --dimension needs a value "
+            mcme_set_error("%s: --dimension needs a value "
                            "(overworld, nether, end, or a "
-                           "number)");
+                           "number)", verb);
             return false;
         }
         const char *v = argv[i + 1];
@@ -1019,15 +1032,15 @@ static bool extract_dimension(int *argc, char **argv, int32_t *dim)
         } else {
             n = strtol(v, &end, 10);
             if (end == v || *end != '\0') {
-                mcme_set_error("chunk: '%s' is not a dimension "
+                mcme_set_error("%s: '%s' is not a dimension "
                                "(overworld, nether, end, or a "
-                               "number)", v);
+                               "number)", verb, v);
                 return false;
             }
         }
         if (n < INT32_MIN || n > INT32_MAX) {
-            mcme_set_error("chunk: dimension '%s' is outside "
-                           "the range", v);
+            mcme_set_error("%s: dimension '%s' is outside "
+                           "the range", verb, v);
             return false;
         }
         *dim = (int32_t)n;
@@ -1076,10 +1089,201 @@ static int refusal_exit(McmeWriteRefusal refusal)
     return MCME_EXIT_INTERNAL;
 }
 
+/* ========================================================================
+ * region — what one Java region file holds
+ * ======================================================================== */
+
+/* The file's compression byte as the inventory prints it: the four
+   values the format defines, and the raw number for anything else —
+   an inventory answers what the file says, not what mcme can open.
+   The caller keeps the scratch buffer only for the unknown case. */
+static const char *compression_name(uint8_t code, char *scratch, size_t cap)
+{
+    switch (code) {
+    case MCME_ANVIL_COMP_GZIP:     return "gzip";
+    case MCME_ANVIL_COMP_ZLIB:     return "zlib";
+    case MCME_ANVIL_COMP_STORED:   return "stored";
+    case MCME_ANVIL_COMP_EXTERNAL: return "external";
+    default:
+        snprintf(scratch, cap, "%u", (unsigned)code);
+        return scratch;
+    }
+}
+
+/* A timestamp the file stores as seconds since the epoch, printed the
+   way an agent can read without a conversion: UTC, one form. */
+static void format_timestamp(uint32_t seconds, char *out, size_t cap)
+{
+    time_t t = (time_t)seconds;
+    struct tm utc;
+    if (gmtime_r(&t, &utc) == NULL
+        || strftime(out, cap, "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) {
+        snprintf(out, cap, "%u", (unsigned)seconds);
+    }
+}
+
+/*
+ * `mcme region <world> <rx> <rz>` inventories one Java region file
+ * from the container's own tables: which slots are filled, each
+ * payload's length and compression byte, each timestamp. No chunk's
+ * NBT is decompressed or parsed, so this answers what the file
+ * holds rather than what the chunks contain.
+ *
+ * Exit codes: 2 for a world or region file that is not there, 3 for
+ * a file that is there but is not a region file mcme reads — the
+ * header will not validate, or a present slot's payload header
+ * will not read — 4 for store errors, 1 for usage. An empty region
+ * is exit 0: "0 of 1024 chunks" is an answer, not a fault.
+ */
+static int cmd_region(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("region", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 3) {
+        mcme_set_error("region: usage: region <world> <rx> <rz> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long rx, rz;
+    if (!parse_coord("region", argv[1], &rx)) return MCME_EXIT_USAGE;
+    if (!parse_coord("region", argv[2], &rz)) return MCME_EXIT_USAGE;
+
+    /* Java stores its three dimensions in directories, not in the
+       key, and has no third spelling mcme could guess at: a number
+       outside them is a usage fault rather than a path invented. */
+    const char *dim_dir = NULL;
+    if (dimension == 1) {
+        dim_dir = "DIM-1";
+    } else if (dimension == 2) {
+        dim_dir = "DIM1";
+    } else if (dimension != 0) {
+        mcme_set_error("region: Java keeps the nether in DIM-1 and "
+                       "the end in DIM1; there is no directory for "
+                       "dimension %d", (int)dimension);
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("region: '%s' is not a Java world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    char file[MCME_REGION_PATH_MAX];
+    if (mcme_region_path(file, sizeof file, info.path, dim_dir,
+                         (int)rx, (int)rz) == NULL) {
+        mcme_set_error("region: the path to r.%ld.%ld is too long",
+                       rx, rz);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    /* The world is there and it is Java; what may be missing is this
+       region's file, which is an absence the caller asked about. A
+       file that is present but will not open is a region file mcme
+       cannot read. */
+    McmeRegion reg;
+    if (!mcme_region_open(&reg, file)) {
+        int rc = mcme_fs_exists(file) ? MCME_EXIT_BAD_FORMAT
+                                      : MCME_EXIT_NOT_FOUND;
+        mcme_world_info_free(&info);
+        return rc;
+    }
+
+    int slots[MCME_REGION_ENTRIES * 2];
+    size_t count = mcme_region_slots(&reg, slots, MCME_REGION_ENTRIES);
+
+    /* The header line (text) and the envelope (JSON) both come before
+       the rows so a failure mid-walk prints nothing partial: the
+       region is the unit, and half a listing is not an answer. */
+    cJSON *root = NULL;
+    cJSON *entries = NULL;
+    if (g_opts.json) {
+        root = cJSON_CreateObject();
+        if (root != NULL) {
+            cJSON_AddStringToObject(root, "path", file);
+            cJSON_AddNumberToObject(root, "rx", (double)rx);
+            cJSON_AddNumberToObject(root, "rz", (double)rz);
+            cJSON_AddNumberToObject(root, "chunks", (double)count);
+            cJSON_AddNumberToObject(root, "bytes", (double)reg.size);
+            entries = cJSON_AddArrayToObject(root, "entries");
+        }
+        if (root == NULL || entries == NULL) {
+            cJSON_Delete(root);
+            mcme_region_close(&reg);
+            mcme_world_info_free(&info);
+            mcme_set_error("region: out of memory");
+            return MCME_EXIT_INTERNAL;
+        }
+    } else {
+        printf("%s: %zu of %u chunks, %zu bytes\n",
+               file, count, MCME_REGION_ENTRIES, reg.size);
+    }
+
+    int rc = MCME_OK;
+    for (size_t i = 0; i < count; ++i) {
+        int cx = slots[i * 2 + 0];
+        int cz = slots[i * 2 + 1];
+
+        McmeChunkPayload p;
+        if (!mcme_region_chunk_payload(&reg, cx, cz, &p)) {
+            /* The library's message already names the verb and the
+               slot; mcme_last_error() is left as it set it. */
+            rc = MCME_EXIT_BAD_FORMAT;
+            break;
+        }
+
+        char comp[16];
+        const char *name = compression_name(p.compression, comp, sizeof comp);
+        uint32_t stamp = mcme_region_chunk_timestamp(&reg, cx, cz);
+        long wx = rx * 32 + cx;
+        long wz = rz * 32 + cz;
+
+        if (g_opts.json) {
+            cJSON *row = cJSON_CreateObject();
+            if (row == NULL) {
+                rc = MCME_EXIT_INTERNAL;
+                break;
+            }
+            cJSON_AddNumberToObject(row, "x", (double)wx);
+            cJSON_AddNumberToObject(row, "z", (double)wz);
+            cJSON_AddStringToObject(row, "compression", name);
+            cJSON_AddNumberToObject(row, "bytes", (double)p.length);
+            cJSON_AddNumberToObject(row, "timestamp", (double)stamp);
+            cJSON_AddItemToArray(entries, row);
+        } else {
+            char when[32];
+            char coord[32];
+            format_timestamp(stamp, when, sizeof when);
+            snprintf(coord, sizeof coord, "(%ld, %ld)", wx, wz);
+            printf("  chunk %-11s %-6s %7u bytes  %s\n",
+                   coord, name, p.length, when);
+        }
+    }
+
+    if (g_opts.json) {
+        if (rc == MCME_OK) {
+            print_json(root);
+        } else {
+            cJSON_Delete(root);
+        }
+    }
+    mcme_region_close(&reg);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
 static int cmd_chunk_set(int argc, char **argv)
 {
     int32_t dimension = 0;
-    if (!extract_dimension(&argc, argv, &dimension)) {
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
         return MCME_EXIT_USAGE;
     }
     if (argc != 5) {
@@ -1089,9 +1293,9 @@ static int cmd_chunk_set(int argc, char **argv)
     }
     const char *path = argv[0];
     long x, y, z;
-    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[2], &y)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[3], &z)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
 
     McmeWorldInfo info;
     if (!mcme_world_probe(&info, path)) {
@@ -1162,7 +1366,7 @@ static int cmd_chunk_set(int argc, char **argv)
 static int cmd_chunk_get(int argc, char **argv)
 {
     int32_t dimension = 0;
-    if (!extract_dimension(&argc, argv, &dimension)) {
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
         return MCME_EXIT_USAGE;
     }
     if (argc != 4) {
@@ -1172,9 +1376,9 @@ static int cmd_chunk_get(int argc, char **argv)
     }
     const char *path = argv[0];
     long x, y, z;
-    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[2], &y)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[3], &z)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
 
     McmeWorldInfo info;
     if (!mcme_world_probe(&info, path)) {
@@ -1334,7 +1538,7 @@ static int cmd_chunk_get(int argc, char **argv)
 static int cmd_chunk_fill(int argc, char **argv)
 {
     int32_t dimension = 0;
-    if (!extract_dimension(&argc, argv, &dimension)) {
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
         return MCME_EXIT_USAGE;
     }
     if (argc != 8) {
@@ -1346,7 +1550,7 @@ static int cmd_chunk_fill(int argc, char **argv)
     const char *path = argv[0];
     long c[6];
     for (int i = 0; i < 6; ++i) {
-        if (!parse_coord(argv[1 + i], &c[i])) return MCME_EXIT_USAGE;
+        if (!parse_coord("chunk", argv[1 + i], &c[i])) return MCME_EXIT_USAGE;
     }
     if (!box_y_range_fits(c)) return MCME_EXIT_USAGE;
 
@@ -1422,7 +1626,7 @@ static int cmd_chunk_fill(int argc, char **argv)
 static int cmd_chunk_stats(int argc, char **argv)
 {
     int32_t dimension = 0;
-    if (!extract_dimension(&argc, argv, &dimension)) {
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
         return MCME_EXIT_USAGE;
     }
     if (argc != 7) {
@@ -1434,7 +1638,7 @@ static int cmd_chunk_stats(int argc, char **argv)
     const char *path = argv[0];
     long c[6];
     for (int i = 0; i < 6; ++i) {
-        if (!parse_coord(argv[1 + i], &c[i])) return MCME_EXIT_USAGE;
+        if (!parse_coord("chunk", argv[1 + i], &c[i])) return MCME_EXIT_USAGE;
     }
     if (!box_y_range_fits(c)) return MCME_EXIT_USAGE;
 
@@ -1538,7 +1742,7 @@ static int cmd_chunk_stats(int argc, char **argv)
 static int cmd_chunk_height(int argc, char **argv)
 {
     int32_t dimension = 0;
-    if (!extract_dimension(&argc, argv, &dimension)) {
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
         return MCME_EXIT_USAGE;
     }
     if (argc != 3) {
@@ -1548,8 +1752,8 @@ static int cmd_chunk_height(int argc, char **argv)
     }
     const char *path = argv[0];
     long x, z;
-    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[2], &z)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[2], &z)) return MCME_EXIT_USAGE;
 
     McmeWorldInfo info;
     if (!mcme_world_probe(&info, path)) {
@@ -1689,7 +1893,7 @@ static int cmd_chunk_height(int argc, char **argv)
 static int cmd_chunk_entity(int argc, char **argv)
 {
     int32_t dimension = 0;
-    if (!extract_dimension(&argc, argv, &dimension)) {
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
         return MCME_EXIT_USAGE;
     }
     if (argc != 4) {
@@ -1699,9 +1903,9 @@ static int cmd_chunk_entity(int argc, char **argv)
     }
     const char *path = argv[0];
     long x, y, z;
-    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[2], &y)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[3], &z)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
 
     McmeWorldInfo info;
     if (!mcme_world_probe(&info, path)) {
@@ -1836,7 +2040,7 @@ static int cmd_chunk_entity_write(int argc, char **argv, bool is_set)
 {
     const char *what = is_set ? "set" : "del";
     int32_t dimension = 0;
-    if (!extract_dimension(&argc, argv, &dimension)) {
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
         return MCME_EXIT_USAGE;
     }
     int want = is_set ? 5 : 4;
@@ -1848,9 +2052,9 @@ static int cmd_chunk_entity_write(int argc, char **argv, bool is_set)
     }
     const char *path = argv[0];
     long x, y, z;
-    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[2], &y)) return MCME_EXIT_USAGE;
-    if (!parse_coord(argv[3], &z)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
 
     McmeWorldInfo info;
     if (!mcme_world_probe(&info, path)) {
@@ -2138,6 +2342,7 @@ static int dispatch(int argc, char **argv)
     }
     if (strcmp(cmd, "convert") == 0) return cmd_not_implemented("convert", "Phase 4");
     if (strcmp(cmd, "chunks") == 0)  return cmd_chunks(rest, args);
+    if (strcmp(cmd, "region") == 0)   return cmd_region(rest, args);
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "

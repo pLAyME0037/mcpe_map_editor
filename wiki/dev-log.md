@@ -9,6 +9,86 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — What the region file holds: `mcme region`
+
+### Built
+
+- `mcme_region_chunk_payload()` (region.h/c): the
+  five-byte payload header — length and compression
+  byte — read without decompressing a byte. It
+  validates exactly what `mcme_region_read_chunk`
+  validates before it starts reading (zero, the region
+  limit, past the end of the file), so the two cannot
+  disagree about what a slot claims; and it deliberately
+  does not name-check the compression byte: an inventory
+  answers what the file says, and `read_chunk` is what
+  decides what mcme can open. Compression 7 or 127 is
+  reported, not refused.
+- `mcme region <world> <rx> <rz>` inventories one Java
+  region file from the container's own tables: which
+  chunks, each payload's compression and size, each
+  timestamp — no chunk's NBT is opened, which is the
+  whole point of the verb. Rows carry world chunk
+  coordinates, so the listing joins against anything
+  else that speaks in chunks without times-32
+  arithmetic, and entries come back in the file's own
+  slot order.
+- `--dimension` picks the Java directory the way the
+  game lays it out: overworld → `region/`, nether →
+  `DIM-1/region/`, end → `DIM1/region/`. Java stores
+  nothing else, so any other number is usage rather
+  than a directory mcme would invent.
+- One condition one exit code: 0 listed (an empty
+  region is an answer, not a fault), 1 usage, 2 not a
+  world / not a Java world / no region file at that
+  name, 3 a file that is present but is not a region
+  file mcme reads — the header will not validate, or a
+  present slot's payload header will not read — 4
+  store.
+- `parse_coord` and `extract_dimension` now take the
+  verb their messages belong to. Every existing call
+  site passes `"chunk"`, so those messages are
+  byte-identical; `region`'s say `region:` instead of
+  claiming its arguments are a chunk problem.
+- cli.md first: the JSON shape (`path`, `rx`, `rz`,
+  `chunks`, `bytes`, `entries` with `x`, `z`,
+  `compression`, `bytes`, `timestamp`), the text form,
+  and the exit table, then the code that answers to it.
+
+### Cross-check
+
+- `tools/ref_region_inventory.py`, 14 checks against a
+  reader written from the format's own description: for
+  every region in the golden Java world the JSON and
+  the text are each compared field for field, entry for
+  entry in order, against sector tables Python parses
+  itself. Plus an empty region listing on exit 0 in
+  both forms, a length-0 payload header refused as exit
+  3 (and silent under `--json`), compression 7 reported
+  as `"7"` rather than refused, and the missing file /
+  Bedrock world / DIM-1 / DIM1 / dimension 7 / bad
+  coordinate / missing argument refusals each taking
+  their documented code.
+- Selftest `test_container` grew: every fixture chunk's
+  payload header pinned (lengths 248, 252, 252, 251 and
+  250 — all zlib, the file's own timestamp), empty
+  slots, caller errors, and a hand-built region that
+  declares length 0, a payload past the file's end and
+  a claim over the region limit (all refused) and
+  compression 7 (reported).
+- Verified at commit: `./rebuild.sh test` PASS — 5
+  suites, 0 failures; ref tools 14 (region inventory)
+  + 25 (entity) + write PASS (19) + 28 (column);
+  align.py 0 misalignments.
+
+### Next
+
+- A Java chunk read verb: `mcme_region_read_chunk` is
+  proven against the `.nbt` goldens, but no verb yet
+  puts a Java chunk's contents in an agent's hands.
+
+---
+
 ## 2026-10-12 — Changing what's in the chest: `chunk entity set`/`del`
 
 ### Built

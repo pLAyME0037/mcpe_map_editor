@@ -216,6 +216,112 @@ static void test_container(void)
         CHECK(!mcme_region_read_chunk(&reg, 0, 0, NULL, NULL));
         mcme_buffer_free(&out);
     }
+
+    /* The five-byte payload header the inventory reads, pinned to what the
+       reference wrote: each chunk's own length, all zlib, the file's own
+       timestamp — every answer taken without decompressing a byte. */
+    {
+        static const struct {
+            const char *file;
+            int         cx, cz;
+            uint32_t    length;
+        } payloads[] = {
+            { "r.0.0",     0,  0, 248 },
+            { "r.0.0",     1,  0, 252 },
+            { "r.0.0",     0,  1, 252 },
+            { "r.0.0",    31, 31, 251 },
+            { "r.-1.-1",  31, 31, 250 },
+        };
+
+        for (size_t i = 0; i < sizeof payloads / sizeof payloads[0]; ++i) {
+            char path[512];
+            snprintf(path, sizeof path,
+                     "tests/golden/worlds/java/region/%s.mca",
+                     payloads[i].file);
+            McmeRegion reg;
+            CHECK(mcme_region_open(&reg, path));
+
+            McmeChunkPayload p;
+            CHECK(mcme_region_chunk_payload(&reg, payloads[i].cx,
+                                            payloads[i].cz, &p));
+            CHECK(p.length == payloads[i].length);
+            CHECK(p.compression == MCME_ANVIL_COMP_ZLIB);
+            CHECK(mcme_region_chunk_timestamp(&reg, payloads[i].cx,
+                                              payloads[i].cz) == 1791643789u);
+
+            /* A slot neither file fills holds nothing to report. */
+            CHECK(!mcme_region_chunk_payload(&reg, 16, 16, &p));
+            mcme_region_close(&reg);
+        }
+    }
+
+    /* The header read's own refusals: caller errors, a length of zero, a
+       payload past the file's end, one past the region limit — and the
+       answer it must NOT refuse: a compression byte mcme does not know is
+       the file's word, and the inventory reports it. */
+    {
+        McmeRegion reg;
+        McmeChunkPayload p;
+        CHECK(!mcme_region_chunk_payload(NULL, 0, 0, &p));
+        memset(&reg, 0, sizeof reg);
+        CHECK(!mcme_region_chunk_payload(&reg, 0, 0, &p));  /* never opened */
+        CHECK(mcme_region_open(&reg,
+                               "tests/golden/worlds/java/region/r.0.0.mca"));
+        CHECK(!mcme_region_chunk_payload(&reg, 0, 0, NULL));
+        mcme_region_close(&reg);
+
+        char tmp[] = "build/header.mca";
+        uint8_t file[MCME_REGION_HEADER + 2u * MCME_REGION_SECTOR];
+        memset(file, 0, sizeof file);
+        file[0] = 0; file[1] = 0; file[2] = 2;   /* slot (0, 0) at sector 2 */
+        file[3] = 1;                             /* occupying one sector */
+
+        /* Zeros at the payload's place: a length of 0. */
+        CHECK(mcme_fs_write(tmp, file, sizeof file));
+        CHECK(mcme_region_open(&reg, tmp));
+        CHECK(!mcme_region_chunk_payload(&reg, 0, 0, &p));
+        mcme_region_close(&reg);
+
+        /* 65536 declared in a file holding 8192 bytes after the header:
+           the payload would run past the end, so the header describes no
+           such chunk. */
+        file[MCME_REGION_HEADER + 0] = 0x00;
+        file[MCME_REGION_HEADER + 1] = 0x01;
+        file[MCME_REGION_HEADER + 2] = 0x00;
+        file[MCME_REGION_HEADER + 3] = 0x00;
+        CHECK(mcme_fs_write(tmp, file, sizeof file));
+        CHECK(mcme_region_open(&reg, tmp));
+        CHECK(!mcme_region_chunk_payload(&reg, 0, 0, &p));
+        mcme_region_close(&reg);
+
+        /* Past the region limit: refused on the claim alone, before the
+           file's own size is even consulted. */
+        file[MCME_REGION_HEADER + 0] = 0x02;
+        file[MCME_REGION_HEADER + 1] = 0x00;
+        file[MCME_REGION_HEADER + 2] = 0x00;
+        file[MCME_REGION_HEADER + 3] = 0x01;
+        CHECK(mcme_fs_write(tmp, file, sizeof file));
+        CHECK(mcme_region_open(&reg, tmp));
+        CHECK(!mcme_region_chunk_payload(&reg, 0, 0, &p));
+        mcme_region_close(&reg);
+
+        /* Ten bytes claiming compression 7 — a byte the format does not
+           name: reported as it is, because an inventory answers what the
+           file holds, not what mcme can open. */
+        file[MCME_REGION_HEADER + 0] = 0x00;
+        file[MCME_REGION_HEADER + 1] = 0x00;
+        file[MCME_REGION_HEADER + 2] = 0x00;
+        file[MCME_REGION_HEADER + 3] = 0x0a;
+        file[MCME_REGION_HEADER + 4] = 7;
+        CHECK(mcme_fs_write(tmp, file, sizeof file));
+        CHECK(mcme_region_open(&reg, tmp));
+        CHECK(mcme_region_chunk_payload(&reg, 0, 0, &p));
+        CHECK(p.length == 9);
+        CHECK(p.compression == 7);
+        mcme_region_close(&reg);
+
+        remove(tmp);
+    }
 }
 
 /* ========================================================================
