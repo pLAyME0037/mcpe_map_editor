@@ -3,6 +3,7 @@
 #include "mcme/bedrock_keys.h"
 #include "mcme/bedrock_write.h"
 #include "mcme/core.h"
+#include "mcme/java_chunk.h"
 #include "mcme/compress.h"
 #include "mcme/leveldb.h"
 #include "mcme/nbt.h"
@@ -940,6 +941,345 @@ static void test_region_compact(void)
     mcme_arena_free(arena);
     remove(dst);
     remove(again);
+}
+
+/* ========================================================================
+ * Java blocks — palettes answering for one position
+ * ======================================================================== */
+
+/* The block at a position, as the verbs print it: the spec. */
+static void check_java_block(const McmeTag *root, int x, int y, int z,
+                             const char *want)
+{
+    McmeBuffer spec;
+    mcme_buffer_init(&spec);
+    if (!mcme_java_block_spec(root, x, y, z, &spec)) {
+        CHECK_MSG(false, "spec at (%d, %d, %d): %s", x, y, z,
+                  mcme_last_error());
+    } else {
+        CHECK_MSG(spec.len == strlen(want)
+                  && memcmp(spec.data, want, spec.len) == 0,
+                  "block at (%d, %d, %d) is '%.*s', want '%s'",
+                  x, y, z, (int)spec.len,
+                  spec.data != NULL ? (const char *)spec.data : "",
+                  want);
+    }
+    mcme_buffer_free(&spec);
+}
+
+/* The position's slot in the packing — stated here, not asked of
+   the code under test. */
+static size_t slot_of(int x, int y, int z)
+{
+    return (size_t)(x & 15) + (size_t)(z & 15) * 16
+           + (size_t)(y & 15) * 256;
+}
+
+/* One named entry for a palette list. */
+static McmeTag *palette_entry(McmeArena *arena, const char *name)
+{
+    McmeTag *e = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *nm = mcme_nbt_new(arena, MCME_TAG_String);
+    if (e == NULL || nm == NULL
+            || !mcme_nbt_compound_init(arena, e, 1)
+            || !mcme_nbt_set_string(arena, nm, name, strlen(name))
+            || !mcme_nbt_compound_put(arena, e, "Name", 4, nm)) {
+        return NULL;
+    }
+    return e;
+}
+
+/* A chunk with one section, Y 0, holding a two-entry palette (stone,
+   dirt) with `pos` pointing at `idx` — the format's own packing:
+   4 bits, sixteen entries to a long, none spanning. `nlongs` is the
+   data array's length: 256 is whole, 1 is short for the palette it
+   carries, 0 is no array at all. */
+static McmeTag *two_block_chunk(McmeArena *arena, size_t pos, int idx,
+                                size_t nlongs)
+{
+    McmeTag *root = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *secs = mcme_nbt_new(arena, MCME_TAG_List);
+    McmeTag *sec = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *ytag = mcme_nbt_new(arena, MCME_TAG_Byte);
+    McmeTag *bs = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *pal = mcme_nbt_new(arena, MCME_TAG_List);
+    McmeTag *data = mcme_nbt_new(arena, MCME_TAG_Long_Array);
+    McmeTag *stone = palette_entry(arena, "minecraft:stone");
+    McmeTag *dirt = palette_entry(arena, "minecraft:dirt");
+    if (root == NULL || secs == NULL || sec == NULL || ytag == NULL
+            || bs == NULL || pal == NULL || data == NULL
+            || stone == NULL || dirt == NULL) {
+        return NULL;
+    }
+    int64_t words[256];     /* 4096 blocks at 4 bits: 256 longs */
+    memset(words, 0, sizeof words);
+    if (nlongs > 0 && pos / 16 < nlongs) {
+        words[pos / 16] = (int64_t)((uint64_t)idx
+                                    << ((pos % 16) * 4));
+    }
+
+    if (!mcme_nbt_compound_init(arena, root, 1)
+            || !mcme_nbt_list_alloc(arena, secs, MCME_TAG_Compound, 1)
+            || !mcme_nbt_compound_init(arena, sec, 3)
+            || !mcme_nbt_set_byte(ytag, 0)
+            || !mcme_nbt_compound_put(arena, sec, "Y", 1, ytag)
+            || !mcme_nbt_compound_init(arena, bs, 2)
+            || !mcme_nbt_list_alloc(arena, pal, MCME_TAG_Compound, 2)
+            || !mcme_nbt_set_longs(arena, data, words, nlongs)) {
+        return NULL;
+    }
+    pal->list.items[0] = *stone;
+    pal->list.items[1] = *dirt;
+    if (!mcme_nbt_compound_put(arena, bs, "palette", 7, pal)) {
+        return NULL;
+    }
+    if (nlongs > 0
+            && !mcme_nbt_compound_put(arena, bs, "data", 4, data)) {
+        return NULL;
+    }
+    if (!mcme_nbt_compound_put(arena, sec, "block_states", 12, bs)) {
+        return NULL;
+    }
+    secs->list.items[0] = *sec;
+    if (!mcme_nbt_compound_put(arena, root, "sections", 8, secs)) {
+        return NULL;
+    }
+    return root;
+}
+
+static void test_java_chunk(void)
+{
+    printf("  java blocks (palettes, packing, sections)\n");
+
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) return;
+
+    /* The golden chunk, copied: its sections are stored without
+       block_states, which is the format's own air everywhere. */
+    char src[512];
+    char dst[] = "build/jb.mca";
+    snprintf(src, sizeof src, "%s/region/r.0.0.mca", kWorldDir);
+    void *golden;
+    size_t golden_len;
+    if (!mcme_fs_read(src, &golden, &golden_len)) {
+        printf("  SKIP java blocks (cannot read %s)\n", src);
+        mcme_arena_free(arena);
+        return;
+    }
+    CHECK(mcme_fs_write(dst, golden, golden_len));
+
+    McmeRegion reg;
+    CHECK(mcme_region_open(&reg, dst));
+    McmeBuffer nbt;
+    mcme_buffer_init(&nbt);
+    CHECK(mcme_region_read_chunk(&reg, 0, 0, NULL, &nbt));
+    mcme_region_close(&reg);
+    McmeNbtDoc doc;
+    CHECK(mcme_nbt_parse(&doc, arena, nbt.data, nbt.len, false));
+    check_java_block(doc.root, 5, 5, 5, "minecraft:air");
+    check_java_block(doc.root, 0, 0, 0, "minecraft:air");
+    check_java_block(doc.root, 15, 255, 15, "minecraft:air");
+
+    /* The edited tree goes back through the region write, and the
+       chunk that comes back says the same thing — the first edit
+       into an untouched section makes a palette of air plus the
+       block, and the rest of the section keeps its air. */
+    {
+        bool changed = false;
+        McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+        CHECK(mcme_java_set_block(arena, doc.root, 0, 0, 0,
+                                  "minecraft:stone", NULL, &changed,
+                                  &refusal));
+        CHECK(changed);
+        CHECK(mcme_region_set_chunk(dst, 0, 0, doc.root, arena,
+                                    4242u, &refusal));
+        McmeRegion r2;
+        CHECK(mcme_region_open(&r2, dst));
+        McmeBuffer back;
+        mcme_buffer_init(&back);
+        CHECK(mcme_region_read_chunk(&r2, 0, 0, NULL, &back));
+        mcme_region_close(&r2);
+        McmeNbtDoc back_doc;
+        CHECK(mcme_nbt_parse(&back_doc, arena, back.data, back.len,
+                             false));
+        check_java_block(back_doc.root, 0, 0, 0, "minecraft:stone");
+        check_java_block(back_doc.root, 1, 0, 0, "minecraft:air");
+        check_java_block(back_doc.root, 5, 5, 5, "minecraft:air");
+        check_java_block(back_doc.root, 0, 16, 0, "minecraft:air");
+        mcme_buffer_free(&back);
+    }
+    mcme_buffer_free(&nbt);
+
+    /* A two-entry palette, one position dirty: the packing decodes
+       where the reference put it. */
+    McmeTag *chunk = two_block_chunk(arena, slot_of(1, 2, 3), 1, 256);
+    CHECK(chunk != NULL);
+    if (chunk != NULL) {
+        check_java_block(chunk, 1, 2, 3, "minecraft:dirt");
+        check_java_block(chunk, 0, 0, 0, "minecraft:stone");
+        check_java_block(chunk, 15, 15, 15, "minecraft:stone");
+        check_java_block(chunk, 0, 16, 0, "minecraft:air");
+
+        /* A new block appends an entry and repacks; the other
+           positions keep their blocks. */
+        static const char kStates[] = "{pillar_axis: \"x\"}";
+        McmeTag *states = NULL;
+        CHECK(mcme_nbt_parse_snbt(arena, kStates, sizeof kStates - 1,
+                                  &states));
+        bool changed = false;
+        McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_INTERNAL;
+        CHECK(mcme_java_set_block(arena, chunk, 0, 0, 0,
+                                  "minecraft:oak_log", states,
+                                  &changed, &refusal));
+        CHECK(changed);
+        CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+        check_java_block(chunk, 0, 0, 0,
+                         "minecraft:oak_log{pillar_axis: \"x\"}");
+        check_java_block(chunk, 1, 2, 3, "minecraft:dirt");
+        check_java_block(chunk, 0, 1, 0, "minecraft:stone");
+        {
+            const McmeTag *pal =
+                mcme_nbt_path(chunk, "sections.0.block_states.palette");
+            CHECK(pal != NULL && pal->list.len == 3);
+        }
+
+        /* A block the palette already holds reuses its entry: the
+           palette does not grow. */
+        CHECK(mcme_java_set_block(arena, chunk, 2, 0, 0,
+                                  "minecraft:dirt", NULL,
+                                  &changed, &refusal));
+        CHECK(changed);
+        check_java_block(chunk, 2, 0, 0, "minecraft:dirt");
+        check_java_block(chunk, 1, 2, 3, "minecraft:dirt");
+        {
+            const McmeTag *pal =
+                mcme_nbt_path(chunk, "sections.0.block_states.palette");
+            CHECK(pal != NULL && pal->list.len == 3);
+        }
+
+        /* The same block again edits nothing, and the caller does
+           not write. */
+        CHECK(mcme_java_set_block(arena, chunk, 0, 0, 0,
+                                  "minecraft:oak_log", states,
+                                  &changed, &refusal));
+        CHECK(!changed);
+
+        /* Air on a position no section covers is a no-op too: no
+           section is invented to hold nothing. */
+        CHECK(mcme_java_set_block(arena, chunk, 0, 20, 0,
+                                  "minecraft:air", NULL,
+                                  &changed, &refusal));
+        CHECK(!changed);
+        {
+            const McmeTag *secs = mcme_nbt_get(chunk, "sections");
+            CHECK(secs != NULL && secs->list.len == 1);
+        }
+
+        /* A section the chunk does not list is created, kept in Y
+           order: above the stored one, and before it. */
+        CHECK(mcme_java_set_block(arena, chunk, 0, 20, 0,
+                                  "minecraft:stone", NULL,
+                                  &changed, &refusal));
+        CHECK(changed);
+        check_java_block(chunk, 0, 20, 0, "minecraft:stone");
+        check_java_block(chunk, 5, 20, 5, "minecraft:air");
+        CHECK(mcme_java_set_block(arena, chunk, 0, -16, 0,
+                                  "minecraft:stone", NULL,
+                                  &changed, &refusal));
+        CHECK(changed);
+        {
+            const McmeTag *secs = mcme_nbt_get(chunk, "sections");
+            CHECK(secs != NULL && secs->list.len == 3);
+            const McmeTag *y0 = mcme_nbt_at(secs, 0);
+            const McmeTag *y2 = mcme_nbt_at(secs, 2);
+            CHECK(y0 != NULL
+                  && mcme_nbt_byte_or(mcme_nbt_get(y0, "Y"), 99) == -1);
+            CHECK(y2 != NULL
+                  && mcme_nbt_byte_or(mcme_nbt_get(y2, "Y"), 99) == 1);
+        }
+        check_java_block(chunk, 0, -16, 0, "minecraft:stone");
+    }
+
+    /* Every refusal the library promises. */
+    {
+        McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+        bool changed = false;
+        McmeTag *chunk = two_block_chunk(arena, 0, 0, 256);
+        CHECK(chunk != NULL);
+        CHECK(!mcme_java_set_block(NULL, chunk, 0, 0, 0,
+                                   "minecraft:stone", NULL,
+                                   &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_java_set_block(arena, chunk, 0, 0, 0, NULL,
+                                   NULL, &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        static const char kList[] = "[1, 2]";
+        McmeTag *not_states = NULL;
+        CHECK(mcme_nbt_parse_snbt(arena, kList, sizeof kList - 1,
+                                  &not_states));
+        CHECK(!mcme_java_set_block(arena, chunk, 0, 0, 0,
+                                   "minecraft:stone", not_states,
+                                   &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+        /* A y no section byte could name: the format cannot hold
+           the edit. (Reading it is air — nothing could list it.) */
+        CHECK(!mcme_java_set_block(arena, chunk, 0, 2048 * 16, 0,
+                                   "minecraft:stone", NULL,
+                                   &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_INTERNAL);
+
+        /* A chunk that is not a compound is not the format mcme
+           reads — for the edit and for the read alike. */
+        McmeTag *not_root = mcme_nbt_new(arena, MCME_TAG_List);
+        CHECK(not_root != NULL);
+        CHECK(!mcme_java_set_block(arena, not_root, 0, 0, 0,
+                                   "minecraft:stone", NULL,
+                                   &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+        McmeBuffer spec;
+        mcme_buffer_init(&spec);
+        CHECK(!mcme_java_block_spec(not_root, 0, 0, 0, &spec));
+        mcme_buffer_free(&spec);
+
+        /* A palette of two without a data array at all. */
+        McmeTag *no_data = two_block_chunk(arena, 0, 0, 0);
+        CHECK(no_data != NULL);
+        mcme_buffer_init(&spec);
+        CHECK(!mcme_java_block_spec(no_data, 0, 0, 0, &spec));
+        mcme_buffer_free(&spec);
+        CHECK(!mcme_java_set_block(arena, no_data, 0, 0, 0,
+                                   "minecraft:stone", NULL,
+                                   &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+
+        /* A data array too short for the palette and bits it
+           carries: the block past its end has no answer, and the
+           edit that would touch every position refuses too. */
+        McmeTag *short_arr = two_block_chunk(arena, 0, 0, 1);
+        CHECK(short_arr != NULL);
+        mcme_buffer_init(&spec);
+        CHECK(!mcme_java_block_spec(short_arr, 0, 0, 1, &spec));
+        mcme_buffer_free(&spec);
+        /* dirt at a position whose entry is stone: the edit that
+           would touch every position finds the array short. */
+        CHECK(!mcme_java_set_block(arena, short_arr, 0, 0, 0,
+                                   "minecraft:dirt", NULL,
+                                   &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+
+        /* An index outside the palette it points into. */
+        McmeTag *liar = two_block_chunk(arena, 0, 5, 256);
+        CHECK(liar != NULL);
+        mcme_buffer_init(&spec);
+        CHECK(!mcme_java_block_spec(liar, 0, 0, 0, &spec));
+        mcme_buffer_free(&spec);
+    }
+
+    free(golden);
+    remove(dst);
+    mcme_arena_free(arena);
 }
 
 /* Builds a chunk key the way a store holds one: x, z, [dimension], tag,
@@ -3390,6 +3730,7 @@ int mcme_test_world(void)
     test_chunks();
     test_region_write();
     test_region_compact();
+    test_java_chunk();
 
     return g_failed;
 }

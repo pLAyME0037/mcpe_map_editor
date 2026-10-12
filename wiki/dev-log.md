@@ -9,6 +9,107 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Java blocks: `chunk get`/`chunk set`
+
+### Built
+
+- `chunk get` and `chunk set` answer for Java worlds
+  now, not only Bedrock — the same verbs, one spec
+  dialect either way. The probe decides the world kind
+  and the half that answers: Bedrock's half moved into
+  its own helper unchanged, Java's goes through a new
+  palette layer. A script edits one world or the other
+  without knowing which.
+- The new layer (`java_chunk.h/c`) answers for one
+  block, the unit the verbs are: `mcme_java_block_spec`
+  names the block at a position out of the chunk's
+  section palettes — the 1.18+ layout the golden world
+  carries, `sections` at the root, each with its
+  absolute Y and a `block_states` compound. The packing
+  is the format's own: 4 bits as the floor, the
+  palette's need above it, floor(64 / bits) entries to
+  a long, none spanning. A position no stored section
+  covers, and a section stored without `block_states`,
+  are `minecraft:air` — what the format says they hold.
+- `mcme_java_set_block` edits the tree the caller
+  parsed: the position's entry is reused when the
+  palette already holds the block and appended when it
+  is not — never replacing an entry in place, which
+  would change what every other position holding the
+  old entry means — and the section's long array is
+  repacked at the bits the palette now needs, old
+  indices keeping their numbers. A section the chunk
+  does not list is created and kept in Y order, except
+  for air, which an uncovered position already holds:
+  that edit invents nothing. A no-op — the block
+  already stored there — edits nothing at all, and the
+  CLI skips the write, the same byte-honesty Bedrock's
+  set keeps.
+- The write back is the path `region chunk set` made:
+  the whole chunk document re-encoded, compressed,
+  appended to its region file, the slot repointed — no
+  LOCK, since region files have none. What mcme will
+  not do is invent a chunk document: a chunk the region
+  file does not have carries bookkeeping the game would
+  have to trust (`Status`, `Heightmaps`, the rest), so
+  both verbs call it "not stored", exit 2 — the answer
+  Bedrock gives for a missing subchunk.
+- `--dimension` reaches Java's directories the way the
+  game lays them out (`region/`, `DIM-1/region/`,
+  `DIM1/region/`), which `java_dimension_dir` already
+  knew; `chunk fill` stays Bedrock-only, documented.
+
+### Cross-check
+
+- `tools/ref_java_blocks.py`, 8 checks, all on copies
+  of the golden worlds. The tool reads the region file
+  with no mcme code — its own sector-table walk, its
+  own palette unpacking — and compares block for block.
+  AIR: the golden sections, stored without
+  `block_states`, read as air at every position, JSON
+  echoes coordinates. ABSENT: an absent chunk, a
+  dimension without a region directory, junk
+  coordinates, a broken block spec, a Y no section byte
+  could name take their documented codes. SET: writes
+  the reference walk finds at the right positions with
+  the right palette — the first edit into an untouched
+  section makes a palette of air plus the block, states
+  carried as Properties the reference reads — and
+  `get` prints the names the walk reads, neighbours
+  still air. REUSE: a held block does not grow the
+  palette. NO-OP: not one byte of the region file
+  moves, air on air included. SECTIONS: one appended
+  above the stored ones, one spliced in before them,
+  both in Y order in the reference's walk. ROOM:
+  silent writes, and Bedrock still answers its own way
+  after the restructure.
+- Selftest `test_java_chunk`: the golden chunk's air,
+  an edit round-tripped through the region write and
+  read back by the CLI's own path, the format's packing
+  decoded where the test states it, palette append and
+  reuse, the no-ops, Y-ordered section creation, and
+  every refusal class — null arguments, states that are
+  not a compound, a Y past the byte, a chunk that is
+  not a compound, a palette without a data array, a
+  data array too short, an index outside its palette.
+- Verified at commit: `./rebuild.sh test` PASS — 5
+  suites, 0 failures; ref tools 8 (java blocks) + 12
+  (compact) + 9 (write) + 17 (chunk) + 14 (inventory)
+  + 25 (entity) + 19 (bedrock write) + 28 (bedrock
+  column); align.py 0 misalignments; golden worlds
+  untouched — every write in the suite ran against a
+  scratch copy.
+
+### Next
+
+- `chunk fill` for Java worlds: the box verb Bedrock
+  has, through the palettes this entry just made —
+  one section repack per section the box touches, not
+  one edit per block. The Phase 4 reservation
+  (`convert`) remains what the roadmap names after.
+
+---
+
 ## 2026-10-12 — Compaction: `mcme region compact`
 
 ### Built

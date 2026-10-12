@@ -22,6 +22,7 @@
 #include "mcme/cli.h"
 #include "mcme/compress.h"
 #include "mcme/core.h"
+#include "mcme/java_chunk.h"
 #include "mcme/leveldb.h"
 #include "mcme/nbt.h"
 #include "mcme/region.h"
@@ -90,18 +91,21 @@ static void print_usage(FILE *out)
         "                    appended and repointed. Silent on\n"
         "                    success.\n"
         "  chunk set <world> <x> <y> <z> <block>\n"
-        "                    Set one block in a Bedrock world.\n"
-        "                    <block> is a name, or a name with SNBT\n"
-        "                    states in braces:\n"
+        "                    Set one block — Bedrock, or Java\n"
+        "                    (1.18+ palettes). <block> is a name,\n"
+        "                    or a name with SNBT states in braces:\n"
         "                    minecraft:oak_log{pillar_axis:\"x\"}\n"
-        "                    The subchunk is created if the world\n"
-        "                    has not stored it. Takes the LOCK.\n"
-        "                    --dimension overworld|nether|end|\n"
-        "                    <number> (default overworld).\n"
+        "                    Bedrock: the subchunk is created if\n"
+        "                    the world has not stored it; takes\n"
+        "                    the LOCK. Java: the section and palette\n"
+        "                    entry are created; the chunk itself\n"
+        "                    must be stored. --dimension\n"
+        "                    overworld|nether|end|<number>.\n"
         "  chunk get <world> <x> <y> <z>\n"
         "                    Print one block as the spec `chunk set`\n"
-        "                    accepts. Exit 2 if the subchunk is not\n"
-        "                    stored. Takes --dimension too.\n"
+        "                    accepts — Bedrock or Java. Exit 2 if\n"
+        "                    the subchunk or chunk is not stored.\n"
+        "                    Takes --dimension too.\n"
         "  chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>\n"
         "                    Set a box of blocks (corners in any\n"
         "                    order). Subchunks the world has not\n"
@@ -1567,58 +1571,142 @@ static int cmd_region_compact(int argc, char **argv)
     return rc;
 }
 
-static int cmd_chunk_set(int argc, char **argv)
+/*
+ * The Java half of the block verbs: find the chunk's region file,
+ * read the chunk document, hand the tree to the palette layer. The
+ * chunk is the unit the region verbs made familiar — an absent chunk
+ * is "not stored", since a chunk document carries bookkeeping the
+ * game would have to trust and mcme will not invent it, and a file
+ * that will not read is exit 3. Reading takes no lock; region files
+ * have none.
+ *
+ * The caller frees `*arena` when it is done with `*doc`; `file` is
+ * the region file the chunk came from, which the write side needs.
+ */
+static int java_chunk_doc(const McmeWorldInfo *info, int32_t dimension,
+                          long x, long y, long z, McmeArena **arena,
+                          McmeNbtDoc *doc, char *file, size_t file_cap)
 {
-    int32_t dimension = 0;
-    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
+    const char *dim_dir = NULL;
+    if (!java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
-    if (argc != 5) {
-        mcme_set_error("chunk: usage: chunk set <world> <x> <y> <z> "
-                       "<block> [--dimension <name|number>]");
-        return MCME_EXIT_USAGE;
-    }
-    const char *path = argv[0];
-    long x, y, z;
-    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
-    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
-    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
+    int cx = (int)(x >> 4), cz = (int)(z >> 4);
+    int rx, rz;
+    mcme_region_of(cx, cz, &rx, &rz);
 
-    McmeWorldInfo info;
-    if (!mcme_world_probe(&info, path)) {
-        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
-    }
-    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
-        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
-        mcme_world_info_free(&info);
-        return MCME_EXIT_NOT_FOUND;
-    }
-
-    McmeArena *arena = mcme_arena_new();
-    if (arena == NULL) {
-        mcme_world_info_free(&info);
-        mcme_set_error("chunk: out of memory");
+    if (mcme_region_path(file, file_cap, info->path, dim_dir,
+                         rx, rz) == NULL) {
+        mcme_set_error("chunk: the path to the chunk of block "
+                       "(%ld, %ld, %ld) is too long", x, y, z);
         return MCME_EXIT_INTERNAL;
     }
 
-    char name[256];
-    const McmeTag *states = NULL;
-    int rc = parse_block_spec(argv[4], arena, name, sizeof name,
-                              &states);
+    if (!mcme_fs_exists(file)) {
+        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
+                       "is not stored in this world", x, y, z);
+        return MCME_EXIT_NOT_FOUND;
+    }
+    McmeRegion reg;
+    if (!mcme_region_open(&reg, file)) {
+        return MCME_EXIT_BAD_FORMAT;   /* open said what and where */
+    }
+    if (!mcme_region_chunk_present(&reg, cx, cz)) {
+        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
+                       "is not stored in this world", x, y, z);
+        mcme_region_close(&reg);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeBuffer nbt;
+    mcme_buffer_init(&nbt);
+    bool read = mcme_region_read_chunk(&reg, cx, cz, NULL, &nbt);
+    mcme_region_close(&reg);
+    if (!read) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
+                       "does not read: %s", x, y, z, why);
+        mcme_buffer_free(&nbt);
+        return MCME_EXIT_BAD_FORMAT;
+    }
+
+    *arena = mcme_arena_new();
+    if (*arena == NULL) {
+        mcme_set_error("chunk: out of memory");
+        mcme_buffer_free(&nbt);
+        return MCME_EXIT_INTERNAL;
+    }
+    bool parsed = mcme_nbt_parse(doc, *arena, nbt.data, nbt.len, false);
+    mcme_buffer_free(&nbt);
+    if (!parsed) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
+                       "does not decode: %s", x, y, z, why);
+        mcme_arena_free(*arena);
+        *arena = NULL;
+        return MCME_EXIT_BAD_FORMAT;
+    }
+    return MCME_OK;
+}
+
+static int java_get_block(const McmeWorldInfo *info, int32_t dimension,
+                          long x, long y, long z, McmeBuffer *spec)
+{
+    McmeArena *arena = NULL;
+    McmeNbtDoc doc;
+    char file[MCME_REGION_PATH_MAX];
+    int rc = java_chunk_doc(info, dimension, x, y, z, &arena, &doc,
+                            file, sizeof file);
+    if (rc == MCME_OK
+            && !mcme_java_block_spec(doc.root, (int)x, (int)y, (int)z,
+                                     spec)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld): %s",
+                       x, y, z, why);
+        rc = MCME_EXIT_BAD_FORMAT;
+    }
+    if (arena != NULL) mcme_arena_free(arena);
+    return rc;
+}
+
+static int java_set_block(const McmeWorldInfo *info, int32_t dimension,
+                          long x, long y, long z,
+                          const char *name, const McmeTag *states)
+{
+    long y_sec = y >> 4;
+    if (y_sec < -128 || y_sec > 127) {
+        mcme_set_error("chunk: the Y of block (%ld, %ld, %ld) is past "
+                       "the sections a chunk can list", x, y, z);
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeArena *arena = NULL;
+    McmeNbtDoc doc;
+    char file[MCME_REGION_PATH_MAX];
+    int rc = java_chunk_doc(info, dimension, x, y, z, &arena, &doc,
+                            file, sizeof file);
     if (rc == MCME_OK) {
-        /* A subchunk the world has not stored is created, so
-           there is nothing to ask before the edit: set_block
-           opens the store, takes the LOCK, and either writes or
-           explains itself. */
-        McmeNbtDoc entry;
-        if (!mcme_bedrock_block_entry(arena, name, states, &entry)) {
-            rc = MCME_EXIT_INTERNAL;
-        } else {
-            McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
-            if (!mcme_bedrock_set_block(info.db_path,
-                                        (int32_t)x, (int32_t)y,
-                                        (int32_t)z, dimension,
-                                        &entry, &refusal)) {
+        bool changed = false;
+        McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+        if (!mcme_java_set_block(arena, doc.root, (int)x, (int)y,
+                                 (int)z, name, states, &changed,
+                                 &refusal)) {
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk: %s", why);
+            rc = refusal_exit(refusal);
+        } else if (changed) {
+            /* The edited tree goes out the way `region chunk set`
+               sends a document: encoded, compressed, appended, the
+               slot repointed. A no-op edit writes nothing — the
+               region file keeps its bytes, like Bedrock's. */
+            if (!mcme_region_set_chunk(file, (int)(x >> 4),
+                                       (int)(z >> 4), doc.root, arena,
+                                       (uint32_t)time(NULL),
+                                       &refusal)) {
                 char why[256];
                 snprintf(why, sizeof why, "%s", mcme_last_error());
                 mcme_set_error("chunk: %s", why);
@@ -1626,63 +1714,25 @@ static int cmd_chunk_set(int argc, char **argv)
             }
         }
     }
-
-    mcme_arena_free(arena);
-    mcme_world_info_free(&info);
+    if (arena != NULL) mcme_arena_free(arena);
     return rc;
 }
 
 /*
- * `mcme chunk get <world> <x> <y> <z>` prints the block at the
- * coordinate as the same spec `chunk set` accepts — the name, with
- * states in braces when the palette entry has any. `set` followed
- * by `get` prints what went in, so an agent can verify its own
- * edit, and the text `get` prints can be passed straight back to
- * `set`.
- *
- * The palette entry's version is not printed: the spec syntax has
- * no version field, and the version mcme writes for entries it
- * adds is a constant. What is printed is what an edit would
- * repeat.
- *
- * Exit codes mirror `chunk set`: 2 for a subchunk that is not
- * stored, 3 when the stored payload is not the format mcme reads,
- * 4 for store errors. Reading does not take the LOCK — the game
- * can hold the world open while a block is read.
+ * The Bedrock half of `chunk get`, the body this verb grew: the
+ * subchunk key, the store's read, the layer's palette, the block
+ * spec. Reading takes no LOCK — the game can hold the world open
+ * while a block is read.
  */
-static int cmd_chunk_get(int argc, char **argv)
+static int bedrock_get_block(const McmeWorldInfo *info,
+                             int32_t dimension,
+                             long x, long y, long z, McmeBuffer *spec)
 {
-    int32_t dimension = 0;
-    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
-        return MCME_EXIT_USAGE;
-    }
-    if (argc != 4) {
-        mcme_set_error("chunk: usage: chunk get <world> <x> <y> <z> "
-                       "[--dimension <name|number>]");
-        return MCME_EXIT_USAGE;
-    }
-    const char *path = argv[0];
-    long x, y, z;
-    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
-    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
-    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
-
-    McmeWorldInfo info;
-    if (!mcme_world_probe(&info, path)) {
-        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
-    }
-    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
-        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
-        mcme_world_info_free(&info);
-        return MCME_EXIT_NOT_FOUND;
-    }
-
     uint8_t key[14];
     size_t key_len = 0;
     if (!mcme_bedrock_subchunk_key((int32_t)x, (int32_t)y,
                                    (int32_t)z, dimension,
                                    key, sizeof key, &key_len)) {
-        mcme_world_info_free(&info);
         return MCME_EXIT_USAGE;
     }
 
@@ -1691,7 +1741,7 @@ static int cmd_chunk_get(int argc, char **argv)
     bool deleted = false;
     int rc;
     McmeLevelDb *db = NULL;
-    if (!mcme_leveldb_open(&db, info.db_path)) {
+    if (!mcme_leveldb_open(&db, info->db_path)) {
         rc = MCME_EXIT_IO;
     } else if (!mcme_leveldb_has(db, key, key_len)) {
         mcme_leveldb_close(db);
@@ -1714,8 +1764,6 @@ static int cmd_chunk_get(int argc, char **argv)
     }
 
     McmeArena *arena = NULL;
-    McmeBuffer spec;
-    mcme_buffer_init(&spec);
     if (rc == MCME_OK) {
         arena = mcme_arena_new();
         if (arena == NULL) {
@@ -1734,7 +1782,7 @@ static int cmd_chunk_get(int argc, char **argv)
             rc = MCME_EXIT_BAD_FORMAT;
         } else if (sc.layer_count == 0) {
             /* The all-air marker: the position holds air. */
-            if (!mcme_buffer_append_cstr(&spec, "minecraft:air")) {
+            if (!mcme_buffer_append_cstr(spec, "minecraft:air")) {
                 rc = MCME_EXIT_INTERNAL;
             }
         } else {
@@ -1754,7 +1802,7 @@ static int cmd_chunk_get(int argc, char **argv)
                 rc = MCME_EXIT_BAD_FORMAT;
             } else {
                 const McmeTag *entry = layer->palette[idx].root;
-                if (!mcme_bedrock_block_spec(entry, &spec)) {
+                if (!mcme_bedrock_block_spec(entry, spec)) {
                     char why[256];
                     snprintf(why, sizeof why, "%s",
                              mcme_last_error());
@@ -1765,6 +1813,143 @@ static int cmd_chunk_get(int argc, char **argv)
                 }
             }
         }
+    }
+
+    if (arena != NULL) mcme_arena_free(arena);
+    mcme_buffer_free(&payload);
+    return rc;
+}
+
+static int cmd_chunk_set(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 5) {
+        mcme_set_error("chunk: usage: chunk set <world> <x> <y> <z> "
+                       "<block> [--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long x, y, z;
+    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK && info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("chunk: '%s' is not a Bedrock or Java world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    char name[256];
+    const McmeTag *states = NULL;
+    int rc = parse_block_spec(argv[4], arena, name, sizeof name,
+                              &states);
+    if (rc == MCME_OK) {
+        if (info.kind == MCME_WORLD_JAVA) {
+            /* The chunk document, its palettes, one position — and
+               the whole chunk goes back out through the region
+               write when the edit says something new. */
+            rc = java_set_block(&info, dimension, x, y, z,
+                                name, states);
+        } else {
+            /* A subchunk the world has not stored is created, so
+               there is nothing to ask before the edit: set_block
+               opens the store, takes the LOCK, and either writes or
+               explains itself. */
+            McmeNbtDoc entry;
+            if (!mcme_bedrock_block_entry(arena, name, states,
+                                          &entry)) {
+                rc = MCME_EXIT_INTERNAL;
+            } else {
+                McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+                if (!mcme_bedrock_set_block(info.db_path,
+                                            (int32_t)x, (int32_t)y,
+                                            (int32_t)z, dimension,
+                                            &entry, &refusal)) {
+                    char why[256];
+                    snprintf(why, sizeof why, "%s", mcme_last_error());
+                    mcme_set_error("chunk: %s", why);
+                    rc = refusal_exit(refusal);
+                }
+            }
+        }
+    }
+
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
+/*
+ * `mcme chunk get <world> <x> <y> <z>` prints the block at the
+ * coordinate as the same spec `chunk set` accepts — the name, with
+ * states in braces when the palette entry has any. `set` followed
+ * by `get` prints what went in, so an agent can verify its own
+ * edit, and the text `get` prints can be passed straight back to
+ * `set`. Both worlds answer: Bedrock from the subchunk's layer
+ * palette, Java from the chunk's section palettes — the same spec
+ * text either way, so a script reads one dialect.
+ *
+ * The palette entry's version is not printed: the spec syntax has
+ * no version field, and the version mcme writes for entries it
+ * adds is a constant. What is printed is what an edit would
+ * repeat.
+ *
+ * Exit codes mirror `chunk set`: 2 for a subchunk or chunk that is
+ * not stored, 3 when the stored payload is not the format mcme
+ * reads, 4 for store errors. Reading does not take the LOCK — the
+ * game can hold the world open while a block is read; Java worlds
+ * have no lock to take.
+ */
+static int cmd_chunk_get(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 4) {
+        mcme_set_error("chunk: usage: chunk get <world> <x> <y> <z> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long x, y, z;
+    if (!parse_coord("chunk", argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK && info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("chunk: '%s' is not a Bedrock or Java world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeBuffer spec;
+    mcme_buffer_init(&spec);
+    int rc;
+    if (info.kind == MCME_WORLD_JAVA) {
+        /* The chunk document, its palettes, one position. */
+        rc = java_get_block(&info, dimension, x, y, z, &spec);
+    } else {
+        rc = bedrock_get_block(&info, dimension, x, y, z, &spec);
     }
 
     if (rc == MCME_OK) {
@@ -1801,8 +1986,6 @@ static int cmd_chunk_get(int argc, char **argv)
     }
 
     mcme_buffer_free(&spec);
-    mcme_buffer_free(&payload);
-    if (arena != NULL) mcme_arena_free(arena);
     mcme_world_info_free(&info);
     return rc;
 }

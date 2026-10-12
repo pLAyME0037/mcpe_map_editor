@@ -359,9 +359,9 @@ reads and so will not be rewritten, `4` store error.
 
 ### `mcme chunk set`
 
-Sets one block in a Bedrock world. The first editing verb (D3: anything worth
-doing is a verb) and deliberately the smallest one: one coordinate, one block,
-no undo.
+Sets one block in a Bedrock or Java world. The first editing verb (D3:
+anything worth doing is a verb) and deliberately the smallest one: one
+coordinate, one block, no undo.
 
 ```
 mcme chunk set <world> <x> <y> <z> <block>
@@ -397,15 +397,38 @@ is exit 0 and leaves the payload byte-identical.
 The store is opened with the game's own LOCK for the write, so a world
 Minecraft has open is refused, like `db put`.
 
-Exit codes: `0` set, `1` usage (bad coordinate, bad block spec, a Y the format
-cannot address), `2` not a world, not a Bedrock world, or a subchunk the game
-deleted, `3` the stored payload is not the format mcme reads, `4` store error
+A Java world is edited the same way, through the chunk's palettes. The block
+replaces what its position points at — reusing an entry the section's
+palette already holds when the block is one, appending a new entry when it
+is not — and the section's long array is repacked at the bits that palette
+needs. A section the chunk does not list is created and kept in Y order —
+except for air, which a position no section covers already holds, so that
+edit invents nothing — and a section stored without `block_states` starts as the all-air palette the
+format says it is, so the first edit into an untouched section makes a
+palette of air plus that block and every other position in the section keeps
+its air. The whole chunk document is then re-encoded, compressed and
+appended to its region file the way `region chunk set` writes, and a no-op
+edit — the block already stored there — is exit 0 with the region file
+untouched, the same honesty this verb keeps for Bedrock. A chunk the region
+file does not have is not resurrected: a chunk document carries bookkeeping
+the game would have to trust (`Status`, `Heightmaps`, the rest), and mcme
+will not invent it, so it is "not stored", exit 2. Java worlds take
+`--dimension` the way the game lays the directories out — overworld
+`region/`, nether `DIM-1/region/`, end `DIM1/region/` — and take no LOCK,
+since region files are not locked.
+
+Exit codes: `0` set, `1` usage (bad coordinate, bad block spec, a Y the
+format cannot address), `2` not a world, not a world that has the kind
+asked for, a subchunk the game deleted (Bedrock) or a chunk the region file
+does not have (Java), `3` the stored payload is not a format mcme reads,
+`4` store error
 (including the world being open elsewhere), `6` internal. Success prints
 nothing.
 
 ### `mcme chunk get`
 
-Prints one block of a Bedrock world as the same spec `chunk set` accepts, so
+Prints one block of a Bedrock or Java world as the same spec `chunk set`
+accepts, so
 `set` followed by `get` prints what went in and an agent can verify its own
 edit. The printed text can be passed straight back to `set`.
 
@@ -424,18 +447,28 @@ against a `get` of the same block, not against hand-typed text. The palette
 entry's version is not printed: the spec syntax has no version field, and the
 version mcme writes for entries it adds is a constant.
 
+The same verb answers for a Java world: the block comes from the chunk's
+section palettes — the 1.18+ layout, `sections` at the root, each with its
+absolute Y and a `block_states` palette — and prints in the same spec form.
+A position no stored section covers, or a section stored without
+`block_states`, is `minecraft:air`, which is what the format says it holds.
+A chunk the region file does not have is "not stored", exit 2 — the same
+answer Bedrock gives for a missing subchunk.
+
 Under `--json` the same text is a field, escaped, with the coordinates
 echoed: `{"block":"minecraft:stone","x":12,"y":64,"z":-30}`.
 
-Exit codes: `0` printed, `1` usage, `2` not a world, not a Bedrock world, or
-the subchunk is not stored, `3` the stored payload is not the format mcme
-reads, `4` store error. Reading does not take the LOCK — the game can hold
-the world open.
+Exit codes: `0` printed, `1` usage, `2` not a world, not a world of the kind
+the world turned out to be (Bedrock and Java both answer; nothing else
+does), or the subchunk (Bedrock) / chunk (Java) is not stored, `3` the
+stored payload is not the format mcme reads, `4` store error. Reading does
+not take the LOCK — the game can hold the world open.
 
 ### `mcme chunk fill`
 
 Sets a box of blocks to one block — the whole box, in one command, one
-payload write per subchunk the box touches.
+payload write per subchunk the box touches. Bedrock only: a Java world is
+answered by `chunk get` and `chunk set`, one block at a time.
 
 ```
 mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>
