@@ -1,4 +1,5 @@
 #include "mcme/bedrock_chunk.h"
+#include "mcme/bedrock_entity.h"
 #include "mcme/bedrock_keys.h"
 #include "mcme/bedrock_write.h"
 #include "mcme/core.h"
@@ -1129,6 +1130,7 @@ static void test_bedrock_inventory(void)
  * ======================================================================== */
 
 static const char kChunksWorld[] = "tests/golden/worlds/bedrock-chunks";
+static const char kEntitiesWorld[] = "tests/golden/worlds/bedrock-entities";
 
 /* Copies a whole db/ directory to `dst` so an edit
    lands on a copy and never on the fixture. Only
@@ -2298,6 +2300,182 @@ static void test_bedrock_column(void)
     mcme_arena_free(arena);
 }
 
+/* ------------------------------------------------------------------------
+ * Block entities
+ *
+ * A chunk's entities are one record of concatenated documents, so reading
+ * one is a search by the coordinates the document carries. The fixture
+ * holds three documents in one chunk (a chest, a sign, and one with no
+ * coordinates at all), a furnace in a second chunk, and a chest in the
+ * nether — the cases that make the search, the chunk addressing and the
+ * dimension key each prove themselves.
+ * ---------------------------------------------------------------------- */
+
+static void test_bedrock_entity(void)
+{
+    char src[512];
+    snprintf(src, sizeof src, "%s/db", kEntitiesWorld);
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP block entity tests (%s not found; run "
+               "tools/ref_bedrock_entities.py)\n", src);
+        return;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        CHECK_MSG(false, "out of memory");
+        return;
+    }
+
+    char tmp[64];
+    char dbdir[512];
+    McmeLevelDb *db = NULL;
+    McmeNbtDoc doc;
+
+    CHECK(fresh_store_dir(tmp, sizeof tmp));
+    snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+    CHECK(copy_store(src, dbdir));
+    CHECK(mcme_leveldb_open(&db, dbdir));
+
+    /* --- The chest: the first of three documents in one record, so
+       the read had to pass the sign and the coordinateless one to
+       find it. --- */
+    CHECK(mcme_bedrock_block_entity(db, 12, 64, 3, 0, arena,
+                                    &doc)
+          == MCME_ENTITY_OK);
+    const McmeTag *id = mcme_nbt_path(doc.root, "id");
+    CHECK(id != NULL && id->type == MCME_TAG_String
+          && strcmp(id->string.data, "minecraft:chest") == 0);
+    const McmeTag *items = mcme_nbt_path(doc.root, "Items");
+    CHECK(items != NULL && items->type == MCME_TAG_List
+          && items->list.len == 2);
+    /* The item's own fields, reached through the list index the
+       path lookup understands. */
+    const McmeTag *first = mcme_nbt_path(doc.root, "Items.0.id");
+    CHECK(first != NULL && first->type == MCME_TAG_String
+          && strcmp(first->string.data, "minecraft:diamond") == 0);
+    const McmeTag *count = mcme_nbt_path(doc.root, "Items.0.count");
+    CHECK(count != NULL && count->type == MCME_TAG_Byte
+          && count->as_byte == 3);
+
+    /* --- The sign is the second document of the same record. --- */
+    CHECK(mcme_bedrock_block_entity(db, 0, 65, 0, 0, arena, &doc)
+          == MCME_ENTITY_OK);
+    const McmeTag *text = mcme_nbt_path(doc.root, "Text");
+    CHECK(text != NULL && text->type == MCME_TAG_String
+          && strcmp(text->string.data, "mcme fixture") == 0);
+
+    /* --- A furnace in another chunk: the record is read from the
+       chunk the coordinates fall in, floor division included. --- */
+    CHECK(mcme_bedrock_block_entity(db, 16, 8, -32, 0, arena,
+                                    &doc)
+          == MCME_ENTITY_OK);
+    id = mcme_nbt_path(doc.root, "id");
+    CHECK(id != NULL && strcmp(id->string.data, "minecraft:furnace")
+          == 0);
+    const McmeTag *burn = mcme_nbt_path(doc.root, "BurnTime");
+    CHECK(burn != NULL && burn->type == MCME_TAG_Short
+          && burn->as_short == 100);
+
+    /* --- Same local coordinates, one chunk over: no record there,
+       so no entity — the record belongs to its chunk. --- */
+    CHECK(mcme_bedrock_block_entity(db, 12, 64, 19, 0, arena,
+                                    &doc)
+          == MCME_ENTITY_ABSENT);
+
+    /* --- A negative chunk coordinate is still one chunk. --- */
+    CHECK(mcme_bedrock_block_entity(db, 16, 8, -32, 1, arena,
+                                    &doc)
+          == MCME_ENTITY_ABSENT);
+    CHECK(mcme_bedrock_block_entity(db, 0, 5, 0, 1, arena, &doc)
+          == MCME_ENTITY_OK);
+    id = mcme_nbt_path(doc.root, "id");
+    CHECK(id != NULL && strcmp(id->string.data, "minecraft:chest")
+          == 0);
+
+    /* --- Nothing at that block: the coordinateless document is not
+       matched to a position, which is what its absence pins. --- */
+    CHECK(mcme_bedrock_block_entity(db, 12, 64, 4, 0, arena, &doc)
+          == MCME_ENTITY_ABSENT);
+    CHECK(mcme_bedrock_block_entity(db, 5, 5, 5, 0, arena, &doc)
+          == MCME_ENTITY_ABSENT);
+
+    /* --- Usage faults do not touch the store. --- */
+    CHECK(mcme_bedrock_block_entity(NULL, 0, 0, 0, 0, arena,
+                                    &doc)
+          == MCME_ENTITY_USAGE);
+    CHECK(mcme_bedrock_block_entity(db, 0, 0, 0, 0, NULL, &doc)
+          == MCME_ENTITY_USAGE);
+    CHECK(mcme_bedrock_block_entity(db, 0, 0, 0, 0, arena, NULL)
+          == MCME_ENTITY_USAGE);
+
+    mcme_leveldb_close(db);
+    db = NULL;
+
+    remove_store(dbdir);
+    rmdir(tmp);
+
+    /* --- The store decides: a record the game deleted is an
+       absence, and one that will not decode is exit 3's class. --- */
+    {
+        uint8_t key[14];
+        size_t key_len = 0;
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &key_len, 0,
+                                     0, 0,
+                                     MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                                     false, 0));
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(mcme_leveldb_delete(db, key, key_len));
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(mcme_bedrock_block_entity(db, 12, 64, 3, 0, arena,
+                                        &doc)
+              == MCME_ENTITY_ABSENT);
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    {
+        uint8_t key[14];
+        size_t key_len = 0;
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &key_len, 0,
+                                     0, 0,
+                                     MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                                     false, 0));
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        /* A document that ends mid-tag: the record will not
+           decode, and that is data mcme cannot read. */
+        CHECK(mcme_leveldb_put(db, key, key_len,
+                               "\x0a\x00\x03id\x08\x00\x04xx", 11));
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(mcme_bedrock_block_entity(db, 12, 64, 3, 0, arena,
+                                        &doc)
+              == MCME_ENTITY_NOT_READABLE);
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    mcme_arena_free(arena);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -2309,6 +2487,7 @@ int mcme_test_world(void)
     test_bedrock_inventory();
     test_bedrock_write();
     test_bedrock_column();
+    test_bedrock_entity();
 
     if (!mcme_fs_exists(kWorldDir)) {
         printf("  SKIP golden world (%s not found; run tools/ref_worlds.py)\n",

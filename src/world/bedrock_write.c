@@ -14,24 +14,6 @@
    freshly placed block writes, to match. */
 #define BLOCK_VERSION_DEFAULT 17694720
 
-/* Floor division by 16, for coordinates that may be
-   negative: C truncates towards zero, and the chunk a
-   negative block falls in is the one below it. */
-static int32_t floor_div16(int32_t v)
-{
-    int32_t q = v / 16;
-    if (v % 16 != 0 && v < 0) q -= 1;
-    return q;
-}
-
-/* The remainder mod 16, always 0 to 15: the block's
-   position inside its chunk or subchunk. */
-static int32_t mod16(int32_t v)
-{
-    int32_t r = v % 16;
-    return r < 0 ? r + 16 : r;
-}
-
 bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
                                int32_t z, int32_t dimension,
                                uint8_t *out, size_t cap,
@@ -42,7 +24,7 @@ bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
         return false;
     }
 
-    int32_t cy = floor_div16(y);
+    int32_t cy = mcme_bedrock_chunk_of(y);
     if (cy < INT8_MIN || cy > INT8_MAX) {
         mcme_set_error("subchunk key: subchunk Y %d does "
                        "not fit the key's signed byte", cy);
@@ -50,8 +32,8 @@ bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
     }
 
     return mcme_bedrock_key_build(out, cap, len,
-                                  floor_div16(x),
-                                  floor_div16(z),
+                                  mcme_bedrock_chunk_of(x),
+                                  mcme_bedrock_chunk_of(z),
                                   dimension,
                                   MCME_BEDROCK_TAG_SUBCHUNK,
                                   true, (int8_t)cy);
@@ -303,8 +285,8 @@ bool mcme_bedrock_set_block(const char *db_dir,
         return false;
     }
 
-    int32_t cx = floor_div16(x), cz = floor_div16(z);
-    int32_t cy = floor_div16(y);
+    int32_t cx = mcme_bedrock_chunk_of(x), cz = mcme_bedrock_chunk_of(z);
+    int32_t cy = mcme_bedrock_chunk_of(y);
     if (cy < INT8_MIN || cy > INT8_MAX) {
         if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         mcme_set_error("set block: subchunk Y %d does not "
@@ -357,8 +339,8 @@ bool mcme_bedrock_set_block(const char *db_dir,
     }
 
     if (!mcme_bedrock_subchunk_set(&sc, arena,
-                                   mod16(x), mod16(y),
-                                   mod16(z), block)) {
+                                   mcme_bedrock_offset_in(x), mcme_bedrock_offset_in(y),
+                                   mcme_bedrock_offset_in(z), block)) {
         char why_text[256];
         snprintf(why_text, sizeof why_text, "%s", mcme_last_error());
         mcme_set_error("set block: block (%d, %d, %d): %s",
@@ -403,12 +385,12 @@ static void box_subchunk_range(const McmeBox *box,
                                int32_t *cx1, int32_t *cy1, int32_t *cz1,
                                int32_t *cx2, int32_t *cy2, int32_t *cz2)
 {
-    *cx1 = floor_div16(i32_min(box->x1, box->x2));
-    *cx2 = floor_div16(i32_max(box->x1, box->x2));
-    *cy1 = floor_div16(i32_min(box->y1, box->y2));
-    *cy2 = floor_div16(i32_max(box->y1, box->y2));
-    *cz1 = floor_div16(i32_min(box->z1, box->z2));
-    *cz2 = floor_div16(i32_max(box->z1, box->z2));
+    *cx1 = mcme_bedrock_chunk_of(i32_min(box->x1, box->x2));
+    *cx2 = mcme_bedrock_chunk_of(i32_max(box->x1, box->x2));
+    *cy1 = mcme_bedrock_chunk_of(i32_min(box->y1, box->y2));
+    *cy2 = mcme_bedrock_chunk_of(i32_max(box->y1, box->y2));
+    *cz1 = mcme_bedrock_chunk_of(i32_min(box->z1, box->z2));
+    *cz2 = mcme_bedrock_chunk_of(i32_max(box->z1, box->z2));
 }
 
 bool mcme_bedrock_fill_check(McmeLevelDb *db, const McmeBox *box,
@@ -961,10 +943,10 @@ bool mcme_bedrock_column_height(McmeLevelDb *db, int32_t x, int32_t z,
     }
     memset(out, 0, sizeof *out);
 
-    int32_t cx = floor_div16(x);
-    int32_t cz = floor_div16(z);
-    int32_t lx = mod16(x);
-    int32_t lz = mod16(z);
+    int32_t cx = mcme_bedrock_chunk_of(x);
+    int32_t cz = mcme_bedrock_chunk_of(z);
+    int32_t lx = mcme_bedrock_offset_in(x);
+    int32_t lz = mcme_bedrock_offset_in(z);
 
     /* Which subchunks the store holds here, and what they contain,
        in one pass. A key says everything about a subchunk but its

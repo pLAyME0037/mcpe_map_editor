@@ -59,8 +59,8 @@ static void write_le32(uint8_t *p, int32_t v)
 }
 
 bool mcme_bedrock_key_build(uint8_t *out, size_t cap, size_t *len,
-                                  int32_t x, int32_t z, int32_t dimension,
-                                  uint8_t tag, bool has_index, int8_t index)
+                            int32_t x, int32_t z, int32_t dimension,
+                            uint8_t tag, bool has_index, int8_t index)
 {
     if (out == NULL || len == NULL) {
         mcme_set_error("bedrock key: null argument");
@@ -96,6 +96,19 @@ bool mcme_bedrock_key_build(uint8_t *out, size_t cap, size_t *len,
     return true;
 }
 
+int32_t mcme_bedrock_chunk_of(int32_t block)
+{
+    int32_t q = block / 16;
+    if (block % 16 != 0 && block < 0) q -= 1;
+    return q;
+}
+
+int32_t mcme_bedrock_offset_in(int32_t block)
+{
+    int32_t r = block % 16;
+    return r < 0 ? r + 16 : r;
+}
+
 const char *mcme_bedrock_tag_name(uint8_t tag)
 {
     switch (tag) {
@@ -103,6 +116,7 @@ const char *mcme_bedrock_tag_name(uint8_t tag)
     case MCME_BEDROCK_TAG_SUBCHUNK:     return "subchunk";
     case MCME_BEDROCK_TAG_CHUNK_VERSION: return "version";
     case MCME_BEDROCK_TAG_BIOME:        return "biome";
+    case MCME_BEDROCK_TAG_BLOCK_ENTITY: return "block-entity";
     default:                            return NULL;
     }
 }

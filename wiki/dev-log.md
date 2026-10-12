@@ -9,6 +9,77 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — What's in the chest: `chunk entity`
+
+### Built
+
+- `mcme_bedrock_block_entity()` (bedrock_entity.c/h),
+  the read half of a chunk's block entities: a chest's
+  inventory, a sign's text, a spawner's rules. None of
+  it is in a subchunk — each chunk holds one record
+  (key tag 0x31) of one NBT document per entity,
+  concatenated with no framing, which is the shape
+  `mcme_nbt_parse_prefix()` already reads for block
+  palettes.
+- The record is a search, not a fetch: the documents
+  are matched by the `x`, `y`, `z` each one carries,
+  and the first match answers. A document with no
+  coordinates is not addressable by position —
+  amulet's own decoder drops it — so it is skipped
+  rather than matched or refused. A record that will
+  not decode fails the call naming the chunk: world
+  data mcme cannot read, not an absence.
+- `mcme chunk entity <world> <x> <y> <z>` prints the
+  document verbatim — SNBT, or JSON under `--json`,
+  which is a view of the NBT and not a round trip.
+  Nothing is added to the entity's own fields, and the
+  keys come back in the order the world wrote them.
+  Exit 2 when no entity is stored at that block, which
+  includes a record the game deleted.
+- 0x31 joins the tag names (`block-entity`) and pointedly
+  does NOT join the chunk markers: a record of entities
+  says a chunk exists only because something else
+  already stored its blocks, and counting it would
+  report half-written chunks.
+- The chunk/offset rule — floor division by 16, since
+  a negative block is in the chunk below — moved from
+  bedrock_write.c's private helpers into bedrock_keys
+  as `mcme_bedrock_chunk_of()` / `mcme_bedrock_offset_in()`,
+  because a third module now needs it and a rule written
+  three times is a rule written wrong twice.
+
+### Fixture
+
+- `tools/ref_bedrock_entities.py` writes
+  `tests/golden/worlds/bedrock-entities`: three records
+  (a chest with two stacks, a sign, and a document with
+  no coordinates; a furnace in a second chunk; a chest
+  in the nether) over the golden subchunk payloads, put
+  verbatim. Nothing is written until amulet's own
+  `_unpack_nbt_list` reads back what was built, and the
+  tool refuses an entity whose own coordinates fall in
+  another chunk — the mistake that made the first
+  version of this fixture unreachable.
+- `tools/ref_bedrock_entity.py`, 8 checks: each document
+  compared WHOLE against amulet's decode — dicts, lists,
+  strings, numbers — so a reader that renames a field,
+  drops one or reads a byte as something else fails.
+  Plus the coordinateless document matching no position,
+  the same local block one chunk over being nothing,
+  a deleted record (exit 2) and a junk record (exit 3).
+- Selftest `test_bedrock_entity` covers the same from
+  the library: three documents in one record, the chunk
+  addressing at a negative coordinate, the dimension
+  key, usage faults, deletion and undecodable data.
+
+### Next
+
+- The write half: changing one entity means rewriting
+  every document of the chunk's record, which wants the
+  read proven first — it now is.
+
+---
+
 ## 2026-10-12 — How high the ground is: `chunk height`
 
 ### Built

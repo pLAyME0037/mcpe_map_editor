@@ -37,6 +37,14 @@
 #define MCME_BEDROCK_TAG_SUBCHUNK     0x2fu  /* 1.18+ subchunk prefix     */
 #define MCME_BEDROCK_TAG_CHUNK_VERSION 0x76u /* chunk version record      */
 
+/* A chunk's block entities: one record per chunk holding one NBT
+   document per entity, concatenated with no framing. It carries no
+   subchunk index, and it is NOT a chunk marker — a record of
+   entities says a chunk exists only because something else already
+   stored its blocks, and counting it would report chunks the game
+   has half-written. */
+#define MCME_BEDROCK_TAG_BLOCK_ENTITY 0x31u
+
 /* Tags that belong to a chunk without identifying one. Reported by name so a
    listing can say what a key holds, but never counted as a chunk: a chunk with
    a biome record and no subchunk is still one chunk, and counting the biome
@@ -76,8 +84,18 @@ bool mcme_bedrock_key_parse(const uint8_t *key, size_t len, McmeBedrockKey *out)
  * or `cap` is too small to hold the key.
  */
 bool mcme_bedrock_key_build(uint8_t *out, size_t cap, size_t *len,
-                                  int32_t x, int32_t z, int32_t dimension,
-                                  uint8_t tag, bool has_index, int8_t index);
+                            int32_t x, int32_t z, int32_t dimension,
+                            uint8_t tag, bool has_index, int8_t index);
+
+/*
+ * The chunk a block coordinate falls in, and the block's offset
+ * inside it (0 to 15). Every coordinate rule in the chunk layer is
+ * this one — floor division by 16 — because a negative block is in
+ * the chunk BELOW the one C's truncating division names. It lives
+ * here so the rule is written once.
+ */
+int32_t mcme_bedrock_chunk_of(int32_t block);
+int32_t mcme_bedrock_offset_in(int32_t block);
 
 /* Short name for a tag byte: "subchunk", "subchunk-old", "version", "biome".
    Returns NULL for a tag this build does not know, which callers should print

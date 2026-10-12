@@ -418,6 +418,50 @@ air, `1` usage, `2` no subchunk is stored for the column, so there is nothing
 to measure, `3` a stored payload is not the format mcme reads, `4` store
 error.
 
+### `mcme chunk entity`
+
+The block entity stored at one block position — the chest's inventory, the
+sign's text, the spawner's spawn data. Blocks and block entities are stored
+separately: the block is in a subchunk, the entity in the chunk's own record,
+and `chunk get` reads only the block.
+
+```
+mcme chunk entity <world> <x> <y> <z> [--dimension <name|number>]
+```
+
+```
+$ mcme chunk entity mybedrock 12 64 3
+{CustomName: "", id: "minecraft:chest", Items: [{count: 3b, damage: 0s, id: "minecraft:diamond", Slot: 0b}, {count: 64b, damage: 0s, id: "minecraft:stone", Slot: 1b}], x: 12, y: 64, z: 3}
+```
+
+The document is printed as the world stores it: the compound verbatim, in
+SNBT (the same text `nbt dump` prints, compact) or, under `--json`, as JSON —
+which is a view and not a round trip, since JSON has no way to say a number
+is a byte or a long. `id`, `x`, `y` and `z` are the entity's own fields;
+nothing is added to them. The keys come back in the order the world wrote
+them, which is not alphabetical and is not sorted for you.
+
+A chunk's entities are one record holding several documents, so two entities
+of one chunk are read by two calls and neither disturbs the other. An entity
+belongs to the chunk its own `x`/`z` fall in, so the record it is read from
+is the one at `floor(x/16)`, `floor(z/16)`. A document in that record that
+carries no `x`/`y`/`z` is not addressable by position and is not matched; a
+record that will not decode at all is exit 3, naming the chunk, because that
+is world data mcme cannot read rather than an absence.
+
+Under `--json`:
+
+```json
+{"id":"minecraft:chest","x":12,"y":64,"z":3,
+ "Items":[{"Slot":0,"id":"minecraft:diamond","count":3,"damage":0},
+          {"Slot":1,"id":"minecraft:stone","count":64,"damage":0}],
+ "CustomName":""}
+```
+
+Exit codes: `0` an entity is stored at that block, `1` usage, `2` not a
+world, not a Bedrock world, or no block entity at that position, `3` the
+chunk's entity record is not a format mcme reads, `4` store error.
+
 ### `mcme db`
 
 Raw key/value access to a Bedrock store. This is the write path's CLI surface

@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "mcme/bedrock_chunk.h"
+#include "mcme/bedrock_entity.h"
 #include "mcme/bedrock_keys.h"
 #include "mcme/bedrock_write.h"
 #include "mcme/cli.h"
@@ -94,6 +95,11 @@ static void print_usage(FILE *out)
         "                    there, the topmost and bottommost\n"
         "                    non-air block. Exit 2 if the column\n"
         "                    was never stored.\n"
+        "  chunk entity <world> <x> <y> <z>\n"
+        "                    The block entity at one block — a\n"
+        "                    chest's contents, a sign's text —\n"
+        "                    as SNBT, or JSON with --json. Exit 2\n"
+        "                    if none is stored there.\n"
         "  db <op> <world> <key-hex> [value-hex]\n"
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
@@ -1662,6 +1668,119 @@ static int cmd_chunk_height(int argc, char **argv)
 }
 
 /* ========================================================================
+ * `mcme chunk entity <world> <x> <y> <z>`
+ *
+ * The block entity stored at one block — the chest's inventory, the
+ * sign's text — which lives in the chunk's own record, not in a
+ * subchunk, so `chunk get` cannot see it. The document is printed as
+ * the world holds it: nothing added, nothing renamed.
+ * ======================================================================== */
+
+static int cmd_chunk_entity(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension(&argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 4) {
+        mcme_set_error("chunk: usage: chunk entity <world> <x> <y> "
+                       "<z> [--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long x, y, z;
+    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord(argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord(argv[3], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
+        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    int rc = MCME_OK;
+    McmeNbtDoc doc;
+    memset(&doc, 0, sizeof doc);
+
+    /* Narrowed once, here: a chunk addresses 32-bit coordinates whatever
+       width parse_coord held them in, and doing it once keeps the read
+       below on a single line instead of a four-deep continuation. */
+    int32_t bx = (int32_t)x, by = (int32_t)y, bz = (int32_t)z;
+
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, info.db_path)) {
+        mcme_arena_free(arena);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_IO;
+    }
+    McmeEntityStatus status =
+        mcme_bedrock_block_entity(db, bx, by, bz, dimension, arena, &doc);
+    mcme_leveldb_close(db);
+
+    switch (status) {
+    case MCME_ENTITY_OK:
+        break;
+    case MCME_ENTITY_ABSENT:
+        mcme_set_error("chunk: no block entity is stored at "
+                       "block (%ld, %ld, %ld) in dimension %d",
+                       x, y, z, (int)dimension);
+        rc = MCME_EXIT_NOT_FOUND;
+        break;
+    case MCME_ENTITY_NOT_READABLE:
+        rc = MCME_EXIT_BAD_FORMAT;  /* the error already says */
+        break;
+    case MCME_ENTITY_STORE:
+        rc = MCME_EXIT_IO;          /* the store's own error  */
+        break;
+    case MCME_ENTITY_USAGE:
+        rc = MCME_EXIT_USAGE;
+        break;
+    case MCME_ENTITY_INTERNAL:
+    default:
+        rc = MCME_EXIT_INTERNAL;
+        break;
+    }
+
+    if (rc == MCME_OK) {
+        /* The document verbatim: the same text `nbt dump` prints,
+           and the same values under --json, which is a view of the
+           NBT rather than a round trip. */
+        McmeBuffer out;
+        mcme_buffer_init(&out);
+        bool ok = g_opts.json
+            ? mcme_nbt_write_json(doc.root, &out, 0)
+            : mcme_nbt_write_snbt(doc.root, &out, 0);
+        if (!ok) {
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk: the entity at (%ld, %ld, %ld) "
+                           "cannot be printed: %s", x, y, z, why);
+            rc = MCME_EXIT_BAD_FORMAT;
+        } else {
+            fwrite(out.data, 1, out.len, stdout);
+            fputc('\n', stdout);
+        }
+        mcme_buffer_free(&out);
+    }
+
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
+/* ========================================================================
  * db — raw key/value access to a Bedrock store
  * ======================================================================== */
 
@@ -1922,8 +2041,8 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "
-                           "(expected set, get, fill, stats "
-                           "or height)");
+                           "(expected set, get, fill, stats, "
+                           "height or entity)");
             return MCME_EXIT_USAGE;
         }
         if (strcmp(args[0], "set") == 0) {
@@ -1941,9 +2060,12 @@ static int dispatch(int argc, char **argv)
         if (strcmp(args[0], "height") == 0) {
             return cmd_chunk_height(rest - 1, args + 1);
         }
+        if (strcmp(args[0], "entity") == 0) {
+            return cmd_chunk_entity(rest - 1, args + 1);
+        }
         mcme_set_error("chunk: unknown subcommand '%s' "
-                       "(expected set, get, fill, stats or height)",
-                       args[0]);
+                       "(expected set, get, fill, stats, height "
+                       "or entity)", args[0]);
         return MCME_EXIT_USAGE;
     }
     if (strcmp(cmd, "db") == 0)      return cmd_db(rest, args);
