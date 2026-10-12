@@ -486,6 +486,210 @@ static void test_chunks(void)
 
 static const char kForgeWorld[] = "tests/golden/worlds/bedrock-forge";
 
+/* ========================================================================
+ * Writing a chunk back — append, repoint, touch nothing else
+ * ======================================================================== */
+
+/* Opens a region file and pins the chunk at (cx, cz): present, stamped
+   with `stamp`, compressed the way Java writes it, and decoding to a
+   document whose DataVersion is `version`. */
+static void check_chunk_written(const char *file, int cx, int cz,
+                                int32_t version, uint32_t stamp)
+{
+    McmeRegion reg;
+    if (!mcme_region_open(&reg, file)) {
+        CHECK_MSG(false, "reopen %s: %s", file, mcme_last_error());
+        return;
+    }
+    CHECK_MSG(mcme_region_chunk_present(&reg, cx, cz),
+              "%s holds no chunk at (%d, %d)", file, cx, cz);
+    CHECK_MSG(mcme_region_chunk_timestamp(&reg, cx, cz) == stamp,
+              "%s chunk (%d, %d) timestamp %u, want %u",
+              file, cx, cz, mcme_region_chunk_timestamp(&reg, cx, cz), stamp);
+
+    McmeChunkPayload p;
+    if (mcme_region_chunk_payload(&reg, cx, cz, &p)) {
+        CHECK_MSG(p.compression == MCME_ANVIL_COMP_ZLIB,
+                  "%s chunk (%d, %d) compression %u, want zlib",
+                  file, cx, cz, p.compression);
+    } else {
+        CHECK_MSG(false, "%s chunk (%d, %d): %s",
+                  file, cx, cz, mcme_last_error());
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        CHECK_MSG(false, "out of memory");
+        mcme_region_close(&reg);
+        return;
+    }
+
+    McmeBuffer nbt;
+    mcme_buffer_init(&nbt);
+    if (!mcme_region_read_chunk(&reg, cx, cz, NULL, &nbt)) {
+        CHECK_MSG(false, "%s chunk (%d, %d): %s",
+                  file, cx, cz, mcme_last_error());
+    } else {
+        McmeNbtDoc back;
+        if (!mcme_nbt_parse(&back, arena, nbt.data, nbt.len, false)) {
+            CHECK_MSG(false, "%s chunk (%d, %d) will not decode: %s",
+                      file, cx, cz, mcme_last_error());
+        } else {
+            const McmeTag *v = mcme_nbt_path(back.root, "DataVersion");
+            CHECK_MSG(v != NULL && v->type == MCME_TAG_Int
+                      && v->as_int == version,
+                      "%s chunk (%d, %d) DataVersion %d, want %d",
+                      file, cx, cz, v != NULL ? v->as_int : -1, version);
+        }
+    }
+    mcme_buffer_free(&nbt);
+    mcme_arena_free(arena);
+    mcme_region_close(&reg);
+}
+
+static void test_region_write(void)
+{
+    printf("  region chunk write (append, repoint, byte fidelity)\n");
+
+    /* The golden region, copied: every write verb runs against a
+       scratch file, never the fixture itself. */
+    char src[512];
+    char dst[] = "build/w.mca";
+    snprintf(src, sizeof src, "%s/region/r.0.0.mca", kWorldDir);
+    void *golden;
+    size_t golden_len;
+    if (!mcme_fs_read(src, &golden, &golden_len)) {
+        printf("  SKIP region write (cannot read %s)\n", src);
+        return;
+    }
+    CHECK(mcme_fs_write(dst, golden, golden_len));
+
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) {
+        free(golden);
+        remove(dst);
+        return;
+    }
+
+    /* Slot (2, 2) is 66: the fixture's chunks sit at slots 0, 1, 32 and
+       1023, so the new entry (bytes 264..267) and timestamp (4360..4363)
+       are theirs nowhere. */
+    static const size_t kEntryAt = 264;
+    static const size_t kStampAt = 4096 + 264;
+    static const char kDoc[] = "{DataVersion: 7, xPos: 3, zPos: -4}";
+    static const char kDoc2[] = "{DataVersion: 9}";
+
+    McmeTag *doc = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, kDoc, sizeof kDoc - 1, &doc));
+
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_INTERNAL;
+    CHECK(mcme_region_set_chunk(dst, 2, 2, doc, arena,
+                                0x01020304u, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+    check_chunk_written(dst, 2, 2, 7, 0x01020304u);
+
+    /* Every byte outside the slot's entry, its timestamp and the
+       appended tail is the golden file, bit for bit. */
+    void *now;
+    size_t now_len;
+    CHECK(mcme_fs_read(dst, &now, &now_len));
+    CHECK(now_len > golden_len);
+    CHECK(memcmp(now, golden, kEntryAt) == 0);
+    CHECK(memcmp((char *)now + kEntryAt + 4, (char *)golden + kEntryAt + 4,
+                 kStampAt - kEntryAt - 4) == 0);
+    CHECK(memcmp((char *)now + kStampAt + 4, (char *)golden + kStampAt + 4,
+                 golden_len - kStampAt - 4) == 0);
+
+    /* Writing the same chunk again moves the payload further out: the
+       first write's tail is slack now, the count stays at five, and the
+       other slots are still the golden file. */
+    McmeTag *doc2 = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, kDoc2, sizeof kDoc2 - 1, &doc2));
+    CHECK(mcme_region_set_chunk(dst, 2, 2, doc2, arena,
+                                0x0A0B0C0Du, &refusal));
+    check_chunk_written(dst, 2, 2, 9, 0x0A0B0C0Du);
+
+    McmeRegion reg;
+    CHECK(mcme_region_open(&reg, dst));
+    CHECK(mcme_region_chunk_count(&reg) == 5);
+    mcme_region_close(&reg);
+
+    free(now);
+    CHECK(mcme_fs_read(dst, &now, &now_len));
+    CHECK(memcmp(now, golden, kEntryAt) == 0);
+    CHECK(memcmp((char *)now + kEntryAt + 4, (char *)golden + kEntryAt + 4,
+                 kStampAt - kEntryAt - 4) == 0);
+    CHECK(memcmp((char *)now + kStampAt + 4, (char *)golden + kStampAt + 4,
+                 golden_len - kStampAt - 4) == 0);
+    free(now);
+
+    /* A region file that does not exist is created with its 8 KiB
+       header, one chunk in it. */
+    char fresh[] = "build/w_new.mca";
+    CHECK(mcme_region_set_chunk(fresh, 0, 0, doc, arena, 1u, &refusal));
+    check_chunk_written(fresh, 0, 0, 7, 1u);
+    CHECK(mcme_region_open(&reg, fresh));
+    CHECK(mcme_region_chunk_count(&reg) == 1);
+    mcme_region_close(&reg);
+
+    /* Every refusal the library promises. */
+    CHECK(!mcme_region_set_chunk(NULL, 0, 0, doc, arena, 0, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    CHECK(!mcme_region_set_chunk(dst, 0, 0, NULL, arena, 0, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    CHECK(!mcme_region_set_chunk(dst, 0, 0, doc, NULL, 0, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+    static const char kList[] = "[1, 2]";
+    McmeTag *list = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, kList, sizeof kList - 1, &list));
+    CHECK(!mcme_region_set_chunk(dst, 0, 0, list, arena, 0, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+    CHECK(!mcme_region_set_chunk("build/w_nodir_x/r.0.0.mca", 0, 0,
+                                 doc, arena, 0, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+
+    char junk[] = "build/w_bad.mca";
+    CHECK(mcme_fs_write(junk, "junkjunk", 8));
+    CHECK(!mcme_region_set_chunk(junk, 0, 0, doc, arena, 0, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+
+    /* A slot's sector count is one byte, so 255 sectors is the largest
+       chunk a region can claim: a document whose encoded payload runs
+       past that is refused, not truncated into one the reader would
+       misjudge. Built through the tag API — NBT strings cap at 65535
+       bytes, so the size has to come from an array. */
+    {
+        size_t n = 500000;
+        int32_t *ints = malloc(n * sizeof *ints);
+        CHECK(ints != NULL);
+        if (ints != NULL) {
+            uint32_t state = 0x12345678u;
+            for (size_t i = 0; i < n; ++i) {
+                state = state * 1664525u + 1013904223u;   /* LCG */
+                ints[i] = (int32_t)state;
+            }
+            McmeTag *big = mcme_nbt_new(arena, MCME_TAG_Compound);
+            McmeTag *arr = mcme_nbt_new(arena, MCME_TAG_Int_Array);
+            CHECK(big != NULL && arr != NULL);
+            CHECK(mcme_nbt_set_ints(arena, arr, ints, n));
+            CHECK(mcme_nbt_compound_init(arena, big, 1));
+            CHECK(mcme_nbt_compound_put(arena, big, "pad", 3, arr));
+            CHECK(!mcme_region_set_chunk(dst, 5, 5, big, arena, 0, &refusal));
+            CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        }
+        free(ints);
+    }
+
+    mcme_arena_free(arena);
+    free(golden);
+    remove(dst);
+    remove(fresh);
+    remove(junk);
+}
+
 /* Builds a chunk key the way a store holds one: x, z, [dimension], tag,
    [index]. Kept local so the test states the layout it expects rather than
    calling the code under test to build its own input. */
@@ -2932,6 +3136,7 @@ int mcme_test_world(void)
 
     test_container();
     test_chunks();
+    test_region_write();
 
     return g_failed;
 }

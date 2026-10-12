@@ -260,7 +260,7 @@ One Java chunk read out of its region file: the chunk's own NBT
 document, printed the way `mcme nbt dump` prints a file — SNBT by
 default, the JSON view under `--json`, so both commands feed `jq` the
 same tree. What is printed is the world's own: nothing added, renamed
-or reordered.
+or reordered. Its write half is `mcme region chunk set`, below.
 
 ```
 mcme region chunk <world> <cx> <cz> [--dimension <name|number>]
@@ -282,6 +282,46 @@ Exit codes: `0` printed, `1` usage, `2` not a world, not a Java
 world, no region file at that name, or no chunk stored at those
 coordinates, `3` the chunk is stored but is not a format mcme reads,
 `4` store error.
+
+### `mcme region chunk set`
+
+Writes one Java chunk back: the SNBT document replaces the chunk's
+payload in its region file. Silent on success, like every other
+write verb.
+
+```
+mcme region chunk set <world> <cx> <cz> <snbt-document>
+                      [--dimension <name|number>]
+```
+
+The document is the read verb's own output, so the loop an agent
+runs is read → edit → write: `mcme region chunk` prints the SNBT,
+the edit happens in between, and the same text goes back in here.
+The root must be a compound — a chunk is one. SNBT carries no root
+name, so the written document gets the empty one the modern game
+writes.
+
+What is actually written: the new payload is compressed as zlib —
+the codec Java writes — appended after the file's current end
+(zero-padded to a sector boundary first), and the slot's location
+entry repointed at it, timestamp set to now. Every other byte of
+the file stays exactly as it was; the old payload becomes slack for
+a future compactor to reclaim. A slot the world has not stored
+gets a chunk, and a region file that does not exist is created with
+its 8 KiB header — but the region directory for that dimension must
+already be there: mcme writes into a store the world has, it does
+not invent one, and it will not rewrite a region file it cannot
+read.
+
+`set` is matched before the world path, like `chunk entity set`:
+a world directory named `set` reads as `./set` for the other
+verbs.
+
+Exit codes: `0` written, `1` usage (bad coordinate, unparseable or
+non-compound document, a dimension Java has no directory for), `2`
+not a world, not a Java world, or no region directory for that
+dimension, `3` the region file exists but is not a format mcme
+reads and so will not be rewritten, `4` store error.
 
 ### `mcme chunk set`
 

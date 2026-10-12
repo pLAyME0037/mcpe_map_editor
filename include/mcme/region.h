@@ -24,10 +24,11 @@
  *            bytes
  *   N bytes  the compressed NBT for the chunk
  *
- * The reader is deliberately read-only and loads the whole region file into
- * memory. A region is at most ~32 MiB (8192 sectors), so this is a bounded,
- * simple choice; writing region files needs sector allocation and is not built
- * yet. See wiki/world.md.
+ * The reader loads the whole region file into memory. A region is at most
+ * ~32 MiB (8192 sectors), so this is a bounded, simple choice. The writer
+ * appends the new payload after the file's current end and repoints the
+ * slot's entry, touching nothing else — sector allocation in place is what
+ * a compactor is for. See wiki/world.md.
  */
 
 #ifndef MCME_REGION_H
@@ -35,6 +36,12 @@
 
 #include "mcme/compress.h"
 #include "mcme/core.h"
+#include "mcme/nbt.h"
+/* The write-refusal vocabulary every write verb answers with — one
+   condition, one exit code across the CLI. It lives in bedrock_write.h
+   because that is where it was born; region carries no Bedrock
+   dependency beyond the name. */
+#include "mcme/bedrock_write.h"
 
 #define MCME_REGION_SECTOR     4096u
 #define MCME_REGION_ENTRIES    1024u   /* 32 x 32 chunks */
@@ -126,5 +133,36 @@ const char *mcme_region_path(char *out, size_t cap,
  * when that axis is not wanted.
  */
 void mcme_region_of(int cx, int cz, int *out_rx, int *out_rz);
+
+/*
+ * Replaces one chunk's payload — the write half of the reader above.
+ *
+ * `file` is the full path of the region file (build it with
+ * mcme_region_path()); `root` is the chunk's document, rooted in a
+ * compound; `arena` is the one that owns `root`. `timestamp` goes into
+ * the slot's timestamp entry verbatim — the caller passes the wall
+ * clock, a test passes a fixed value.
+ *
+ * The new payload is compressed as zlib (the codec Java writes),
+ * appended after the file's current end (zero-padded to a sector
+ * boundary first), and the slot's location entry repointed at it.
+ * Nothing else in the file is touched: the old payload becomes slack
+ * for a compactor to reclaim. A slot that holds nothing gets a chunk,
+ * and a region file that does not exist is created with its 8 KiB
+ * header — but the region directory must already be there: mcme writes
+ * into a store the world has, it does not invent one, and it will not
+ * rewrite a region file it cannot read.
+ *
+ * Returns false with mcme_last_error() saying what was refused, and
+ * `refusal` (when not NULL) which class: USAGE for a null argument, a
+ * non-compound root, or a payload the reader's own ceiling would
+ * refuse; NOT_THERE when the region directory is missing;
+ * NOT_READABLE when the file exists but is not a region mcme reads;
+ * STORE for the file's own failures; INTERNAL for encoding and
+ * arithmetic.
+ */
+bool mcme_region_set_chunk(const char *file, int cx, int cz,
+                           const McmeTag *root, McmeArena *arena,
+                           uint32_t timestamp, McmeWriteRefusal *refusal);
 
 #endif /* MCME_REGION_H */

@@ -9,6 +9,7 @@
 
 #include "mcme/region.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -321,4 +322,221 @@ const char *mcme_region_path(char *out, size_t cap,
 
     if (n < 0 || (size_t)n >= cap) return NULL;
     return out;
+}
+
+/* ========================================================================
+ * Writing — the write half
+ *
+ * The reader above proves what the container holds; this replaces one
+ * chunk in it. The strategy is append-only: the new payload lands after
+ * the file's current end, the slot's entry repoints at it, and every
+ * other byte of the file is left exactly as it is. Reallocating sectors
+ * in place would mean trusting the one field in the header the reader
+ * deliberately ignores — sector counts go stale in real files — and a
+ * map editor does not gamble a world's chunks on it.
+ * ======================================================================== */
+
+/* The twins of rd_u24be / rd_u32be, for the three integers written back. */
+static void wr_u24be(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 16);
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)v;
+}
+
+static void wr_u32be(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+static void set_refusal(McmeWriteRefusal *refusal, McmeWriteRefusal why)
+{
+    if (refusal != NULL) *refusal = why;
+}
+
+/* The directory a path lives in: everything before the last slash, or "."
+   when there is none. mcme_region_path always writes a slash, so the bare
+   name is only for a caller that hands us one. Returns NULL when the path
+   does not fit `out`. */
+static const char *dir_of(const char *file, char *out, size_t cap)
+{
+    const char *slash = strrchr(file, '/');
+    if (slash == NULL) {
+        snprintf(out, cap, ".");
+        return out;
+    }
+    if (slash == file) {
+        snprintf(out, cap, "/");
+        return out;
+    }
+    size_t n = (size_t)(slash - file);
+    if (n >= cap) return NULL;
+    memcpy(out, file, n);
+    out[n] = '\0';
+    return out;
+}
+
+bool mcme_region_set_chunk(const char *file, int cx, int cz,
+                           const McmeTag *root, McmeArena *arena,
+                           uint32_t timestamp, McmeWriteRefusal *refusal)
+{
+    set_refusal(refusal, MCME_WRITE_REFUSAL_NONE);
+
+    if (file == NULL || root == NULL || arena == NULL) {
+        mcme_set_error("region: null argument");
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+    if (root->type != MCME_TAG_Compound) {
+        mcme_set_error("region: a chunk document is rooted in a compound");
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+
+    /* The region directory must already be there: writing one into
+       existence would be inventing a store the world does not have. */
+    char dir[MCME_REGION_PATH_MAX];
+    if (dir_of(file, dir, sizeof dir) == NULL) {
+        mcme_set_error("region: the path to '%s' is too long", file);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        return false;
+    }
+    if (!mcme_fs_exists(dir)) {
+        mcme_set_error("region: there is no region directory at '%s'", dir);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_THERE);
+        return false;
+    }
+
+    /* Encode before the file is touched: a document that will not encode
+       has written nothing. Region files are Java's, so the bytes are
+       big-endian, and a chunk gets the empty root name — the one a modern
+       save carries, and the one SNBT's round trip produces anyway. */
+    McmeNbtDoc doc;
+    doc.arena = arena;
+    doc.root = (McmeTag *)root;   /* the encoder reads; it does not write
+                                     through the pointer */
+    doc.root_name.data = (char *)"";
+    doc.root_name.len = 0;
+
+    McmeBuffer encoded;
+    mcme_buffer_init(&encoded);
+    if (!mcme_nbt_write_binary_as(&doc, &encoded, false)) {
+        mcme_buffer_free(&encoded);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL); /* the encoder
+                                                              said why */
+        return false;
+    }
+
+    McmeBuffer z;
+    mcme_buffer_init(&z);
+    if (!mcme_compress(MCME_COMPRESS_ZLIB, encoded.data, encoded.len, &z)) {
+        mcme_buffer_free(&encoded);
+        mcme_buffer_free(&z);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL); /* out of memory */
+        return false;
+    }
+    mcme_buffer_free(&encoded);
+
+    /* A slot's sector count is one byte: 255 sectors is the largest chunk
+       a region file can claim. Larger is refused rather than truncated —
+       and it is far under the reader's ceiling too, so what this writes,
+       this reads. */
+    uint32_t sectors = (uint32_t)((5u + z.len + MCME_REGION_SECTOR - 1u)
+                                  / MCME_REGION_SECTOR);
+    if (sectors > 255u) {
+        mcme_set_error("region: the encoded chunk needs %u sectors; "
+                       "a slot can claim 255", sectors);
+        mcme_buffer_free(&z);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+
+    /* Where the payload goes: the file's current end rounded up to a
+       sector — or sector 2 of a file that does not exist yet, whose first
+       8 KiB this write provides as the header. A file that exists but is
+       not a region mcme can read is not rewritten. */
+    bool existed = mcme_fs_exists(file);
+    size_t on_disk = 0;
+    size_t base = MCME_REGION_HEADER;
+    if (existed) {
+        McmeRegion reg;
+        if (!mcme_region_open(&reg, file)) {
+            mcme_buffer_free(&z);
+            set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+            return false;          /* open said what the file's problem is */
+        }
+        on_disk = reg.size;
+        base = reg.size;
+        mcme_region_close(&reg);
+    }
+
+    size_t payload_at =
+        (base + MCME_REGION_SECTOR - 1u) / MCME_REGION_SECTOR * MCME_REGION_SECTOR;
+    uint32_t start_sector = (uint32_t)(payload_at / MCME_REGION_SECTOR);
+    if ((size_t)start_sector + sectors > 0xFFFFFFu) {
+        mcme_set_error("region: '%s' would grow past the sector table's reach",
+                       file);
+        mcme_buffer_free(&z);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        return false;
+    }
+
+    FILE *fh = fopen(file, existed ? "r+b" : "w+b");
+    if (fh == NULL) {
+        mcme_set_error("region: cannot open '%s' for writing: %s",
+                       file, strerror(errno));
+        mcme_buffer_free(&z);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_STORE);
+        return false;
+    }
+
+    bool ok = true;
+
+    /* Pad the file out to the payload's sector — for a file that did not
+       exist this writes the 8 KiB header, zeros and all. */
+    if (payload_at > on_disk) {
+        uint8_t zeros[MCME_REGION_SECTOR] = {0};
+        size_t pad = payload_at - on_disk;
+        ok = fseek(fh, (long)on_disk, SEEK_SET) == 0;
+        while (ok && pad > 0) {
+            size_t take = pad < sizeof zeros ? pad : sizeof zeros;
+            ok = fwrite(zeros, 1, take, fh) == take;
+            pad -= take;
+        }
+    }
+
+    /* The frame the reader parses: length, compression byte, data. */
+    uint8_t head[5];
+    wr_u32be(head, (uint32_t)z.len + 1u);
+    head[4] = MCME_ANVIL_COMP_ZLIB;
+    ok = ok && fseek(fh, (long)payload_at, SEEK_SET) == 0;
+    ok = ok && fwrite(head, 1, sizeof head, fh) == sizeof head;
+    ok = ok && fwrite(z.data, 1, z.len, fh) == z.len;
+
+    /* The slot's entry and timestamp, written last: a reader racing this
+       write finds the old chunk whole until the entry flips to the new. */
+    size_t slot = slot_for(cx, cz);
+    uint8_t entry[4];
+    wr_u24be(entry, start_sector);
+    entry[3] = (uint8_t)sectors;
+    ok = ok && fseek(fh, (long)(slot * 4), SEEK_SET) == 0;
+    ok = ok && fwrite(entry, 1, sizeof entry, fh) == sizeof entry;
+
+    uint8_t stamp[4];
+    wr_u32be(stamp, timestamp);
+    ok = ok && fseek(fh, (long)(MCME_REGION_SECTOR + slot * 4), SEEK_SET) == 0;
+    ok = ok && fwrite(stamp, 1, sizeof stamp, fh) == sizeof stamp;
+
+    if (fclose(fh) != 0) ok = false;
+    mcme_buffer_free(&z);
+
+    if (!ok) {
+        mcme_set_error("region: cannot write '%s': %s", file, strerror(errno));
+        set_refusal(refusal, MCME_WRITE_REFUSAL_STORE);
+        return false;
+    }
+    return true;
 }

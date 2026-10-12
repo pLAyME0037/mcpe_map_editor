@@ -79,6 +79,11 @@ static void print_usage(FILE *out)
         "                    with --json. cx, cz are chunk\n"
         "                    coordinates, not blocks. Takes\n"
         "                    --dimension too.\n"
+        "  region chunk set <world> <cx> <cz> <snbt>\n"
+        "                    Write one Java chunk back: the\n"
+        "                    document replaces the payload,\n"
+        "                    appended and repointed. Silent on\n"
+        "                    success.\n"
         "  chunk set <world> <x> <y> <z> <block>\n"
         "                    Set one block in a Bedrock world.\n"
         "                    <block> is a name, or a name with SNBT\n"
@@ -1418,6 +1423,82 @@ static int cmd_region_chunk(int argc, char **argv)
     return rc;
 }
 
+/*
+ * `mcme region chunk set <world> <cx> <cz> <snbt>` replaces one Java
+ * chunk's payload. The document is the read verb's own output, edited
+ * in between — read, edit, write, silent on success like every other
+ * write verb. The library answers every refusal; refusal_exit gives it
+ * the code it would carry anywhere else in the CLI.
+ */
+static int cmd_region_chunk_write(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("region", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 4) {
+        mcme_set_error("region: usage: region chunk set <world> <cx> <cz> "
+                       "<snbt-document> [--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long cx, cz;
+    if (!parse_coord("region", argv[1], &cx)) return MCME_EXIT_USAGE;
+    if (!parse_coord("region", argv[2], &cz)) return MCME_EXIT_USAGE;
+    const char *snbt = argv[3];
+
+    const char *dim_dir = NULL;
+    if (!java_dimension_dir(dimension, &dim_dir)) {
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("region: '%s' is not a Java world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    int rx, rz;
+    mcme_region_of((int)cx, (int)cz, &rx, &rz);
+
+    char file[MCME_REGION_PATH_MAX];
+    if (mcme_region_path(file, sizeof file, info.path, dim_dir,
+                         rx, rz) == NULL) {
+        mcme_set_error("region: the path to r.%d.%d is too long", rx, rz);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("region: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    /* The document arrives as SNBT — the read verb's own output. What
+       will not parse is usage, before any file is touched. */
+    McmeTag *root = NULL;
+    if (!mcme_nbt_parse_snbt(arena, snbt, strlen(snbt), &root)) {
+        mcme_arena_free(arena);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_USAGE;      /* the parser set the error */
+    }
+
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    bool wrote = mcme_region_set_chunk(file, (int)cx, (int)cz, root, arena,
+                                       (uint32_t)time(NULL), &refusal);
+
+    int rc = wrote ? MCME_OK : refusal_exit(refusal);
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
 static int cmd_chunk_set(int argc, char **argv)
 {
     int32_t dimension = 0;
@@ -2483,8 +2564,11 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "region") == 0) {
         /* `chunk` is matched before the path, like `entity set` and
            `entity del`: a world directory named chunk reads as
-           ./chunk. */
+           ./chunk. Inside chunk, `set` is matched the same way. */
         if (rest >= 1 && strcmp(args[0], "chunk") == 0) {
+            if (rest >= 2 && strcmp(args[1], "set") == 0) {
+                return cmd_region_chunk_write(rest - 2, args + 2);
+            }
             return cmd_region_chunk(rest - 1, args + 1);
         }
         return cmd_region(rest, args);

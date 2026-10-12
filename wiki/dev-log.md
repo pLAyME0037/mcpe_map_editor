@@ -9,6 +9,101 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Writing a Java chunk: `mcme region chunk set`
+
+### Built
+
+- `mcme_region_set_chunk()` (region.h/c) replaces one
+  chunk append-only: the document is encoded big-endian
+  and compressed as zlib, the payload lands after the
+  file's current end (zero-padded to a sector boundary —
+  for a file that does not exist, that same pad writes
+  the 8 KiB header), and the slot's location entry
+  repoints at it with the timestamp the caller gave.
+  The entry is written last, so a reader racing the
+  write still finds the old chunk whole. In-place reuse
+  was never an option: it would lean on the sector
+  counts, the one header field the reader deliberately
+  ignores because real files carry them stale.
+- A slot the world has not stored gets a chunk, and a
+  region file that does not exist is created — but the
+  region directory must already be there. mcme writes
+  into a store the world has; it does not invent one,
+  and it will not rewrite a file it cannot read. The
+  refusal vocabulary is McmeWriteRefusal itself —
+  region.h includes bedrock_write.h for it, with a
+  comment saying the enum is the CLI's shared write
+  vocabulary and merely lives where it was born — so
+  every code comes from the one `refusal_exit` mapping:
+  USAGE (null argument, non-compound root, a payload
+  past the 255 sectors a slot's count byte can claim),
+  NOT_THERE (no region directory), NOT_READABLE (file
+  present but not a region mcme reads), STORE, INTERNAL.
+- `mcme region chunk set <world> <cx> <cz> <snbt>`:
+  the SNBT is the read verb's own output, so the loop
+  is read → edit → write with no second format to learn.
+  The document parses before any file is touched, the
+  verb is silent on success like every write verb, and
+  `set` is matched before the path the way `entity set`
+  is — a world directory named `set` reads as `./set`
+  for the other verbs. cli.md documents the verb before
+  the code; the usage text gained the line.
+- ASan earned its keep on the first draft: the
+  encode-failure path leaked the encoder's buffer. The
+  selftest's first attempt at the oversized refusal also
+  taught the format's real edge — NBT strings cap at
+  65535 bytes, so a 3 MB string is not a document at all;
+  the test now builds a 500 000-int array through the tag
+  API, which is over the ceiling the right way.
+
+### Cross-check
+
+- `tools/ref_region_write.py`, 9 checks against the
+  reference, all on copies — the golden world is only
+  ever read. WRITE: a chunk's SNBT comes from
+  `mcme region chunk`, is edited through amulet's own
+  tags (one field changed, one added) and sent back;
+  amulet_nbt.load of the payload this tool's sector-table
+  walk decompresses must equal that document deep-equal,
+  and the slot's timestamp must be minutes old rather
+  than the fixture's. FIDELITY: every byte outside the
+  slot's entry, its timestamp and the appended tail is
+  the original file, bit for bit. ROOM: the inventory
+  reports exactly the payload the walker decompressed;
+  an absent chunk is created and counted; a fresh
+  region file comes out as zeros plus slot 4's entry at
+  sector 2 with a fresh timestamp, and the inventory
+  finds its chunk at the world coordinates given; no
+  region directory is exit 2, a Bedrock or missing world
+  exit 2, a corrupt region file exit 3, DIM-1 and DIM1
+  are looked in while a dimension Java has no directory
+  for is usage, bad coordinates / unparseable /
+  non-compound documents / a missing argument are usage —
+  with nothing on stdout at any point, success or fault.
+- Selftest `test_region_write`: read-back pins (present,
+  timestamp, zlib, DataVersion), the three-range byte
+  diff after each of two writes to the same chunk, the
+  fresh file, and all five refusal classes including the
+  255-sector ceiling.
+- Verified at commit: `./rebuild.sh test` PASS — 5
+  suites, 0 failures; ref tools 9 (write) + 17 (chunk)
+  + 14 (inventory) + 25 (entity) + write PASS (19) +
+  28 (column); align.py 0 misalignments; golden stores
+  untouched — every write in the test suite ran against
+  a scratch copy.
+
+### Next
+
+- Compaction: every write appends, so slack accumulates
+  (two writes to one chunk already show it) — a verb
+  that rewrites a file without the dead payloads is the
+  safe counterpart to this one's append-then-repoint
+  discipline. After that, blocks: `chunk get`/`chunk
+  set` answering for Java worlds through the palette
+  layer this write now makes possible.
+
+---
+
 ## 2026-10-12 — Reading a Java chunk: `mcme region chunk`
 
 ### Built
