@@ -9,6 +9,54 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — A box at a time: `mcme chunk fill`
+
+### Built
+
+- `mcme_bedrock_fill()` / `mcme_bedrock_fill_check()`
+  (bedrock_write.c/h): one payload write per
+  subchunk the box touches, the positions outside
+  the box inside those subchunks left alone, fluid
+  layers never touched. The check names the first
+  missing subchunk; fill runs it again under the
+  caller's LOCK, so the store cannot change between
+  the question and the edit, and a missing subchunk
+  refuses the whole fill with nothing written. Box
+  corners in any order. A subchunk that exists but
+  cannot be edited fails the fill part-way — there
+  is no transaction across puts — documented on the
+  header.
+- `mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2>
+  <z2> <block> [--dimension ...]` (src/app/main.c):
+  the verb. A Y the key's signed byte cannot address
+  is exit 1 before anything is opened, so every
+  later failure is "not found". Success silent.
+- The selftest grew the two cases that carry the
+  contract: a box spanning two subchunks with
+  reversed corners — every covered position holds
+  the new block, every uncovered one matches the
+  fixture, the new palette entry appended once, the
+  waterlogged neighbour's fluid layer intact, the
+  subchunk beyond the box byte-identical — and a
+  box with a missing subchunk: refused, and the
+  store still byte for byte the fixture.
+- The reference cross-check fills through the CLI
+  and reads the grid back through amulet: covered
+  positions changed, the rest equal to what they
+  were, no palette append, a subchunk the box does
+  not reach byte-identical, exit 2 for a hole.
+  Thirteen checks, all green.
+
+### Next
+
+mcme can now read and write any block of a stored
+world, in any dimension, one at a time or a box at
+a time. What is missing is what an agent plans
+with: a box read (`chunk get` over a range), or the
+inventory of what a region holds.
+
+---
+
 ## 2026-10-12 — Any dimension: `--dimension`
 
 ### Built

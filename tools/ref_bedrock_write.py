@@ -27,6 +27,11 @@ path that reads worlds Minecraft loads — and asserts:
     coordinates, different store entry — the overworld
     subchunk stays byte-identical, and an unknown dimension
     name is a usage error
+  * `chunk fill` sets every position of a box (corners in any
+    order) to the block, changes nothing outside it, reuses
+    the palette entry instead of appending, leaves the
+    subchunk the box does not reach byte-identical, and a box
+    with a missing subchunk refuses with exit 2
 
 Direction is deliberate: mcme writes, the reference reads — the
 store layer's tests already run it the other way round.
@@ -158,6 +163,13 @@ def main() -> int:
         if dimension != 0:
             cmd += ["--dimension", str(dimension)]
         r = subprocess.run(cmd, capture_output=True, text=True)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+    def run_cli(*args_):
+        r = subprocess.run(
+            [args.mcme] + [str(a) for a in args_],
+            capture_output=True, text=True,
+        )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
 
     def edit_case(
@@ -315,6 +327,47 @@ def main() -> int:
     if r.returncode != 1:
         raise AssertionError(f"bad dimension name: exit {r.returncode}")
     print("  ok bad dimension name exits 1")
+
+    # --- fill sets every position of a box (corners given in
+    #     any order), changes nothing outside it, and reuses
+    #     the palette entry the set cases already added. ---
+    cy2_before = read(0, 0, 2)
+    _, layers0 = decode_payload(iface, read(0, 0, 0))
+    before_blocks = numpy.asarray(layers0[0][0]).reshape(16, 16, 16)
+    palette_len = len(layers0[0][1])
+    tnt_bytes = expected_entry("minecraft:tnt", CompoundTag())
+    tnt_index = None
+    for j, t in enumerate(layers0[0][1]):
+        if pal_bytes(t) == tnt_bytes:
+            tnt_index = j
+    if tnt_index is None:
+        raise AssertionError("tnt missing from the palette")
+    rc, _, err = run_cli("chunk", "fill", world,
+                      1, 1, 1, 0, 0, 0, "minecraft:tnt")
+    if rc != 0:
+        raise AssertionError(f"fill: exit {rc}: {err}")
+    version, layers = decode_payload(iface, read(0, 0, 0))
+    if len(layers[0][1]) != palette_len:
+        raise AssertionError("fill appended a palette entry")
+    blocks = numpy.asarray(layers[0][0]).reshape(16, 16, 16)
+    want = before_blocks.copy()
+    want[0:2, 0:2, 0:2] = tnt_index
+    if not numpy.array_equal(blocks, want):
+        raise AssertionError("fill: grid differs outside the box")
+    if read(0, 0, 2) != cy2_before:
+        raise AssertionError("fill touched a subchunk it does not "
+                             "reach")
+    rc, out, err = run_get(1, 1, 1)
+    if rc != 0 or out != "minecraft:tnt":
+        raise AssertionError(f"get after fill: exit {rc}, {out!r}: {err}")
+    print("  ok fill sets the box and nothing else")
+
+    # --- a fill with a missing subchunk refuses with exit 2. ---
+    rc, _, err = run_cli("chunk", "fill", world,
+                      0, 0, 0, 0, 48, 0, "minecraft:tnt")
+    if rc != 2:
+        raise AssertionError(f"fill missing subchunk: exit {rc}: {err}")
+    print("  ok fill with a missing subchunk exits 2")
 
     # --- The neighbour chunk is untouched, byte for byte. ---
     if read(1, -2, 0) != neighbour_before:

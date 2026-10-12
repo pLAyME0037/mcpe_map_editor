@@ -77,6 +77,11 @@ static void print_usage(FILE *out)
         "                    Print one block as the spec `chunk set`\n"
         "                    accepts. Exit 2 if the subchunk is not\n"
         "                    stored. Takes --dimension too.\n"
+        "  chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>\n"
+        "                    Set a box of blocks (corners in any\n"
+        "                    order). Every subchunk it touches must\n"
+        "                    exist or nothing is written (exit 2).\n"
+        "                    One payload write per subchunk.\n"
         "  db <op> <world> <key-hex> [value-hex]\n"
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
@@ -1289,6 +1294,103 @@ static int cmd_chunk_get(int argc, char **argv)
     return rc;
 }
 
+/*
+ * `mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>`
+ * sets a box of blocks to one block — corners in any order, both
+ * inside the box.
+ *
+ * Every subchunk the box touches must already be stored. The
+ * check runs under the same LOCK as the edit, so the store
+ * cannot change between them, and a missing subchunk refuses the
+ * whole fill (exit 2) with nothing written. One payload write per
+ * subchunk: the cost is the subchunks touched, not the blocks in
+ * the box, and the positions the box only reaches into keep what
+ * they held.
+ *
+ * Success prints nothing, like `db put`.
+ */
+static int cmd_chunk_fill(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension(&argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 8) {
+        mcme_set_error("chunk: usage: chunk fill <world> <x1> <y1> "
+                       "<z1> <x2> <y2> <z2> <block> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long c[6];
+    for (int i = 0; i < 6; ++i) {
+        if (!parse_coord(argv[1 + i], &c[i])) return MCME_EXIT_USAGE;
+    }
+
+    /* A Y the key cannot name is a position the world cannot
+       hold: refuse now, so every later failure is "not found". */
+    long ay1 = c[1] < c[4] ? c[1] : c[4];
+    long ay2 = c[1] < c[4] ? c[4] : c[1];
+    long cy1 = ay1 / 16, cy2 = ay2 / 16;
+    if (ay1 % 16 != 0 && ay1 < 0) cy1 -= 1;
+    if (ay2 % 16 != 0 && ay2 < 0) cy2 -= 1;
+    if (cy1 < INT8_MIN || cy2 > INT8_MAX) {
+        mcme_set_error("chunk: the box spans subchunk Y %ld to %ld, "
+                       "beyond the key's signed byte", cy1, cy2);
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
+        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    char name[256];
+    const McmeTag *states = NULL;
+    int rc = parse_block_spec(argv[7], arena, name, sizeof name,
+                              &states);
+    McmeNbtDoc entry;
+    if (rc == MCME_OK
+            && !mcme_bedrock_block_entry(arena, name, states, &entry)) {
+        rc = MCME_EXIT_INTERNAL;
+    }
+
+    if (rc == MCME_OK) {
+        McmeBox box = { (int32_t)c[0], (int32_t)c[1], (int32_t)c[2],
+                        (int32_t)c[3], (int32_t)c[4], (int32_t)c[5] };
+        McmeLevelDb *db = NULL;
+        if (!mcme_leveldb_open_rw(&db, info.db_path)) {
+            rc = MCME_EXIT_IO;
+        } else {
+            if (!mcme_bedrock_fill_check(db, &box, dimension)) {
+                rc = MCME_EXIT_NOT_FOUND;
+            } else if (!mcme_bedrock_fill(db, &box, dimension,
+                                          &entry)) {
+                char why[256];
+                snprintf(why, sizeof why, "%s", mcme_last_error());
+                mcme_set_error("chunk: %s", why);
+                rc = MCME_EXIT_IO;
+            }
+            mcme_leveldb_close(db);
+        }
+    }
+
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
 /* ========================================================================
  * db — raw key/value access to a Bedrock store
  * ======================================================================== */
@@ -1550,7 +1652,7 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "
-                           "(expected set or get)");
+                           "(expected set, get or fill)");
             return MCME_EXIT_USAGE;
         }
         if (strcmp(args[0], "set") == 0) {
@@ -1559,8 +1661,11 @@ static int dispatch(int argc, char **argv)
         if (strcmp(args[0], "get") == 0) {
             return cmd_chunk_get(rest - 1, args + 1);
         }
+        if (strcmp(args[0], "fill") == 0) {
+            return cmd_chunk_fill(rest - 1, args + 1);
+        }
         mcme_set_error("chunk: unknown subcommand '%s' "
-                       "(expected set or get)", args[0]);
+                       "(expected set, get or fill)", args[0]);
         return MCME_EXIT_USAGE;
     }
     if (strcmp(cmd, "db") == 0)      return cmd_db(rest, args);

@@ -1626,6 +1626,159 @@ static void test_bedrock_write(void)
         rmdir(tmp);
     }
 
+    /* --- A fill spans subchunks, takes the corners in any
+       order, and leaves the rest of every subchunk
+       alone. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bits4", arena, &a));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                       NULL, &placed));
+
+        McmeBox box = {2, 31, 1, 0, 0, 0};   /* reversed */
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(mcme_bedrock_fill_check(db, &box, 0));
+        CHECK(mcme_bedrock_fill(db, &box, 0, &placed));
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 0, 0, &b));
+        CHECK(b.version == a.version && b.layer_count == 1);
+        /* The new entry joined the palette; the old
+           entries stayed. */
+        size_t placed_idx = (size_t)-1;
+        for (size_t j = 0; j < b.layers[0].palette_len; ++j) {
+            if (docs_equal(&b.layers[0].palette[j], &placed)) {
+                placed_idx = j;
+            }
+        }
+        CHECK(placed_idx == a.layers[0].palette_len);
+        CHECK(b.layers[0].palette_len
+              == a.layers[0].palette_len + 1);
+        for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
+            CHECK(docs_equal(&b.layers[0].palette[j],
+                             &a.layers[0].palette[j]));
+        }
+        /* Every position the box covers holds the new
+           block; every position outside it did not
+           move. */
+        for (int32_t lz = 0; lz < 16; ++lz) {
+            for (int32_t ly = 0; ly < 16; ++ly) {
+                for (int32_t lx = 0; lx < 16; ++lx) {
+                    size_t u = (size_t)lx * 256
+                             + (size_t)lz * 16 + (size_t)ly;
+                    if (lx <= 2 && lz <= 1) {
+                        CHECK(b.layers[0].indices[u]
+                              == placed_idx);
+                    } else {
+                        CHECK(b.layers[0].indices[u]
+                              == a.layers[0].indices[u]);
+                    }
+                }
+            }
+        }
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        /* The subchunk the box reaches into keeps its
+           fluid layer. */
+        CHECK(decode_fixture("v8-waterlogged", arena, &a));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(load_subchunk(db, arena, 0, 0, 0, 1, &b));
+        CHECK(b.layer_count == 2);
+        CHECK(b.layers[1].bits == a.layers[1].bits);
+        for (size_t u = 0; u < 4096; ++u) {
+            CHECK(b.layers[1].indices[u]
+                  == a.layers[1].indices[u]);
+        }
+        for (size_t j = 0; j < a.layers[1].palette_len; ++j) {
+            CHECK(docs_equal(&b.layers[1].palette[j],
+                             &a.layers[1].palette[j]));
+        }
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        /* A subchunk the box does not reach is byte for
+           byte the fixture. */
+        {
+            void *want = NULL;
+            size_t want_len = 0;
+            CHECK(mcme_fs_read("tests/golden/subchunks/v1-legacy.bin",
+                               &want, &want_len));
+            McmeBuffer raw;
+            mcme_buffer_init(&raw);
+            CHECK(mcme_leveldb_open(&db, dbdir));
+            CHECK(raw_subchunk(db, 0, 0, 0, 2, &raw));
+            CHECK(raw.len == want_len
+                  && memcmp(raw.data, want, want_len) == 0);
+            mcme_leveldb_close(db);
+            db = NULL;
+            mcme_buffer_free(&raw);
+            free(want);
+        }
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- A fill whose subchunks are not all stored writes
+       nothing at all. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                       NULL, &placed));
+
+        McmeBox hole = {0, 0, 0, 0, 48, 0};  /* cy3 absent */
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(!mcme_bedrock_fill_check(db, &hole, 0));
+        CHECK(mcme_last_error()[0] != '\0');
+        CHECK(!mcme_bedrock_fill(db, &hole, 0, &placed));
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        /* Nothing moved: the first subchunk is still the
+           fixture, byte for byte. */
+        {
+            void *want = NULL;
+            size_t want_len = 0;
+            CHECK(mcme_fs_read("tests/golden/subchunks/v8-bits4.bin",
+                               &want, &want_len));
+            McmeBuffer raw;
+            mcme_buffer_init(&raw);
+            CHECK(mcme_leveldb_open(&db, dbdir));
+            CHECK(raw_subchunk(db, 0, 0, 0, 0, &raw));
+            CHECK(raw.len == want_len
+                  && memcmp(raw.data, want, want_len) == 0);
+            mcme_leveldb_close(db);
+            db = NULL;
+            mcme_buffer_free(&raw);
+            free(want);
+        }
+
+        /* A box reaching past the key's signed byte is
+           refused as unfindable, and null arguments are
+           refused. */
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        McmeBox deep = {0, -3000, 0, 0, -2000, 0};
+        CHECK(!mcme_bedrock_fill_check(db, &deep, 0));
+        CHECK(!mcme_bedrock_fill(db, &deep, 0, &placed));
+        CHECK(!mcme_bedrock_fill_check(NULL, &deep, 0));
+        CHECK(!mcme_bedrock_fill_check(db, NULL, 0));
+        CHECK(!mcme_bedrock_fill(db, NULL, 0, &placed));
+        CHECK(!mcme_bedrock_fill(db, &deep, 0, NULL));
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
     mcme_arena_free(arena);
 }
 

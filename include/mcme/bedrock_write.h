@@ -19,6 +19,7 @@
 #define MCME_BEDROCK_WRITE_H
 
 #include "mcme/core.h"
+#include "mcme/leveldb.h"
 #include "mcme/nbt.h"
 
 /*
@@ -81,5 +82,53 @@ bool mcme_bedrock_block_entry(McmeArena *arena,
                               const char *name,
                               const McmeTag *states,
                               McmeNbtDoc *out);
+
+/*
+ * A box of block positions. Both corners are inside — the box is
+ * inclusive, and the corners may be given in any order; fill
+ * normalises them per axis.
+ */
+typedef struct {
+    int32_t x1, y1, z1;
+    int32_t x2, y2, z2;
+} McmeBox;
+
+/*
+ * Checks that every subchunk the box touches is stored, naming
+ * the first one that is not.
+ *
+ * Fill writes nothing when a subchunk is missing, so this is the
+ * whole question it can fail before it starts. Any open handle
+ * answers it; the LOCK is not needed to ask — but taking it for
+ * the check and the fill together is what removes the window in
+ * which the store changes between them.
+ *
+ * A box whose Y reaches past the key's signed byte is refused
+ * here too: those subchunks cannot be stored, so they cannot be
+ * found.
+ */
+bool mcme_bedrock_fill_check(McmeLevelDb *db, const McmeBox *box,
+                             int32_t dimension);
+
+/*
+ * Sets every block of the box to `entry` — one payload write per
+ * subchunk the box touches, the positions outside the box in
+ * those subchunks left as they were. `entry` has the shape
+ * mcme_bedrock_block_entry() builds.
+ *
+ * The store must be open for writing: the caller holds the LOCK
+ * for the whole fill. Every subchunk must already exist —
+ * mcme_bedrock_fill_check() says, and this refuses before
+ * writing anything if one does not. A subchunk that exists but
+ * cannot be edited (undecodable payload, the all-air marker)
+ * fails the fill with the subchunks before it already written:
+ * there is no transaction across puts.
+ *
+ * The block document, and everything it references, must stay
+ * valid until the call returns.
+ */
+bool mcme_bedrock_fill(McmeLevelDb *db, const McmeBox *box,
+                       int32_t dimension,
+                       const McmeNbtDoc *entry);
 
 #endif /* MCME_BEDROCK_WRITE_H */

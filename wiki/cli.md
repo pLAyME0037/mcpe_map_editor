@@ -270,6 +270,37 @@ the subchunk is not stored, `3` the stored payload is not the format mcme
 reads, `4` store error. Reading does not take the LOCK — the game can hold
 the world open.
 
+### `mcme chunk fill`
+
+Sets a box of blocks to one block — the whole box, in one command, one
+payload write per subchunk the box touches.
+
+```
+mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>
+                                  [--dimension <name|number>]
+```
+
+```
+$ mcme chunk fill mybedrock 12 64 -30 30 70 -12 'minecraft:stone'
+```
+
+The corners are given in any order; both are inside the box. Every subchunk
+the box touches must already be stored: the fill checks first, under the same
+LOCK it then edits with, so a missing subchunk refuses the whole fill — exit 2,
+nothing written — instead of filling around a hole. Positions the box only
+reaches into keep what they held, and the subchunks' fluid layers are never
+touched.
+
+The cost is the subchunks touched, not the blocks in the box; a box entirely
+inside one subchunk is one payload write. A subchunk that exists but cannot be
+edited (a payload mcme cannot read) fails the fill with the subchunks before
+it already written — there is no transaction across puts — which is why the
+check comes first.
+
+Exit codes: `0` filled, `1` usage (bad coordinate, bad block spec, a Y the
+format cannot address), `2` not a world, not a Bedrock world, or a subchunk
+the box touches is not stored, `4` store error. Success prints nothing.
+
 ### `mcme db`
 
 Raw key/value access to a Bedrock store. This is the write path's CLI surface
