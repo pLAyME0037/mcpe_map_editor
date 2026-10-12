@@ -88,6 +88,12 @@ static void print_usage(FILE *out)
         "                    spec' lines, most frequent first.\n"
         "                    Unstored subchunks count as air\n"
         "                    (exit 0, noted on stderr).\n"
+        "  chunk height <world> <x> <z>\n"
+        "                    How high the ground is in the column\n"
+        "                    through (x, z): the subchunks stored\n"
+        "                    there, the topmost and bottommost\n"
+        "                    non-air block. Exit 2 if the column\n"
+        "                    was never stored.\n"
         "  db <op> <world> <key-hex> [value-hex]\n"
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
@@ -1499,6 +1505,163 @@ static int cmd_chunk_stats(int argc, char **argv)
 }
 
 /* ========================================================================
+ * `mcme chunk height <world> <x> <z>`
+ *
+ * How high the ground is in one column: the topmost and bottommost
+ * non-air block of the stack through (x, z), and the subchunks the
+ * world stores for it. The answer is derived from the payloads
+ * rather than read from a heightmap record, because the editing
+ * verbs do not update a heightmap — a height that trusted one would
+ * report the world before the last edit.
+ *
+ * Exit 2 when the column has no stored subchunk: there is nothing to
+ * measure, which is a different thing from a column of air, which
+ * answers and exits 0.
+ * ======================================================================== */
+
+static int cmd_chunk_height(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension(&argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 3) {
+        mcme_set_error("chunk: usage: chunk height <world> <x> <z> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long x, z;
+    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord(argv[2], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
+        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    int rc = MCME_OK;
+    McmeColumnHeight col;
+    memset(&col, 0, sizeof col);
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, info.db_path)) {
+        rc = MCME_EXIT_IO;
+    } else {
+        bool read = mcme_bedrock_column_height(db, (int32_t)x,
+                                               (int32_t)z, dimension,
+                                               arena, &col);
+        mcme_leveldb_close(db);
+        if (!read) {
+            /* The store's own error, or a payload this build does
+               not read — both are "the world said something mcme
+               cannot answer", the same class `chunk stats` reports. */
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk: %s", why);
+            rc = MCME_EXIT_BAD_FORMAT;
+        } else if (col.subchunk_count == 0) {
+            mcme_set_error("chunk: no subchunk is stored for the "
+                           "column at block (%ld, %ld) in dimension "
+                           "%d", x, z, (int)dimension);
+            rc = MCME_EXIT_NOT_FOUND;
+        }
+    }
+
+    if (rc == MCME_OK) {
+        if (g_opts.json) {
+            cJSON *root = cJSON_CreateObject();
+            if (root == NULL) {
+                mcme_set_error("chunk: out of memory");
+                rc = MCME_EXIT_INTERNAL;
+            } else {
+                cJSON_AddStringToObject(root, "path", info.path);
+                cJSON_AddNumberToObject(root, "dimension",
+                                        (double)dimension);
+                cJSON_AddNumberToObject(root, "x", (double)x);
+                cJSON_AddNumberToObject(root, "z", (double)z);
+                cJSON *subs = cJSON_AddArrayToObject(root,
+                                                     "subchunks");
+                for (size_t i = 0; i < col.subchunk_count; ++i) {
+                    double cy = (double)col.subchunks[i];
+                    cJSON_AddItemToArray(subs,
+                                         cJSON_CreateNumber(cy));
+                }
+                /* A column of air is an answer, so the fields are
+                   null rather than left out: absence is the shape
+                   of the answer, not a missing one. */
+                if (col.has_surface) {
+                    cJSON *surface = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(surface, "y",
+                                            (double)col.surface_y);
+                    cJSON_AddStringToObject(surface, "block",
+                                            col.surface_block);
+                    cJSON_AddItemToObject(root, "surface", surface);
+                } else {
+                    cJSON_AddNullToObject(root, "surface");
+                }
+                if (col.has_floor) {
+                    cJSON *floor = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(floor, "y",
+                                            (double)col.floor_y);
+                    cJSON_AddStringToObject(floor, "block",
+                                            col.floor_block);
+                    cJSON_AddItemToObject(root, "floor", floor);
+                } else {
+                    cJSON_AddNullToObject(root, "floor");
+                }
+                char *text = cJSON_PrintUnformatted(root);
+                if (text == NULL) {
+                    mcme_set_error("chunk: out of memory");
+                    rc = MCME_EXIT_INTERNAL;
+                } else {
+                    printf("%s\n", text);
+                    cJSON_free(text);
+                }
+                cJSON_Delete(root);
+            }
+        } else {
+            printf("%-11s%s\n", "path:", info.path);
+            printf("%-11s(%ld, %ld)\n", "column:", x, z);
+            printf("%-11s%d\n", "dimension:", (int)dimension);
+            printf("%-11s", "subchunks:");
+            for (size_t i = 0; i < col.subchunk_count; ++i) {
+                printf("%s%d", i == 0 ? "" : " ",
+                       (int)col.subchunks[i]);
+            }
+            printf("\n");
+            if (col.has_surface) {
+                printf("%-11sy %d %s\n", "surface:",
+                       (int)col.surface_y, col.surface_block);
+            } else {
+                printf("%-11snone\n", "surface:");
+            }
+            if (col.has_floor) {
+                printf("%-11sy %d %s\n", "floor:",
+                       (int)col.floor_y, col.floor_block);
+            } else {
+                printf("%-11snone\n", "floor:");
+            }
+        }
+    }
+
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
+/* ========================================================================
  * db — raw key/value access to a Bedrock store
  * ======================================================================== */
 
@@ -1759,7 +1922,8 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "
-                           "(expected set, get, fill or stats)");
+                           "(expected set, get, fill, stats "
+                           "or height)");
             return MCME_EXIT_USAGE;
         }
         if (strcmp(args[0], "set") == 0) {
@@ -1774,8 +1938,12 @@ static int dispatch(int argc, char **argv)
         if (strcmp(args[0], "stats") == 0) {
             return cmd_chunk_stats(rest - 1, args + 1);
         }
+        if (strcmp(args[0], "height") == 0) {
+            return cmd_chunk_height(rest - 1, args + 1);
+        }
         mcme_set_error("chunk: unknown subcommand '%s' "
-                       "(expected set, get, fill or stats)", args[0]);
+                       "(expected set, get, fill, stats or height)",
+                       args[0]);
         return MCME_EXIT_USAGE;
     }
     if (strcmp(cmd, "db") == 0)      return cmd_db(rest, args);

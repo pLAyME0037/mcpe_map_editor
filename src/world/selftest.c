@@ -2048,6 +2048,256 @@ static void test_bedrock_write(void)
     mcme_arena_free(arena);
 }
 
+/* ------------------------------------------------------------------------
+ * Column height
+ *
+ * What a planner asks before placing anything: which subchunks this column
+ * holds and how high its ground is. The fixture's chunk (0, 0) spans six
+ * subchunks — negative Y, both wrapper versions, and a version-1 payload —
+ * so one column exercises the range, and the answers are checked against
+ * the fixture's own index pattern: at local (0, 0) the block of subchunk
+ * cy is palette[(cy * 16 + ly) ...], the pattern (lx*7 + ly*29 + lz*13 +
+ * seed) mod palette_len evaluated for lx = lz = 0.
+ * ---------------------------------------------------------------------- */
+
+static void test_bedrock_column(void)
+{
+    char src[512];
+    snprintf(src, sizeof src, "%s/db", kChunksWorld);
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP column height tests (%s not found; run "
+               "tools/ref_bedrock_store.py)\n", src);
+        return;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        CHECK_MSG(false, "out of memory");
+        return;
+    }
+
+    char tmp[64];
+    char dbdir[512];
+    McmeLevelDb *db = NULL;
+    McmeColumnHeight col;
+    McmeNbtDoc placed;
+
+    /* --- The fixture's own column: six subchunks, ground at both
+       ends of the range. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_leveldb_open(&db, dbdir));
+
+        CHECK(mcme_bedrock_column_height(db, 0, 0, 0, arena, &col));
+        CHECK(col.subchunk_count == 6);
+        if (col.subchunk_count == 6) {
+            const int8_t want[] = { -4, -1, 0, 1, 2, 4 };
+            for (size_t i = 0; i < 6; ++i) {
+                CHECK_MSG(col.subchunks[i] == want[i],
+                          "subchunk %zu is %d, want %d", i,
+                          (int)col.subchunks[i], (int)want[i]);
+            }
+        }
+        /* The top of the column is cy 4's highest block, which the
+           pattern puts at palette index 3 — oak_log. */
+        CHECK(col.has_surface && col.surface_y == 79);
+        if (col.has_surface) {
+            CHECK(strcmp(col.surface_block,
+                         "minecraft:oak_log{pillar_axis: \"x\"}")
+                  == 0);
+        }
+        /* The bottom is cy -4's lowest block: index 41 mod 8 = 1,
+           the second entry of its palette, dirt. */
+        CHECK(col.has_floor && col.floor_y == -64);
+        if (col.has_floor) {
+            CHECK(strcmp(col.floor_block, "minecraft:dirt") == 0);
+        }
+
+        /* A second column of the same world answers from its own
+           chunk: one subchunk, its own two ends. */
+        CHECK(mcme_bedrock_column_height(db, 16, -32, 0, arena,
+                                         &col));
+        CHECK(col.subchunk_count == 1);
+        CHECK(col.has_surface && col.surface_y == 15);
+        if (col.has_surface) {
+            CHECK(strcmp(col.surface_block,
+                         "mcme:fixture_194{variant: 194}") == 0);
+        }
+        CHECK(col.has_floor && col.floor_y == 0);
+        if (col.has_floor) {
+            CHECK(strcmp(col.floor_block,
+                         "mcme:fixture_016{variant: 16}") == 0);
+        }
+
+        /* The nether key is the same coordinates in another
+           dimension, and answers on its own. */
+        CHECK(mcme_bedrock_column_height(db, 0, 0, 1, arena,
+                                         &col));
+        CHECK(col.subchunk_count == 1);
+        CHECK(col.has_surface && col.surface_y == 15);
+        if (col.has_surface) {
+            CHECK(strcmp(col.surface_block, "minecraft:stone")
+                  == 0);
+        }
+        CHECK(col.has_floor && col.floor_y == 0);
+        if (col.has_floor) {
+            CHECK(strcmp(col.floor_block, "minecraft:dirt") == 0);
+        }
+
+        /* Ground the world never stored: no subchunk, so nothing
+           to measure — which is not the same as a column of air,
+           and is what the CLI reports as exit 2. */
+        CHECK(mcme_bedrock_column_height(db, 500, 500, 0, arena,
+                                         &col));
+        CHECK(col.subchunk_count == 0);
+        CHECK(!col.has_surface && !col.has_floor);
+
+        /* Usage faults do not touch the store. */
+        CHECK(!mcme_bedrock_column_height(NULL, 0, 0, 0, arena,
+                                          &col));
+        CHECK(!mcme_bedrock_column_height(db, 0, 0, 0, NULL,
+                                          &col));
+        CHECK(!mcme_bedrock_column_height(db, 0, 0, 0, arena,
+                                          NULL));
+
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- The store decides: delete the top subchunk and the
+       surface drops to the one below it. --- */
+    {
+        uint8_t key[14];
+        size_t key_len = 0;
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                     0, 0, 0,
+                                     MCME_BEDROCK_TAG_SUBCHUNK,
+                                     true, 4));
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(mcme_leveldb_delete(db, key, key_len));
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(mcme_bedrock_column_height(db, 0, 0, 0, arena, &col));
+        CHECK(col.subchunk_count == 5);
+        /* cy 2 is the version-1 payload, whose top block the
+           pattern puts at palette index 3: grass. */
+        CHECK(col.has_surface && col.surface_y == 47);
+        if (col.has_surface) {
+            CHECK(strcmp(col.surface_block, "minecraft:grass")
+                  == 0);
+        }
+        CHECK(col.has_floor && col.floor_y == -64);
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- A payload this build does not read fails the whole
+       column: that is data mcme cannot measure, not air. --- */
+    {
+        uint8_t key[14];
+        size_t key_len = 0;
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                     0, 0, 0,
+                                     MCME_BEDROCK_TAG_SUBCHUNK,
+                                     true, 8));
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(mcme_leveldb_put(db, key, key_len, "\x08\xfa"
+                               "xxxxxx", 8));
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(!mcme_bedrock_column_height(db, 0, 0, 0, arena,
+                                          &col));
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- Two stored columns that hold no ground: the all-air
+       marker the game writes, and a subchunk mcme filled with
+       air. Both answer, and neither has a surface. --- */
+    {
+        uint8_t key[14];
+        size_t key_len = 0;
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                     300 / 16, 300 / 16, 0,
+                                     MCME_BEDROCK_TAG_SUBCHUNK,
+                                     true, 8));
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        /* Version 8, zero storage layers: the marker. */
+        CHECK(mcme_leveldb_put(db, key, key_len, "\x08\x00", 2));
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(mcme_bedrock_column_height(db, 300, 300, 0, arena,
+                                         &col));
+        CHECK(col.subchunk_count == 1 && col.subchunks[0] == 8);
+        CHECK(!col.has_surface && !col.has_floor);
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- A write into ground that was never saved is visible to
+       the next height read: the subchunk it created, and the one
+       block it placed. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
+                                       NULL, &placed));
+        CHECK(mcme_bedrock_set_block(dbdir, 200, 40, 200, 0,
+                                     &placed, NULL));
+
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        CHECK(mcme_bedrock_column_height(db, 200, 200, 0, arena,
+                                         &col));
+        CHECK(col.subchunk_count == 1 && col.subchunks[0] == 2);
+        CHECK(col.has_surface && col.surface_y == 40);
+        if (col.has_surface) {
+            CHECK(strcmp(col.surface_block, "mcme:placed") == 0);
+        }
+        CHECK(col.has_floor && col.floor_y == 40);
+        if (col.has_floor) {
+            CHECK(strcmp(col.floor_block, "mcme:placed") == 0);
+        }
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    mcme_arena_free(arena);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -2058,6 +2308,7 @@ int mcme_test_world(void)
     test_subchunk_refusals();
     test_bedrock_inventory();
     test_bedrock_write();
+    test_bedrock_column();
 
     if (!mcme_fs_exists(kWorldDir)) {
         printf("  SKIP golden world (%s not found; run tools/ref_worlds.py)\n",

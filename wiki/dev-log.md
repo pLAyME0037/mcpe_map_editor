@@ -9,6 +9,71 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — How high the ground is: `chunk height`
+
+### Built
+
+- `mcme_bedrock_column_height()` (bedrock_write.c/h)
+  answers for the single column through a block: the
+  subchunks the store holds for it, and the topmost
+  and bottommost non-air block. The height comes from
+  the payloads, never a heightmap record — mcme's own
+  edits do not update one, so a height that trusted it
+  would report the world before the last write. That
+  is also why it is a read the editor can offer at
+  all: nothing new to learn about the format, only the
+  decoder already proven against the fixtures.
+- The column is found by asking the store for every Y
+  the subchunk key byte can name — point lookups, not a
+  scan, so a column costs 256 reads against a world
+  that may hold millions of keys. `has()` is the
+  presence test and `get()` the content, because the
+  two disagree on purpose: `has()` answers for a key
+  the store still has, including one the game deleted,
+  and only `get()` can tell a deletion from an absence.
+  A subchunk the game deleted is not in the list; the
+  surface drops to the one below it, which is what the
+  reference agrees with. Both spellings of the prefix
+  are asked, so a pre-1.18 world is read under its own.
+- `mcme chunk height <world> <x> <z>`, taking block
+  coordinates — the column through them, so two
+  columns of one chunk are two answers. Text or
+  `--json` (`subchunks`, `surface`, `floor`; null when
+  the column holds no ground, which is an answer and
+  not a fault). Exit 2 when no subchunk is stored for
+  the column, which is the difference between ground
+  the world never had and a column of air it did.
+- Air means `minecraft:air`, `minecraft:cave_air` or
+  `minecraft:void_air`; everything else is ground,
+  the fluid blocks included, since a pool has a
+  surface.
+- A stored payload this build does not read fails the
+  whole column, naming the subchunk: world data mcme
+  cannot measure is not air. Same class `chunk stats`
+  reports, same exit 3.
+
+### Cross-check
+
+- `tools/ref_bedrock_column.py`, 28 checks: the golden
+  store's own column (six subchunks, negative Y, both
+  wrappers, a version-1 payload), a second chunk, a
+  second local column of the same chunk, the nether
+  key, an unstored column (exit 2, silent), a deletion
+  (list shrinks, surface drops to y 47), a planted
+  junk payload (exit 3), and a `chunk set` into ground
+  that was never saved becoming the next height
+  read's surface where amulet finds the block.
+- Selftest `test_bedrock_column` covers the same
+  ground from the library side, the expectations
+  derived from the fixtures' own index pattern.
+
+### Next
+
+- The region inventory verb that says which chunks a
+  world actually stores, or block-entity reading.
+
+---
+
 ## 2026-10-12 — Making ground: `chunk set` writes where nothing was stored
 
 ### Built

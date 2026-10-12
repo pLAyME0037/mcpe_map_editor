@@ -881,3 +881,197 @@ bool mcme_bedrock_count_box(McmeLevelDb *db, const McmeBox *box,
     *out_len = tally_len;
     return true;
 }
+
+/* ========================================================================
+ * Column height — the read that answers "how high is the ground here"
+ * ======================================================================== */
+
+/* A string compared to a literal by length first: the parser's
+   strings are arena-owned and the comparison must not depend on
+   a terminator that the format never promised. */
+static bool str_is(const McmeStr *s, const char *lit)
+{
+    size_t n = strlen(lit);
+    return s->len == n && memcmp(s->data, lit, n) == 0;
+}
+
+/* The names the game writes for empty space. Anything else is
+   ground for this report — the fluid blocks included, since a
+   pool has a surface to stand on. */
+static bool entry_is_air(const McmeNbtDoc *pal)
+{
+    if (pal == NULL || pal->root == NULL) return false;
+    const McmeTag *name = mcme_nbt_path(pal->root, "name");
+    if (name == NULL || name->type != MCME_TAG_String) return false;
+    return str_is(&name->string, "minecraft:air")
+        || str_is(&name->string, "minecraft:cave_air")
+        || str_is(&name->string, "minecraft:void_air");
+}
+
+/* One palette entry rendered as the spec text the CLI speaks,
+   rooted in `arena`. Fails with an error already saying which
+   of the two things went wrong: the entry, or the memory. */
+static const char *spec_in_arena(McmeArena *arena,
+                                 const McmeNbtDoc *pal)
+{
+    McmeBuffer spec;
+    mcme_buffer_init(&spec);
+    if (!mcme_bedrock_block_spec(pal->root, &spec)) {
+        mcme_buffer_free(&spec);
+        return NULL;
+    }
+    char *text = mcme_arena_alloc(arena, spec.len + 1);
+    if (text == NULL) {
+        if (mcme_last_error()[0] == '\0') {
+            mcme_set_error("column height: out of memory");
+        }
+    } else {
+        if (spec.len > 0) memcpy(text, spec.data, spec.len);
+        text[spec.len] = '\0';
+    }
+    mcme_buffer_free(&spec);
+    return text;
+}
+
+/* One more stored subchunk in the column's list, growing the arena
+   array the list lives in. */
+static bool column_push(McmeArena *arena, int8_t **cys,
+                        size_t *count, size_t *cap, int8_t cy)
+{
+    if (*count == *cap) {
+        size_t grown_cap = *cap == 0 ? 24 : *cap * 2;
+        int8_t *grown = mcme_arena_alloc(arena,
+                                         grown_cap * sizeof *grown);
+        if (grown == NULL) return false;
+        if (*cys != NULL) memcpy(grown, *cys, *count);
+        *cys = grown;
+        *cap = grown_cap;
+    }
+    (*cys)[(*count)++] = cy;
+    return true;
+}
+
+bool mcme_bedrock_column_height(McmeLevelDb *db, int32_t x, int32_t z,
+                                int32_t dimension, McmeArena *arena,
+                                McmeColumnHeight *out)
+{
+    if (db == NULL || arena == NULL || out == NULL) {
+        mcme_set_error("column height: null argument");
+        return false;
+    }
+    memset(out, 0, sizeof *out);
+
+    int32_t cx = floor_div16(x);
+    int32_t cz = floor_div16(z);
+    int32_t lx = mod16(x);
+    int32_t lz = mod16(z);
+
+    /* Which subchunks the store holds here, and what they contain,
+       in one pass. A key says everything about a subchunk but its
+       Y, so the column is found by asking for every Y the key byte
+       can name — point lookups, where scanning the store would
+       read every key in the world. The modern prefix is asked
+       first; a world that predates it answers under the old
+       spelling.
+
+       has() is the presence test and get() the content, because
+       they disagree on purpose: has() answers for a key the store
+       still has — including one the game deleted — and only get()
+       can tell a deletion from an absence, which is the difference
+       between ground the world removed and ground it never had. */
+    int8_t *cys = NULL;
+    size_t count = 0, cap = 0;
+    uint8_t tag = MCME_BEDROCK_TAG_SUBCHUNK;
+
+    /* The palette entries the two answers came from, borrowed from
+       the arena every payload below decodes into — so the specs
+       are rendered once, from the last block found. */
+    const McmeNbtDoc *floor_pal = NULL;
+    const McmeNbtDoc *surface_pal = NULL;
+
+    for (int pass = 0; pass < 2 && count == 0; ++pass) {
+        tag = pass == 0 ? MCME_BEDROCK_TAG_SUBCHUNK
+                        : MCME_BEDROCK_TAG_SUBCHUNK_OLD;
+        for (int cy = INT8_MIN; cy <= INT8_MAX; ++cy) {
+            uint8_t key[14];
+            size_t key_len = 0;
+            if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                        cx, cz, dimension, tag,
+                                        true, (int8_t)cy)) {
+                return false;  /* cannot happen: cy is the byte */
+            }
+            if (!mcme_leveldb_has(db, key, key_len)) continue;
+
+            McmeBuffer payload;
+            mcme_buffer_init(&payload);
+            bool deleted = false;
+            if (!mcme_leveldb_get(db, key, key_len, &payload,
+                                  &deleted)) {
+                mcme_buffer_free(&payload);
+                return false;       /* the store's own error stands */
+            }
+            if (deleted) {
+                mcme_buffer_free(&payload);
+                continue;   /* a tombstone: removed, so not stored */
+            }
+
+            McmeBedrockSubchunk sc;
+            bool dec = mcme_bedrock_subchunk_decode(&sc, arena,
+                                                    payload.data,
+                                                    payload.len);
+            mcme_buffer_free(&payload);
+            if (!dec) {
+                mcme_set_error("column height: subchunk (%d, %d, "
+                               "%d) does not decode: %s", (int)cx,
+                               (int)cz, (int)cy, mcme_last_error());
+                return false;
+            }
+
+            if (!column_push(arena, &cys, &count, &cap,
+                             (int8_t)cy)) {
+                mcme_set_error("column height: out of memory");
+                return false;
+            }
+
+            if (sc.layer_count == 0) continue; /* the all-air marker */
+
+            const McmeBedrockLayer *layer = &sc.layers[0];
+            for (int32_t ly = 0; ly < 16; ++ly) {
+                size_t u = (size_t)lx * 256 + (size_t)lz * 16
+                         + (size_t)ly;
+                uint16_t idx = layer->indices[u];
+                if (idx >= layer->palette_len) {
+                    mcme_set_error("column height: the index at "
+                                   "block (%d, %d, %d) is %u, "
+                                   "outside its palette of %zu "
+                                   "entries", (int)x,
+                                   (int)(cy * 16 + ly), (int)z,
+                                   idx, layer->palette_len);
+                    return false;
+                }
+                const McmeNbtDoc *pal = &layer->palette[idx];
+                if (entry_is_air(pal)) continue;
+                if (floor_pal == NULL) {
+                    floor_pal = pal; /* lowest so far, and last */
+                    out->has_floor = true;
+                    out->floor_y = cy * 16 + ly;
+                }
+                surface_pal = pal;   /* highest wins */
+                out->has_surface = true;
+                out->surface_y = cy * 16 + ly;
+            }
+        }
+    }
+
+    out->subchunks = cys;
+    out->subchunk_count = count;
+    if (floor_pal != NULL) {
+        out->floor_block = spec_in_arena(arena, floor_pal);
+        if (out->floor_block == NULL) return false;
+    }
+    if (surface_pal != NULL) {
+        out->surface_block = spec_in_arena(arena, surface_pal);
+        if (out->surface_block == NULL) return false;
+    }
+    return true;
+}

@@ -360,6 +360,64 @@ Exit codes: `0` counted, `1` usage (bad coordinate, a Y the format cannot
 address), `2` not a world or not a Bedrock world, `3` a stored payload is not
 the format mcme reads, `4` store error.
 
+### `mcme chunk height`
+
+How high the ground is in one column: the topmost and bottommost non-air block
+of the column through block (`x`, `z`), plus every subchunk the world stores
+for it. The answer comes from the stored subchunk payloads, not from the
+world's own heightmap record, and that is what makes it usable right after an
+edit — `set` and `fill` do not update a heightmap, so a height read that
+trusted one would report the ground before the edit.
+
+```
+mcme chunk height <world> <x> <z> [--dimension <name|number>]
+```
+
+```
+$ mcme chunk height mybedrock 0 0
+path:       mybedrock
+column:     (0, 0)
+dimension:  0
+subchunks:  -4 -1 0 1 2 4
+surface:    y 79 minecraft:oak_log{pillar_axis: "x"}
+floor:      y -64 minecraft:dirt
+```
+
+`subchunks` is every subchunk Y the store holds for the column, ascending —
+the vertical extent of what was saved, which is not the same as what is
+solid: the gaps are ground the world never stored. A subchunk the game
+deleted is not listed at all: removed, so no longer part of the answer.
+`surface` and `floor` are the topmost and bottommost non-air block of layer
+zero, the layer the editing verbs act on; a column whose stored blocks are
+all air says `none` for both, and that is an answer rather than an error.
+
+Air means `minecraft:air`, `minecraft:cave_air` or `minecraft:void_air` —
+the names the game uses for empty space. Anything else counts as ground,
+including fluid blocks.
+
+Under `--json`:
+
+```json
+{"path": "mybedrock", "dimension": 0, "x": 0, "z": 0,
+ "subchunks": [-4, -1, 0, 1, 2, 4],
+ "surface": {"y": 79, "block": "minecraft:oak_log{pillar_axis: \"x\"}"},
+ "floor": {"y": -64, "block": "minecraft:dirt"}}
+```
+
+`surface` and `floor` are `null` when the column holds no non-air block.
+`x` and `z` are the block coordinates asked for, echoed; the column is the
+single 1-wide stack through them, so two columns of one chunk differ.
+
+The whole signed subchunk-Y range is probed by point lookup, so a column
+answer costs 256 reads against a store that may hold millions of keys, and
+never a scan. A world that still uses the pre-1.18 subchunk prefix is read
+under that spelling.
+
+Exit codes: `0` the column is stored — printed even when every block in it is
+air, `1` usage, `2` no subchunk is stored for the column, so there is nothing
+to measure, `3` a stored payload is not the format mcme reads, `4` store
+error.
+
 ### `mcme db`
 
 Raw key/value access to a Bedrock store. This is the write path's CLI surface

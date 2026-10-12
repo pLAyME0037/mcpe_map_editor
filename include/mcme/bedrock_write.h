@@ -243,4 +243,56 @@ bool mcme_bedrock_count_box(McmeLevelDb *db, const McmeBox *box,
                             McmeBlockCount **out, size_t *out_len,
                             int64_t *missing);
 
+/*
+ * How high the ground is in one column: the topmost and
+ * bottommost non-air block, and every subchunk the store
+ * holds for the column.
+ *
+ * `x` and `z` are block coordinates — the column is the
+ * single 1-wide stack through them, in `dimension`, so two
+ * columns of one chunk are two answers.
+ *
+ * `subchunks` is what the world saved, which is not the same
+ * as what is solid: the gaps are ground the store holds
+ * nothing for, which `chunk set` would create a subchunk in,
+ * and a subchunk the game deleted is not listed at all —
+ * removed, so no longer part of the answer. Both spellings
+ * of the subchunk prefix are asked, and a world that only
+ * has the pre-1.18 one is read under it.
+ *
+ * Surface and floor come from layer zero, the layer the
+ * editing verbs act on, and are absent when every stored
+ * block in the column is air — a column of air is an answer,
+ * not a fault. Air is minecraft:air, minecraft:cave_air or
+ * minecraft:void_air; everything else is ground, the fluid
+ * blocks included, since a pool has a surface.
+ *
+ * The height is derived from the payloads, never from a
+ * heightmap record: mcme's own edits do not update one, so
+ * a height that trusted it would report the world before
+ * the edit.
+ *
+ * Everything `out` points at roots in `arena` and must not
+ * outlive it. Returns false, with mcme_last_error() naming
+ * the subchunk and what stood in the way, when a stored
+ * payload is not a format mcme reads — world data this
+ * cannot measure, not an absence.
+ */
+typedef struct {
+    const int8_t *subchunks;      /* arena-rooted, ascending */
+    size_t        subchunk_count;
+    bool          has_surface;
+    int32_t       surface_y;
+    const char   *surface_block;  /* arena-rooted spec       */
+    bool          has_floor;
+    int32_t       floor_y;
+    const char   *floor_block;    /* arena-rooted spec       */
+} McmeColumnHeight;
+
+bool mcme_bedrock_column_height(McmeLevelDb *db,
+                                int32_t x, int32_t z,
+                                int32_t dimension,
+                                McmeArena *arena,
+                                McmeColumnHeight *out);
+
 #endif /* MCME_BEDROCK_WRITE_H */
