@@ -254,6 +254,40 @@ file is not a format mcme reads — shorter than the header, an entry
 pointing past its end, or a present slot whose payload header will not
 read — `4` store error.
 
+### `mcme region compact`
+
+Rewrites one region file packed: every live chunk copied to its final
+place in slot order, every dead byte — payloads that writes replaced,
+holes, tails no entry claims — gone. Silent on success; the inventory
+reports the new sizes.
+
+```
+mcme region compact <world> <rx> <rz> [--dimension <name|number>]
+```
+
+Each chunk is copied as its raw frame — length, compression byte,
+compressed data — so compaction never decompresses anything: gzip,
+zlib, stored and external payloads ride through byte-identical, and
+timestamps are carried over. The sector counts written are the counts
+that are true — the number of sectors each payload actually occupies,
+not whatever the file was carrying.
+
+The file changes by rename: the new one is written beside the old as
+`r.<rx>.<rz>.mca.tmp` and renamed over it, so a reader finds the old
+file or the new one, never a half-packed one, and a failure leaves the
+original untouched. `compact` is matched before the world path, like
+`chunk set`: a world directory named `compact` reads as
+`./compact` for the other verbs.
+
+A chunk whose frame mcme cannot read refuses the whole file: a
+compactor that skipped what it could not parse would drop it.
+
+Exit codes: `0` compacted, `1` usage (bad coordinate, a dimension Java
+has no directory for), `2` not a world, not a Java world, or no region
+file at that name, `3` the region file is not a format mcme reads —
+the header, an entry, a payload header, or a chunk too big for a slot
+to claim, `4` store error.
+
 ### `mcme region chunk`
 
 One Java chunk read out of its region file: the chunk's own NBT

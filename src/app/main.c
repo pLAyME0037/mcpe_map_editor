@@ -74,6 +74,11 @@ static void print_usage(FILE *out)
         "                    size, each timestamp — the container\n"
         "                    only, no chunk's NBT opened. Takes\n"
         "                    --dimension overworld|nether|end|<number>.\n"
+        "  region compact <world> <rx> <rz>\n"
+        "                    Rewrite a region file packed: live\n"
+        "                    chunks only, in slot order, the\n"
+        "                    slack from earlier writes gone.\n"
+        "                    Silent on success.\n"
         "  region chunk <world> <cx> <cz>\n"
         "                    One Java chunk's NBT — SNBT, or JSON\n"
         "                    with --json. cx, cz are chunk\n"
@@ -1499,6 +1504,69 @@ static int cmd_region_chunk_write(int argc, char **argv)
     return rc;
 }
 
+/*
+ * `mcme region compact <world> <rx> <rz>` rewrites one region file
+ * packed: live chunks only, in slot order, the slack every set leaves
+ * behind gone. The region file is the unit, the same unit the chunk
+ * write's append-then-repoint discipline serves — this is that
+ * discipline's other half, taken from the side where the old bytes
+ * are safe to lose.
+ *
+ * Silent on success, like db compact and every write verb here: what
+ * happened is the inventory's next listing, and a verb that always
+ * succeeds has no report its caller needs. The refusals are the
+ * chunk write's vocabulary; refusal_exit gives them the codes they
+ * would carry anywhere else in the CLI.
+ */
+static int cmd_region_compact(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("region", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 3) {
+        mcme_set_error("region: usage: region compact <world> <rx> <rz> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long rx, rz;
+    if (!parse_coord("region", argv[1], &rx)) return MCME_EXIT_USAGE;
+    if (!parse_coord("region", argv[2], &rz)) return MCME_EXIT_USAGE;
+
+    const char *dim_dir = NULL;
+    if (!java_dimension_dir(dimension, &dim_dir)) {
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("region: '%s' is not a Java world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    char file[MCME_REGION_PATH_MAX];
+    if (mcme_region_path(file, sizeof file, info.path, dim_dir,
+                         (int)rx, (int)rz) == NULL) {
+        mcme_set_error("region: the path to r.%ld.%ld is too long",
+                       rx, rz);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    McmeRegionCompact summary;
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    bool compacted = mcme_region_compact(file, &summary, &refusal);
+
+    int rc = compacted ? MCME_OK : refusal_exit(refusal);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
 static int cmd_chunk_set(int argc, char **argv)
 {
     int32_t dimension = 0;
@@ -2562,9 +2630,13 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "convert") == 0) return cmd_not_implemented("convert", "Phase 4");
     if (strcmp(cmd, "chunks") == 0)  return cmd_chunks(rest, args);
     if (strcmp(cmd, "region") == 0) {
-        /* `chunk` is matched before the path, like `entity set` and
-           `entity del`: a world directory named chunk reads as
-           ./chunk. Inside chunk, `set` is matched the same way. */
+        /* `chunk` and `compact` are matched before the path, like
+           `entity set` and `entity del`: a world directory named
+           chunk or compact reads as ./chunk, ./compact. Inside chunk,
+           `set` is matched the same way. */
+        if (rest >= 1 && strcmp(args[0], "compact") == 0) {
+            return cmd_region_compact(rest - 1, args + 1);
+        }
         if (rest >= 1 && strcmp(args[0], "chunk") == 0) {
             if (rest >= 2 && strcmp(args[1], "set") == 0) {
                 return cmd_region_chunk_write(rest - 2, args + 2);

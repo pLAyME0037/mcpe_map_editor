@@ -165,4 +165,40 @@ bool mcme_region_set_chunk(const char *file, int cx, int cz,
                            const McmeTag *root, McmeArena *arena,
                            uint32_t timestamp, McmeWriteRefusal *refusal);
 
+/* What one compaction did, when `out` is not NULL. */
+typedef struct {
+    size_t before;    /* the file's size when compaction started */
+    size_t after;     /* its size once the live chunks are packed */
+    size_t chunks;    /* chunks carried into the new file         */
+} McmeRegionCompact;
+
+/*
+ * Rewrites a region file packed: live chunks only, in slot order, from
+ * sector 2 on — the counterpart to mcme_region_set_chunk's
+ * append-then-repoint, reclaiming the slack every set leaves behind
+ * (dead payload versions, holes, tails no entry claims).
+ *
+ * Each chunk is copied as its raw frame — length, compression byte,
+ * data — so nothing is decompressed: gzip, zlib, stored and external
+ * payloads ride through byte-identical, and timestamps are carried
+ * over. The counts written are the counts that are true: the sectors
+ * each payload actually occupies.
+ *
+ * The new file is written beside the old as "<file>.tmp" and renamed
+ * over it, so the file changes in one step — a reader finds the old
+ * file or the new one, never a half-packed one — and any failure
+ * leaves the original untouched.
+ *
+ * Returns false with mcme_last_error() saying what was refused, and
+ * `refusal` (when not NULL) which class: USAGE for a null argument;
+ * NOT_THERE when the file is not there (nothing to compact);
+ * NOT_READABLE when the file or a present chunk's frame is not a
+ * format mcme reads — including a chunk too big for a slot's count
+ * byte to claim, since a compactor that skipped what it could not
+ * write would drop it; STORE for the new file's failures; INTERNAL
+ * for arithmetic past the format's reach.
+ */
+bool mcme_region_compact(const char *file, McmeRegionCompact *out,
+                         McmeWriteRefusal *refusal);
+
 #endif /* MCME_REGION_H */

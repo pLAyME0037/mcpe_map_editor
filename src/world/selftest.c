@@ -690,6 +690,258 @@ static void test_region_write(void)
     remove(junk);
 }
 
+/* ========================================================================
+ * Compaction — the slack every append leaves, gone
+ * ======================================================================== */
+
+static void test_region_compact(void)
+{
+    printf("  region compact (pack, preserve, idempotent)\n");
+
+    /* The golden region copied, then written twice in one slot, the
+       way test_region_write leaves it: a dead payload version and the
+       slack it sits in. */
+    char src[512];
+    char dst[] = "build/c.mca";
+    snprintf(src, sizeof src, "%s/region/r.0.0.mca", kWorldDir);
+    void *golden;
+    size_t golden_len;
+    if (!mcme_fs_read(src, &golden, &golden_len)) {
+        printf("  SKIP region compact (cannot read %s)\n", src);
+        return;
+    }
+    CHECK(mcme_fs_write(dst, golden, golden_len));
+    free(golden);
+
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) {
+        remove(dst);
+        return;
+    }
+    static const char kDoc[] = "{DataVersion: 7, xPos: 3, zPos: -4}";
+    static const char kDoc2[] = "{DataVersion: 9}";
+    McmeTag *doc = NULL;
+    McmeTag *doc2 = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, kDoc, sizeof kDoc - 1, &doc));
+    CHECK(mcme_nbt_parse_snbt(arena, kDoc2, sizeof kDoc2 - 1, &doc2));
+
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_INTERNAL;
+    CHECK(mcme_region_set_chunk(dst, 2, 2, doc, arena, 0x01020304u, &refusal));
+    CHECK(mcme_region_set_chunk(dst, 2, 2, doc2, arena, 0x0A0B0C0Du, &refusal));
+
+    /* Snapshot what the file holds before it is replaced: for every
+       slot, its frame's place, size and stamp. */
+    uint32_t old_off[MCME_REGION_ENTRIES];
+    size_t old_len[MCME_REGION_ENTRIES];
+    uint32_t old_ts[MCME_REGION_ENTRIES];
+    memset(old_len, 0, sizeof old_len);
+    McmeRegion reg;
+    CHECK(mcme_region_open(&reg, dst));
+    for (size_t slot = 0; slot < MCME_REGION_ENTRIES; ++slot) {
+        int cx = (int)(slot % 32);
+        int cz = (int)(slot / 32);
+        if (!mcme_region_chunk_present(&reg, cx, cz)) continue;
+        McmeChunkPayload p;
+        McmeChunkLoc loc = mcme_region_chunk_loc(&reg, cx, cz);
+        CHECK(mcme_region_chunk_payload(&reg, cx, cz, &p));
+        old_off[slot] = loc.sector_offset;
+        old_len[slot] = 5u + p.length;
+        old_ts[slot] = mcme_region_chunk_timestamp(&reg, cx, cz);
+    }
+    mcme_region_close(&reg);
+
+    void *before;
+    size_t before_len;
+    CHECK(mcme_fs_read(dst, &before, &before_len));
+
+    McmeRegionCompact summary;
+    CHECK(mcme_region_compact(dst, &summary, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+
+    /* Five chunks carried, the file smaller than the slack made it. */
+    CHECK(summary.chunks == 5);
+    CHECK(summary.before == before_len);
+    CHECK(summary.after < before_len);
+
+    void *after;
+    size_t after_len;
+    CHECK(mcme_fs_read(dst, &after, &after_len));
+    CHECK(after_len == summary.after);
+
+    /* The packed layout: slots in order from sector 2, the counts the
+       payloads' own sizes imply, the stamps carried over, and every
+       frame's bytes the ones the old file held. */
+    {
+        McmeRegion fresh_reg;
+        CHECK(mcme_region_open(&fresh_reg, dst));
+        size_t at = 2;
+        size_t held = 0;
+        for (size_t slot = 0; slot < MCME_REGION_ENTRIES; ++slot) {
+            int cx = (int)(slot % 32);
+            int cz = (int)(slot / 32);
+            if (old_len[slot] == 0) {
+                CHECK_MSG(!mcme_region_chunk_present(&fresh_reg, cx, cz),
+                          "compacted file holds slot %zu, which the old "
+                          "one did not", slot);
+                continue;
+            }
+            McmeChunkLoc loc = mcme_region_chunk_loc(&fresh_reg, cx, cz);
+            CHECK_MSG(loc.sector_offset == at,
+                      "slot %zu at sector %u, want %zu", slot,
+                      loc.sector_offset, at);
+            CHECK_MSG(loc.sector_count == (old_len[slot] + 4095u) / 4096u,
+                      "slot %zu claims %u sectors, its frame needs %zu",
+                      slot, loc.sector_count,
+                      (old_len[slot] + 4095u) / 4096u);
+            CHECK_MSG(mcme_region_chunk_timestamp(&fresh_reg, cx, cz)
+                          == old_ts[slot],
+                      "slot %zu stamp %u, want %u", slot,
+                      mcme_region_chunk_timestamp(&fresh_reg, cx, cz),
+                      old_ts[slot]);
+            CHECK(memcmp((char *)after + at * MCME_REGION_SECTOR,
+                         (char *)before
+                             + (size_t)old_off[slot] * MCME_REGION_SECTOR,
+                         old_len[slot]) == 0);
+            at += loc.sector_count;
+            ++held;
+        }
+        mcme_region_close(&fresh_reg);
+        CHECK(held == 5);
+        CHECK(at * MCME_REGION_SECTOR == after_len);
+    }
+
+    /* The last write wins, and the golden chunks came through
+       untouched: what read_chunk inflates is unchanged. */
+    check_chunk_written(dst, 2, 2, 9, 0x0A0B0C0Du);
+    check_chunk_written(dst, 0, 0, 3463, 1791643789u);
+    check_chunk_written(dst, 31, 31, 3463, 1791643789u);
+
+    /* Compacting the compacted file changes no byte. */
+    char again[] = "build/c_again.mca";
+    CHECK(mcme_fs_write(again, after, after_len));
+    McmeRegionCompact summary2;
+    CHECK(mcme_region_compact(again, &summary2, &refusal));
+    CHECK(summary2.chunks == 5);
+    CHECK(summary2.after == after_len);
+    void *twice;
+    size_t twice_len;
+    CHECK(mcme_fs_read(again, &twice, &twice_len));
+    CHECK(twice_len == after_len);
+    CHECK(memcmp(twice, after, after_len) == 0);
+    free(twice);
+    free(after);
+    free(before);
+
+    /* Slot order, not append order: the chunk written first sits at
+       the higher slot, so packing moves it — and its stamp moves
+       with it. */
+    {
+        char hole[] = "build/c_hole.mca";
+        remove(hole);
+        CHECK(mcme_region_set_chunk(hole, 31, 31, doc, arena,
+                                    0x11111111u, &refusal));
+        CHECK(mcme_region_set_chunk(hole, 0, 0, doc2, arena,
+                                    0x22222222u, &refusal));
+        CHECK(mcme_region_compact(hole, NULL, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+
+        McmeRegion hr;
+        CHECK(mcme_region_open(&hr, hole));
+        McmeChunkLoc l0 = mcme_region_chunk_loc(&hr, 0, 0);
+        McmeChunkLoc l1 = mcme_region_chunk_loc(&hr, 31, 31);
+        CHECK(l0.sector_offset == 2);
+        CHECK(l1.sector_offset == l0.sector_offset + l0.sector_count);
+        CHECK(mcme_region_chunk_timestamp(&hr, 0, 0) == 0x22222222u);
+        CHECK(mcme_region_chunk_timestamp(&hr, 31, 31) == 0x11111111u);
+        mcme_region_close(&hr);
+        check_chunk_written(hole, 0, 0, 9, 0x22222222u);
+        check_chunk_written(hole, 31, 31, 7, 0x11111111u);
+
+        void *hb;
+        size_t hb_len;
+        CHECK(mcme_fs_read(hole, &hb, &hb_len));
+        CHECK(hb_len == 8192 + 2 * MCME_REGION_SECTOR);
+        free(hb);
+        remove(hole);
+    }
+
+    /* A file with nothing in it compacts to its header, whole. */
+    {
+        char empty[] = "build/c_empty.mca";
+        uint8_t hdr[8192];
+        memset(hdr, 0, sizeof hdr);
+        CHECK(mcme_fs_write(empty, hdr, sizeof hdr));
+        McmeRegionCompact sum;
+        CHECK(mcme_region_compact(empty, &sum, &refusal));
+        CHECK(sum.chunks == 0);
+        CHECK(sum.before == 8192 && sum.after == 8192);
+        remove(empty);
+    }
+
+    /* Every refusal the library promises. */
+    CHECK(!mcme_region_compact(NULL, NULL, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    CHECK(!mcme_region_compact("build/c_missing.mca", NULL, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+
+    char junk[] = "build/c_junk.mca";
+    CHECK(mcme_fs_write(junk, "junkjunk", 8));
+    CHECK(!mcme_region_compact(junk, NULL, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+
+    /* A slot that points at a payload header that will not read —
+       its length runs past the file — refuses the whole file: a
+       compactor that skipped what it could not parse would drop it. */
+    {
+        char bad[] = "build/c_bad.mca";
+        uint8_t buf[8192 + MCME_REGION_SECTOR];
+        memset(buf, 0, sizeof buf);
+        buf[2] = 2;                 /* slot 0: offset, sector 2 */
+        buf[3] = 1;                 /* one sector claimed */
+        buf[8192 + 0] = 0x00;       /* length 1 MiB — past the file */
+        buf[8192 + 1] = 0x10;
+        buf[8192 + 2] = 0x00;
+        buf[8192 + 3] = 0x00;
+        buf[8192 + 4] = MCME_ANVIL_COMP_ZLIB;
+        CHECK(mcme_fs_write(bad, buf, sizeof buf));
+        CHECK(!mcme_region_compact(bad, NULL, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+        remove(bad);
+    }
+
+    /* A payload bigger than the 255 sectors a slot's count byte can
+       claim: mcme reads it (the length field says so), but a rewrite
+       could not record it honestly, so the file is refused. */
+    {
+        char big[] = "build/c_big.mca";
+        size_t sz = 8192 + 4 + 255u * MCME_REGION_SECTOR;
+        uint8_t *buf = calloc(1, sz);
+        CHECK(buf != NULL);
+        if (buf != NULL) {
+            buf[2] = 2;
+            buf[3] = 255;
+            buf[8192 + 0] = 0x00;   /* length field: 255 sectors of
+                                        comp byte + data, so the frame
+                                        is four bytes longer and rounds
+                                        up to 256 */
+            buf[8192 + 1] = 0x0F;
+            buf[8192 + 2] = 0xF0;
+            buf[8192 + 3] = 0x00;
+            buf[8192 + 4] = MCME_ANVIL_COMP_ZLIB;
+            CHECK(mcme_fs_write(big, buf, sz));
+            free(buf);
+        }
+        CHECK(!mcme_region_compact(big, NULL, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+        remove(big);
+    }
+
+    mcme_arena_free(arena);
+    remove(dst);
+    remove(again);
+}
+
 /* Builds a chunk key the way a store holds one: x, z, [dimension], tag,
    [index]. Kept local so the test states the layout it expects rather than
    calling the code under test to build its own input. */
@@ -3137,6 +3389,7 @@ int mcme_test_world(void)
     test_container();
     test_chunks();
     test_region_write();
+    test_region_compact();
 
     return g_failed;
 }

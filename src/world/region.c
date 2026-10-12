@@ -540,3 +540,163 @@ bool mcme_region_set_chunk(const char *file, int cx, int cz,
     }
     return true;
 }
+
+bool mcme_region_compact(const char *file, McmeRegionCompact *out,
+                         McmeWriteRefusal *refusal)
+{
+    set_refusal(refusal, MCME_WRITE_REFUSAL_NONE);
+    if (out != NULL) {
+        out->before = 0;
+        out->after = 0;
+        out->chunks = 0;
+    }
+    if (file == NULL) {
+        mcme_set_error("region: null argument");
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+    if (!mcme_fs_exists(file)) {
+        mcme_set_error("region: there is no region file at '%s'", file);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_THERE);
+        return false;
+    }
+
+    McmeRegion reg;
+    if (!mcme_region_open(&reg, file)) {
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+        return false;              /* open said what the file's problem is */
+    }
+
+    /* The new map, gathered before the old file is left behind. Offsets
+       run from sector 2 on, in slot order; absent slots stay zero. */
+    uint32_t new_off[MCME_REGION_ENTRIES];
+    uint8_t new_cnt[MCME_REGION_ENTRIES];
+    memset(new_off, 0, sizeof new_off);
+    memset(new_cnt, 0, sizeof new_cnt);
+
+    char tmp[MCME_REGION_PATH_MAX + 8];
+    int n = snprintf(tmp, sizeof tmp, "%s.tmp", file);
+    if (n < 0 || (size_t)n >= sizeof tmp) {
+        mcme_set_error("region: the path to '%s' is too long", file);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        mcme_region_close(&reg);
+        return false;
+    }
+
+    FILE *fh = fopen(tmp, "wb");
+    if (fh == NULL) {
+        mcme_set_error("region: cannot open '%s' for writing: %s",
+                       tmp, strerror(errno));
+        set_refusal(refusal, MCME_WRITE_REFUSAL_STORE);
+        mcme_region_close(&reg);
+        return false;
+    }
+
+    uint8_t zeros[MCME_REGION_SECTOR];
+    memset(zeros, 0, sizeof zeros);
+
+    bool ok = fseek(fh, (long)MCME_REGION_HEADER, SEEK_SET) == 0;
+    /* A format refusal below says its own message and class; anything
+       that goes wrong from here without one of those is the new file's
+       own IO. */
+    McmeWriteRefusal why = MCME_WRITE_REFUSAL_STORE;
+    size_t at = MCME_REGION_HEADER;   /* the byte the next frame lands on */
+    size_t chunks = 0;
+
+    for (size_t slot = 0; slot < MCME_REGION_ENTRIES && ok; ++slot) {
+        int cx = (int)(slot % 32);
+        int cz = (int)(slot / 32);
+        if (!mcme_region_chunk_present(&reg, cx, cz)) continue;
+
+        McmeChunkPayload p;
+        if (!mcme_region_chunk_payload(&reg, cx, cz, &p)) {
+            ok = false;
+            why = MCME_WRITE_REFUSAL_NOT_READABLE;
+            break;                  /* the header said why */
+        }
+        size_t frame = 5u + p.length;
+        size_t sectors = (frame + MCME_REGION_SECTOR - 1u) / MCME_REGION_SECTOR;
+        if (sectors > 255u) {
+            mcme_set_error("region: the chunk at (%d, %d) needs %zu "
+                           "sectors; a slot can claim 255",
+                           cx, cz, sectors);
+            ok = false;
+            why = MCME_WRITE_REFUSAL_NOT_READABLE;
+            break;
+        }
+        if (at / MCME_REGION_SECTOR + sectors > 0xFFFFFFu) {
+            mcme_set_error("region: '%s' would grow past the sector "
+                           "table's reach", file);
+            ok = false;
+            why = MCME_WRITE_REFUSAL_INTERNAL;
+            break;
+        }
+
+        /* Pack: pad to the next sector boundary, record where the frame
+           lands, copy the frame's bytes from the old file verbatim. */
+        size_t pad = (MCME_REGION_SECTOR - at % MCME_REGION_SECTOR)
+                     % MCME_REGION_SECTOR;
+        ok = pad == 0 || fwrite(zeros, 1, pad, fh) == pad;
+        if (!ok) break;
+        at += pad;
+
+        McmeChunkLoc loc = mcme_region_chunk_loc(&reg, cx, cz);
+        new_off[slot] = (uint32_t)(at / MCME_REGION_SECTOR);
+        new_cnt[slot] = (uint8_t)sectors;
+
+        const uint8_t *frame_at =
+            reg.data + (size_t)loc.sector_offset * MCME_REGION_SECTOR;
+        ok = fwrite(frame_at, 1, frame, fh) == frame;
+        if (!ok) break;
+        at += frame;
+        ++chunks;
+    }
+
+    /* The last frame lands mid-sector; the file is sized to the sectors
+       it claims, the way the game leaves them. */
+    if (ok && at % MCME_REGION_SECTOR != 0) {
+        size_t pad = MCME_REGION_SECTOR - at % MCME_REGION_SECTOR;
+        ok = fwrite(zeros, 1, pad, fh) == pad;
+        at += pad;
+    }
+
+    if (ok) {
+        /* The header, written last into a file nobody can see until the
+           rename: entries from the new map, timestamps carried over
+           from the old file unchanged. */
+        uint8_t tbl[MCME_REGION_SECTOR];
+        memset(tbl, 0, sizeof tbl);
+        for (size_t slot = 0; slot < MCME_REGION_ENTRIES; ++slot) {
+            if (new_cnt[slot] != 0) {
+                wr_u24be(&tbl[slot * 4], new_off[slot]);
+                tbl[slot * 4 + 3] = new_cnt[slot];
+            }
+        }
+        ok = fseek(fh, 0, SEEK_SET) == 0
+             && fwrite(tbl, 1, sizeof tbl, fh) == sizeof tbl
+             && fwrite(reg.data + MCME_REGION_SECTOR, 1, MCME_REGION_SECTOR, fh)
+                == MCME_REGION_SECTOR;
+    }
+
+    if (fclose(fh) != 0) ok = false;
+    if (ok && rename(tmp, file) != 0) ok = false;
+
+    if (!ok) {
+        if (why == MCME_WRITE_REFUSAL_STORE) {
+            mcme_set_error("region: cannot write '%s': %s",
+                           file, strerror(errno));
+        }
+        remove(tmp);
+        set_refusal(refusal, why);
+        mcme_region_close(&reg);
+        return false;
+    }
+
+    if (out != NULL) {
+        out->before = reg.size;
+        out->after = at;
+        out->chunks = chunks;
+    }
+    mcme_region_close(&reg);
+    return true;
+}

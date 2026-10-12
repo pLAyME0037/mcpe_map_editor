@@ -9,6 +9,100 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Compaction: `mcme region compact`
+
+### Built
+
+- `mcme_region_compact()` (region.h/c) rewrites a
+  region file packed: live chunks only, in slot order,
+  from sector 2 on — the counterpart to set's
+  append-then-repoint, reclaiming the slack every set
+  leaves behind (dead payload versions, holes, tails no
+  entry claims). Each chunk is copied as its raw frame —
+  length, compression byte, data — so nothing is
+  decompressed: gzip, zlib, stored and external payloads
+  ride through byte-identical, and timestamps are carried
+  over. The counts written are the counts that are true,
+  the sectors each payload actually occupies, not what
+  the file was carrying.
+- The new file is written beside the old as
+  `r.<rx>.<rz>.mca.tmp` and renamed over it: the file
+  changes in one step, a reader finds the old file or
+  the new one, never a half-packed one, and any failure
+  — a write that will not land, a rename that will not
+  happen — removes the .tmp and leaves the original
+  untouched. Compaction never leans on the old file's
+  sector counts either: every payload's size comes from
+  the length field the reader trusts.
+- Two refusals are the file's own honesty. A payload
+  header mcme cannot read refuses the whole file — a
+  compactor that skipped what it could not parse would
+  drop it. A payload bigger than the 255 sectors a
+  slot's count byte can claim is refused too: mcme
+  reads such a chunk (the length field says so), but a
+  rewrite could not record it honestly, so the file is
+  not one mcme will write. Silent on success, like
+  `db compact` and every write verb: what happened is
+  the inventory's next listing. `compact` is matched
+  before the world path, like `chunk set`.
+- The selftest taught itself the format's arithmetic
+  the hard way: a length field counts compression byte
+  plus data, so a 255-sector length is a 256-sector
+  frame, and an entry's offset lives in bytes 0..2 with
+  the count in byte 3 — a craft attempt that put the
+  offset in the count byte made a slot vanish, and the
+  file the test thought it was refusing was being
+  compacted as empty. (The same off-by-one walked into
+  the ref tool twice; both now write the entry as
+  `[offset-be24, count]` in one poke.)
+
+### Cross-check
+
+- `tools/ref_region_compact.py`, 12 checks, all on
+  copies of the golden world. PACK: slack made the
+  honest way — two writes to one chunk — then the
+  tool's own sector-table walk finds the same slots
+  with byte-identical frames, compression and stamps,
+  counts each payload's own, offsets contiguous from
+  sector 2 in slot order, size exactly header plus
+  those sectors, the superseded payload's bytes gone
+  from the file, the stamp the surviving chunk carries
+  is this session's write rather than the fixture's,
+  and amulet_nbt loads every payload the new table
+  points at. INVENTORY: the read verbs report the
+  compacted file's own numbers. IDEMPOTENT: a second
+  compaction changes no byte. ROOM: a missing region
+  file is exit 2, a corrupt one exit 3, a frame that
+  will not read exit 3, a chunk too big for a slot to
+  claim exit 3 with the 255-sector message, Bedrock /
+  dimensions / coordinates / a missing argument take
+  their documented codes — silent on every path,
+  `--json` included.
+- Selftest `test_region_compact`: snapshots every slot
+  before the rewrite, then pins the packed layout
+  (offsets, honest counts, carried stamps, byte-equal
+  frames), the last write winning, the golden chunks
+  read back whole, a byte-identical second compaction,
+  slot order over append order — a chunk written first
+  to the higher slot moves down and its stamp moves
+  with it — the empty file's 8192-byte compaction, and
+  every refusal class.
+- Verified at commit: `./rebuild.sh test` PASS — 5
+  suites, 0 failures; ref tools 12 (compact) + 9
+  (write) + 17 (chunk) + 14 (inventory); align.py 0
+  misalignments; golden worlds untouched — every write
+  in the suite ran against a scratch copy.
+
+### Next
+
+- Java blocks: `chunk get`/`chunk set` answering for
+  Java worlds through the palette layer — Bedrock has
+  both verbs, Java has the chunk document now but no
+  per-block way in. After that, the Phase 4 reservation
+  (`convert`) is what the roadmap still names.
+
+---
+
 ## 2026-10-12 — Writing a Java chunk: `mcme region chunk set`
 
 ### Built
