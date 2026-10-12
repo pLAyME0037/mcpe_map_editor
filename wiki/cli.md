@@ -254,6 +254,35 @@ file is not a format mcme reads — shorter than the header, an entry
 pointing past its end, or a present slot whose payload header will not
 read — `4` store error.
 
+### `mcme region chunk`
+
+One Java chunk read out of its region file: the chunk's own NBT
+document, printed the way `mcme nbt dump` prints a file — SNBT by
+default, the JSON view under `--json`, so both commands feed `jq` the
+same tree. What is printed is the world's own: nothing added, renamed
+or reordered.
+
+```
+mcme region chunk <world> <cx> <cz> [--dimension <name|number>]
+```
+
+`(cx, cz)` are chunk coordinates — the unit `mcme chunks` counts in,
+not block coordinates. The region file and the slot follow from them
+by the game's own sharding rule, floor(chunk / 32): chunk (-1, -1) is
+read from `r.-1.-1.mca` at slot (31, 31), where the inventory lists
+it. `chunk` is matched before the world path, so a world directory
+named `chunk` reads as `./chunk`.
+
+The chunk is the unit: a payload that will not inflate, a
+compression byte mcme does not know, or NBT that will not decode
+refuses the whole answer rather than printing what survived — any
+part of which mcme cannot read is exit 3.
+
+Exit codes: `0` printed, `1` usage, `2` not a world, not a Java
+world, no region file at that name, or no chunk stored at those
+coordinates, `3` the chunk is stored but is not a format mcme reads,
+`4` store error.
+
 ### `mcme chunk set`
 
 Sets one block in a Bedrock world. The first editing verb (D3: anything worth

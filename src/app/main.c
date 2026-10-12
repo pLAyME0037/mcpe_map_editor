@@ -74,6 +74,11 @@ static void print_usage(FILE *out)
         "                    size, each timestamp — the container\n"
         "                    only, no chunk's NBT opened. Takes\n"
         "                    --dimension overworld|nether|end|<number>.\n"
+        "  region chunk <world> <cx> <cz>\n"
+        "                    One Java chunk's NBT — SNBT, or JSON\n"
+        "                    with --json. cx, cz are chunk\n"
+        "                    coordinates, not blocks. Takes\n"
+        "                    --dimension too.\n"
         "  chunk set <world> <x> <y> <z> <block>\n"
         "                    Set one block in a Bedrock world.\n"
         "                    <block> is a name, or a name with SNBT\n"
@@ -1122,6 +1127,22 @@ static void format_timestamp(uint32_t seconds, char *out, size_t cap)
     }
 }
 
+/* The Java directory a dimension is stored in: the overworld keeps its
+   chunks in plain region/, the nether in DIM-1, the end in DIM1 — the
+   game's own layout. Java stores nothing else, so any other number is
+   usage rather than a directory mcme would invent. */
+static bool java_dimension_dir(int32_t dimension, const char **out_dir)
+{
+    *out_dir = NULL;
+    if (dimension == 0) return true;
+    if (dimension == 1) { *out_dir = "DIM-1"; return true; }
+    if (dimension == 2) { *out_dir = "DIM1"; return true; }
+    mcme_set_error("region: Java keeps the nether in DIM-1 and "
+                   "the end in DIM1; there is no directory for "
+                   "dimension %d", (int)dimension);
+    return false;
+}
+
 /*
  * `mcme region <world> <rx> <rz>` inventories one Java region file
  * from the container's own tables: which slots are filled, each
@@ -1152,17 +1173,9 @@ static int cmd_region(int argc, char **argv)
     if (!parse_coord("region", argv[2], &rz)) return MCME_EXIT_USAGE;
 
     /* Java stores its three dimensions in directories, not in the
-       key, and has no third spelling mcme could guess at: a number
-       outside them is a usage fault rather than a path invented. */
+       key, and has no third spelling mcme could guess at. */
     const char *dim_dir = NULL;
-    if (dimension == 1) {
-        dim_dir = "DIM-1";
-    } else if (dimension == 2) {
-        dim_dir = "DIM1";
-    } else if (dimension != 0) {
-        mcme_set_error("region: Java keeps the nether in DIM-1 and "
-                       "the end in DIM1; there is no directory for "
-                       "dimension %d", (int)dimension);
+    if (!java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
 
@@ -1275,6 +1288,131 @@ static int cmd_region(int argc, char **argv)
             cJSON_Delete(root);
         }
     }
+    mcme_region_close(&reg);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
+/*
+ * One present chunk, printed: inflate, decode, write the tree out the
+ * way `nbt dump` writes a file. The chunk is the unit — a payload,
+ * compression or document that will not read refuses the whole answer
+ * rather than printing what survived.
+ */
+static int read_one_chunk(const McmeRegion *reg, long cx, long cz)
+{
+    McmeBuffer payload;
+    mcme_buffer_init(&payload);
+    if (!mcme_region_read_chunk(reg, (int)cx, (int)cz, NULL, &payload)) {
+        mcme_buffer_free(&payload);
+        return MCME_EXIT_BAD_FORMAT;   /* the library names the slot */
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_buffer_free(&payload);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    int rc = MCME_OK;
+    McmeNbtDoc doc;
+    if (!mcme_nbt_parse(&doc, arena, payload.data, payload.len, false)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("region: the chunk at (%ld, %ld) will not decode: %s",
+                       cx, cz, why);
+        rc = MCME_EXIT_BAD_FORMAT;
+    } else {
+        McmeBuffer out;
+        mcme_buffer_init(&out);
+        bool ok = g_opts.json ? mcme_nbt_write_json(doc.root, &out, 0)
+                              : mcme_nbt_write_snbt(doc.root, &out, 0);
+        if (!ok) {
+            rc = MCME_EXIT_INTERNAL;
+        } else {
+            fwrite(out.data, 1, out.len, stdout);
+            fputc('\n', stdout);
+        }
+        mcme_buffer_free(&out);
+    }
+
+    mcme_arena_free(arena);
+    mcme_buffer_free(&payload);
+    return rc;
+}
+
+/*
+ * `mcme region chunk <world> <cx> <cz>` reads one Java chunk: the
+ * region file follows from the coordinates by floor(chunk / 32), and
+ * the chunk's NBT prints as SNBT or, under --json, the JSON view.
+ *
+ * Exit codes: 2 for a world or region file that is not there and for
+ * a chunk the world does not store, 3 for a chunk stored but not in a
+ * format mcme reads, 4 for store errors, 1 for usage.
+ */
+static int cmd_region_chunk(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("region", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 3) {
+        mcme_set_error("region: usage: region chunk <world> <cx> <cz> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long cx, cz;
+    if (!parse_coord("region", argv[1], &cx)) return MCME_EXIT_USAGE;
+    if (!parse_coord("region", argv[2], &cz)) return MCME_EXIT_USAGE;
+
+    const char *dim_dir = NULL;
+    if (!java_dimension_dir(dimension, &dim_dir)) {
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("region: '%s' is not a Java world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    int rx, rz;
+    mcme_region_of((int)cx, (int)cz, &rx, &rz);
+
+    char file[MCME_REGION_PATH_MAX];
+    if (mcme_region_path(file, sizeof file, info.path, dim_dir,
+                         rx, rz) == NULL) {
+        mcme_set_error("region: the path to r.%d.%d is too long", rx, rz);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    /* The same two answers as the inventory: a region file that is not
+       there is an absence, a file present but not readable as a region
+       is format. */
+    McmeRegion reg;
+    if (!mcme_region_open(&reg, file)) {
+        int rc = mcme_fs_exists(file) ? MCME_EXIT_BAD_FORMAT
+                                      : MCME_EXIT_NOT_FOUND;
+        mcme_world_info_free(&info);
+        return rc;
+    }
+
+    int rc;
+    if (!mcme_region_chunk_present(&reg, (int)cx, (int)cz)) {
+        /* Not stored is an absence the caller asked about — a
+           different answer from the slot being there and unreadable. */
+        mcme_set_error("region: no chunk is stored at (%ld, %ld)", cx, cz);
+        rc = MCME_EXIT_NOT_FOUND;
+    } else {
+        rc = read_one_chunk(&reg, cx, cz);
+    }
+
     mcme_region_close(&reg);
     mcme_world_info_free(&info);
     return rc;
@@ -2342,7 +2480,15 @@ static int dispatch(int argc, char **argv)
     }
     if (strcmp(cmd, "convert") == 0) return cmd_not_implemented("convert", "Phase 4");
     if (strcmp(cmd, "chunks") == 0)  return cmd_chunks(rest, args);
-    if (strcmp(cmd, "region") == 0)   return cmd_region(rest, args);
+    if (strcmp(cmd, "region") == 0) {
+        /* `chunk` is matched before the path, like `entity set` and
+           `entity del`: a world directory named chunk reads as
+           ./chunk. */
+        if (rest >= 1 && strcmp(args[0], "chunk") == 0) {
+            return cmd_region_chunk(rest - 1, args + 1);
+        }
+        return cmd_region(rest, args);
+    }
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "

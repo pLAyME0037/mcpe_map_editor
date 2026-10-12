@@ -293,6 +293,15 @@ bool mcme_region_read_chunk(const McmeRegion *r, int cx, int cz,
  * Path building
  * ======================================================================== */
 
+void mcme_region_of(int cx, int cz, int *out_rx, int *out_rz)
+{
+    /* floor(chunk / 32): C division truncates toward zero, so the
+       negative side needs the adjustment — chunk -1 belongs in region
+       -1, where the mask in slot_for will find it at slot 31. */
+    if (out_rx != NULL) *out_rx = cx / 32 - (cx % 32 < 0);
+    if (out_rz != NULL) *out_rz = cz / 32 - (cz % 32 < 0);
+}
+
 const char *mcme_region_path(char *out, size_t cap,
                              const char *world_dir, const char *dimension,
                              int rx, int rz)

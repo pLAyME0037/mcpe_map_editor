@@ -120,4 +120,11 @@ const char *mcme_region_path(char *out, size_t cap,
                              const char *world_dir, const char *dimension,
                              int rx, int rz);
 
+/*
+ * The region file a chunk belongs to: floor(chunk / 32) on each axis, the
+ * sharding rule the file names are written by. Either output may be NULL
+ * when that axis is not wanted.
+ */
+void mcme_region_of(int cx, int cz, int *out_rx, int *out_rz);
+
 #endif /* MCME_REGION_H */

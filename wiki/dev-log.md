@@ -9,6 +9,75 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Reading a Java chunk: `mcme region chunk`
+
+### Built
+
+- `mcme_region_of()` (region.h/c): the sharding rule as a
+  function — floor(chunk / 32) on each axis, the rule
+  `r.<rx>.<rz>.mca` names are written by. C division
+  truncates toward zero, which would file chunk -1 under
+  region 0, so the negative side is adjusted; the mask in
+  `slot_for` finds the same chunk at slot 31 of the file
+  the rule names, and the two are pinned together in the
+  selftest for 0, 31, 32, -1, -32 and -33.
+- `mcme region chunk <world> <cx> <cz>` reads one Java
+  chunk through the region container: coordinates to file
+  to slot to inflated payload to NBT, printed by the same
+  writers `nbt dump` uses — SNBT by default, the JSON view
+  under `--json` — so the two commands answer `jq`
+  identically and print byte-identical text for the same
+  document. `(cx, cz)` are chunk coordinates, the unit
+  `mcme chunks` counts in, not blocks.
+- The chunk is the unit: a slot the world does not store
+  is exit 2 naming the coordinates; a payload that will
+  not inflate, a compression byte mcme does not know, or
+  NBT that will not decode is exit 3 — any part of which
+  mcme cannot read is not half an answer. JSON-mode
+  failures print nothing at all.
+- `--dimension` and the argument handling now share one
+  helper with the inventory (`java_dimension_dir`,
+  `parse_coord`, `extract_dimension` with the verb
+  argument), so the two region verbs cannot drift apart on
+  where a dimension lives or how a refusal reads.
+- `chunk` is matched before the world path, like
+  `entity set` and `entity del`: a world directory named
+  `chunk` reads as `./chunk`. cli.md documents the verb
+  before the code; the usage text gained the line.
+
+### Cross-check
+
+- `tools/ref_region_chunk.py`, 17 checks against the
+  reference. READ: for every chunk in the golden world's
+  manifest, `--json region chunk` must equal amulet_nbt's
+  own `load` of the payload this tool's sector-table walk
+  inflates — deep-equal plain Python, each side through
+  its own decoder, with the first differing path printed
+  on disagreement. PRINT: the SNBT must be byte-identical
+  to `mcme nbt dump` on ref_region.py's golden .nbt AND
+  parse back through amulet's `from_snbt` into that same
+  tree — the printed line is not just stable, it is
+  readable; the JSON must equal `nbt dump --json`'s.
+  ROOM: an unstored chunk (exit 2, silent in JSON), a
+  missing region file, a Bedrock world, DIM-1 and DIM1,
+  a dimension Java has no directory for, bad coordinates,
+  a missing argument, and a temp region whose payload
+  inflates to garbage refusing whole as exit 3.
+- Selftest: the sharding pins above beside the container
+  checks.
+- Verified at commit: `./rebuild.sh test` PASS — 5
+  suites, 0 failures; ref tools 17 (chunk) + 14
+  (inventory) + 25 (entity) + write PASS (19) + 28
+  (column); align.py 0 misalignments.
+
+### Next
+
+- Writing back: a chunk replaced in its region file, the
+  write half this read half proves first — the way the
+  block entity record went, read before rewrite.
+
+---
+
 ## 2026-10-12 — What the region file holds: `mcme region`
 
 ### Built

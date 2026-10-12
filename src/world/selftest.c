@@ -159,6 +159,33 @@ static void test_container(void)
         mcme_region_close(&reg);
     }
 
+    /* The sharding rule itself: floor(chunk / 32), so chunk -1 lands in
+       region -1, where slot_for's mask finds it at slot 31 — the pair
+       that makes (31, 31) in r.-1.-1 mean chunk (-1, -1). C division
+       would truncate that to region 0. */
+    {
+        static const struct {
+            int cx, cz, rx, rz;
+        } shards[] = {
+            {   0,   0,  0,  0 },
+            {  31,  31,  0,  0 },
+            {  32,   0,  1,  0 },
+            {  -1,  -1, -1, -1 },
+            { -32, -32, -1, -1 },
+            { -33, -32, -2, -1 },
+        };
+
+        for (size_t i = 0; i < sizeof shards / sizeof shards[0]; ++i) {
+            int rx = 99, rz = 99;
+            mcme_region_of(shards[i].cx, shards[i].cz, &rx, &rz);
+            CHECK_MSG(rx == shards[i].rx && rz == shards[i].rz,
+                      "region of chunk (%d, %d) is (%d, %d), want (%d, %d)",
+                      shards[i].cx, shards[i].cz, rx, rz,
+                      shards[i].rx, shards[i].rz);
+        }
+        mcme_region_of(7, -9, NULL, NULL);  /* either axis may be skipped */
+    }
+
     /* Opening a directory, a missing file, and a file too short to hold the
        header must all fail cleanly. */
     {
