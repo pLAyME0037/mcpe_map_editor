@@ -9,6 +9,49 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Read it back: `mcme chunk get`
+
+### Built
+
+- `mcme chunk get <world> <x> <y> <z>`
+  (`src/app/main.c`): prints the block at the
+  coordinate as the same spec `chunk set` accepts —
+  the name, states in braces when the palette entry
+  has any. The text is canonical — SNBT as the
+  printer emits it — so it compares against another
+  `get`, not against hand-typed text, and it can be
+  passed straight back to `set`: the round-trip
+  finds the same palette entry by byte comparison
+  instead of appending a second one. The entry's
+  version is not printed; the spec syntax has no
+  version field. The all-air marker prints
+  `minecraft:air`. Under `--json` the same text is a
+  field, escaped, with the coordinates echoed.
+  Reading does not take the LOCK — the game can hold
+  the world open.
+- Exit codes mirror `chunk set` (2 for a subchunk
+  that is not stored), with 3 added: a payload that
+  does not decode, or an index that points outside
+  its palette, is world data wrong, not an i/o
+  failure. One path caught by hand: an absent key
+  made `mcme_leveldb_get`'s own "key not found"
+  surface as exit 4; checking `has` first turns it
+  into the promised exit 2.
+- `tools/ref_bedrock_write.py` grew the read side:
+  both edits read back through `chunk get`, the
+  printed text is set again at a neighbour position
+  with the palette entry reused (amulet confirms no
+  append happened), and `--json` is parsed and
+  compared field by field.
+
+### Next
+
+The earlier candidates stand, one answered: agents
+can now verify their own edits. A box fill across
+subchunks, or `--dimension`.
+
+---
+
 ## 2026-10-12 — The first editing verb: `mcme chunk set`
 
 ### Built

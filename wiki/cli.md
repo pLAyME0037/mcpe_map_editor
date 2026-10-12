@@ -236,6 +236,35 @@ Exit codes: `0` set, `1` usage (bad coordinate, bad block spec), `2` not a
 world, not a Bedrock world, or the subchunk is not stored, `4` store error.
 Success prints nothing.
 
+### `mcme chunk get`
+
+Prints one block of a Bedrock world as the same spec `chunk set` accepts, so
+`set` followed by `get` prints what went in and an agent can verify its own
+edit. The printed text can be passed straight back to `set`.
+
+```
+mcme chunk get <world> <x> <y> <z>
+```
+
+```
+$ mcme chunk get mybedrock 12 64 -30
+minecraft:oak_log{pillar_axis: "x"}
+```
+
+The text is canonical — SNBT as mcme's printer emits it, with the printer's
+spacing, which is not necessarily the spacing that was typed — so compare
+against a `get` of the same block, not against hand-typed text. The palette
+entry's version is not printed: the spec syntax has no version field, and the
+version mcme writes for entries it adds is a constant.
+
+Under `--json` the same text is a field, escaped, with the coordinates
+echoed: `{"block":"minecraft:stone","x":12,"y":64,"z":-30}`.
+
+Exit codes: `0` printed, `1` usage, `2` not a world, not a Bedrock world, or
+the subchunk is not stored, `3` the stored payload is not the format mcme
+reads, `4` store error. Reading does not take the LOCK — the game can hold
+the world open.
+
 ### `mcme db`
 
 Raw key/value access to a Bedrock store. This is the write path's CLI surface

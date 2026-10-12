@@ -18,6 +18,11 @@ path that reads worlds Minecraft loads — and asserts:
   * the version-9 wrapper keeps its Y index
   * the neighbouring chunk's payload is untouched
   * a missing subchunk refuses with exit 2 rather than creating
+  * `chunk get` reads both edits back as the spec `chunk set`
+    accepts — name, states in braces — and the text it prints
+    can be set again, reusing the palette entry instead of
+    appending a second one; under `--json` the same text comes
+    back escaped, with the coordinates echoed
 
 Direction is deliberate: mcme writes, the reference reads — the
 store layer's tests already run it the other way round.
@@ -29,6 +34,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import struct
@@ -138,6 +144,14 @@ def main() -> int:
         )
         return r.returncode, r.stderr.strip()
 
+    def run_get(x: int, y: int, z: int, json_mode: bool = False):
+        cmd = [args.mcme]
+        if json_mode:
+            cmd.append("--json")
+        cmd += ["chunk", "get", world, str(x), str(y), str(z)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+
     def edit_case(
         name: str,
         x: int,
@@ -225,6 +239,44 @@ def main() -> int:
         CompoundTag({"pillar_axis": StringTag("y")}),
         'minecraft:oak_log{pillar_axis:"y"}',
     )
+
+    # --- get reads back what set wrote, in the spec set accepts. ---
+    rc, out, err = run_get(1, 0, 0)
+    if rc != 0 or out != "minecraft:tnt":
+        raise AssertionError(f"get (1, 0, 0): exit {rc}, {out!r}: {err}")
+    print("  ok get reads tnt back")
+
+    rc, out, err = run_get(0, 68, 0)
+    want_spec = 'minecraft:oak_log{pillar_axis: "y"}'
+    if rc != 0 or out != want_spec:
+        raise AssertionError(f"get (0, 68, 0): exit {rc}, {out!r}: {err}")
+    print("  ok get reads states back")
+
+    # --- the text get prints can be set again, and reuses the
+    #     palette entry instead of appending a second one. ---
+    version, layers = decode_payload(iface, read(0, 0, 4))
+    palette_len = len(layers[0][1])
+    rc, err = run_set(1, 68, 0, out)
+    if rc != 0:
+        raise AssertionError(f"round-trip set: exit {rc}: {err}")
+    rc, out2, err = run_get(1, 68, 0)
+    if rc != 0 or out2 != out:
+        raise AssertionError(f"round-trip get: {out2!r} != {out!r}: {err}")
+    version, layers = decode_payload(iface, read(0, 0, 4))
+    if len(layers[0][1]) != palette_len:
+        raise AssertionError("round-trip set appended a palette entry")
+    blocks = numpy.asarray(layers[0][0]).reshape(16, 16, 16)
+    if block_at(blocks, 1, 4, 0) != block_at(blocks, 0, 4, 0):
+        raise AssertionError("round-trip set did not reuse the entry")
+    print("  ok get's text sets again, entry reused")
+
+    # --- under --json the same text comes back escaped, with the
+    #     coordinates echoed. ---
+    rc, out, err = run_get(0, 68, 0, json_mode=True)
+    doc = json.loads(out) if rc == 0 else None
+    if doc != {"block": want_spec, "x": 0, "y": 68, "z": 0}:
+        raise AssertionError(f"get --json: exit {rc}, {doc!r}: {err}")
+    print("  ok get --json")
 
     # --- The neighbour chunk is untouched, byte for byte. ---
     if read(1, -2, 0) != neighbour_before:
