@@ -17,7 +17,14 @@ path that reads worlds Minecraft loads — and asserts:
     "y" where the palette holds "x") appends rather than reuses
   * the version-9 wrapper keeps its Y index
   * the neighbouring chunk's payload is untouched
-  * a missing subchunk refuses with exit 2 rather than creating
+  * a subchunk the world has not stored is created by
+    `chunk set` and by `chunk fill`, in the version its
+    neighbours use, while `chunk get` on ground still
+    unstored refuses with exit 2 — reads report the store,
+    writes extend it
+  * a payload mcme cannot decode is a format problem (exit 3)
+    for `chunk set` and `chunk fill` alike, and neither
+    writes anything
   * `chunk get` reads both edits back as the spec `chunk set`
     accepts — name, states in braces — and the text it prints
     can be set again, reusing the palette entry instead of
@@ -30,8 +37,9 @@ path that reads worlds Minecraft loads — and asserts:
   * `chunk fill` sets every position of a box (corners in any
     order) to the block, changes nothing outside it, reuses
     the palette entry instead of appending, leaves the
-    subchunk the box does not reach byte-identical, and a box
-    with a missing subchunk refuses with exit 2
+    subchunk the box does not reach byte-identical, and
+    creates the subchunk when the box reaches into ground
+    never stored
   * `chunk stats` counts a box: the filled box is exactly its
     eight tnt, an unstored subchunk counts as air with exit 0
     and a stderr note, the tally agrees with one `chunk get`
@@ -368,12 +376,31 @@ def main() -> int:
         raise AssertionError(f"get after fill: exit {rc}, {out!r}: {err}")
     print("  ok fill sets the box and nothing else")
 
-    # --- a fill with a missing subchunk refuses with exit 2. ---
+    # --- a fill whose box reaches into ground the world never
+    #     stored creates it, and amulet reads that subchunk
+    #     back: all tnt, version 8, air under the block. ---
     rc, _, err = run_cli("chunk", "fill", world,
-                      0, 0, 0, 0, 48, 0, "minecraft:tnt")
-    if rc != 2:
-        raise AssertionError(f"fill missing subchunk: exit {rc}: {err}")
-    print("  ok fill with a missing subchunk exits 2")
+                         32, 0, 0, 47, 15, 15, "minecraft:tnt")
+    if rc != 0:
+        raise AssertionError(f"fill into unstored ground: exit {rc}: {err}")
+    version, layers = decode_payload(iface, read(2, 0, 0))
+    if version != 8:
+        raise AssertionError(f"created subchunk version {version}, want 8")
+    if len(layers[0][1]) != 2:
+        raise AssertionError(
+            f"created subchunk palette: {len(layers[0][1])} entries"
+        )
+    if pal_bytes(layers[0][1][0]) != expected_entry(
+        "minecraft:air", CompoundTag()
+    ):
+        raise AssertionError("created subchunk's first entry is not air")
+    blocks = numpy.asarray(layers[0][0]).reshape(16, 16, 16)
+    if not numpy.array_equal(blocks, numpy.full((16, 16, 16), 1)):
+        raise AssertionError("fill into unstored ground: not all tnt")
+    rc, out, err = run_get(32, 8, 0)
+    if rc != 0 or out != "minecraft:tnt":
+        raise AssertionError(f"get on created ground: exit {rc}, {out!r}: {err}")
+    print("  ok fill creates the subchunk it reaches into")
 
     # --- stats counts what a box is made of, in the spec text
     #     the other verbs speak. The filled box is one block. ---
@@ -456,22 +483,70 @@ def main() -> int:
         raise AssertionError("neighbouring chunk changed")
     print("  ok neighbour untouched")
 
-    # --- A missing subchunk refuses with exit 2. ---
-    rc, err = run_set(0, 48, 0, "minecraft:tnt")
-    if rc != 2:
-        raise AssertionError(f"missing subchunk: exit {rc}, want 2: {err}")
+    # --- `chunk set` into ground never stored creates it: the
+    #     key appears, amulet decodes the payload, and the
+    #     block sits in a subchunk that was absent a moment
+    #     ago — version 9, because neighbour cy 4 carries the
+    #     Y index. `chunk get` on ground still unstored keeps
+    #     refusing: reads report the store, writes extend it. ---
     db = LevelDB(db_path)
     try:
         try:
             db.get(chunk_key(0, 0, 3))
-            still_absent = False
+            raise AssertionError("cy3 already stored, nothing to create")
         except KeyError:
-            still_absent = True
+            pass
     finally:
         db.close()
-    if not still_absent:
-        raise AssertionError("refused edit created the subchunk anyway")
-    print("  ok missing subchunk exits 2, nothing created")
+    rc, err = run_set(0, 48, 0, "minecraft:tnt")
+    if rc != 0:
+        raise AssertionError(f"set into unstored ground: exit {rc}: {err}")
+    version, layers = decode_payload(iface, read(0, 0, 3))
+    if version != 9:
+        raise AssertionError(f"created subchunk version {version}, want 9")
+    if len(layers[0][1]) != 2:
+        raise AssertionError(
+            f"created subchunk palette: {len(layers[0][1])} entries"
+        )
+    blocks = numpy.asarray(layers[0][0]).reshape(16, 16, 16)
+    if block_at(blocks, 0, 0, 0) != 1:
+        raise AssertionError("created subchunk does not hold the block")
+    for lx, ly, lz in ((15, 15, 15), (1, 0, 0), (0, 1, 0)):
+        if block_at(blocks, lx, ly, lz) != 0:
+            raise AssertionError("created subchunk is not air elsewhere")
+    rc, out, err = run_get(0, 48, 0)
+    if rc != 0 or out != "minecraft:tnt":
+        raise AssertionError(f"get on created ground: {out!r}: {err}")
+    rc, out, err = run_get(0, 96, 0)
+    if rc != 2:
+        raise AssertionError(f"get on unstored ground: exit {rc}: {err}")
+    print("  ok set creates the subchunk, get on a hole still exits 2")
+
+    # --- A payload mcme cannot decode is a format problem for
+    #     both write verbs (exit 3), and neither writes
+    #     anything: the junk stays junk. ---
+    junk = bytes([8, 250]) + b"xxxxxx"
+    db = LevelDB(db_path)
+    try:
+        db.put(chunk_key(0, 0, 5), junk)
+    finally:
+        db.close()
+    rc, _, err = run_cli("chunk", "set", world, "0", "80", "0",
+                         "minecraft:tnt")
+    if rc != 3:
+        raise AssertionError(f"set into unreadable payload: exit {rc}: {err}")
+    rc, _, err = run_cli("chunk", "fill", world,
+                         0, 80, 0, 15, 95, 15, "minecraft:tnt")
+    if rc != 3:
+        raise AssertionError(f"fill over unreadable payload: exit {rc}: {err}")
+    db = LevelDB(db_path)
+    try:
+        still_junk = db.get(chunk_key(0, 0, 5)) == junk
+    finally:
+        db.close()
+    if not still_junk:
+        raise AssertionError("a refused write changed the payload")
+    print("  ok an unreadable payload exits 3, writes nothing")
 
     shutil.rmtree(tmp, ignore_errors=True)
     print("PASS: mcme writes, amulet reads")

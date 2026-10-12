@@ -70,18 +70,19 @@ static void print_usage(FILE *out)
         "                    <block> is a name, or a name with SNBT\n"
         "                    states in braces:\n"
         "                    minecraft:oak_log{pillar_axis:\"x\"}\n"
-        "                    The subchunk must already exist. Takes\n"
-        "                    the LOCK. --dimension overworld|nether|\n"
-        "                    end|<number> (default overworld).\n"
+        "                    The subchunk is created if the world\n"
+        "                    has not stored it. Takes the LOCK.\n"
+        "                    --dimension overworld|nether|end|\n"
+        "                    <number> (default overworld).\n"
         "  chunk get <world> <x> <y> <z>\n"
         "                    Print one block as the spec `chunk set`\n"
         "                    accepts. Exit 2 if the subchunk is not\n"
         "                    stored. Takes --dimension too.\n"
         "  chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>\n"
         "                    Set a box of blocks (corners in any\n"
-        "                    order). Every subchunk it touches must\n"
-        "                    exist or nothing is written (exit 2).\n"
-        "                    One payload write per subchunk.\n"
+        "                    order). Subchunks the world has not\n"
+        "                    stored are created; one payload\n"
+        "                    write per subchunk.\n"
         "  chunk stats <world> <x1> <y1> <z1> <x2> <y2> <z2>\n"
         "                    Count what a box is made of: 'count\n"
         "                    spec' lines, most frequent first.\n"
@@ -1032,6 +1033,27 @@ static bool box_y_range_fits(const long *c)
     return true;
 }
 
+/*
+ * The exit code a write verb reports for a refusal the library
+ * has already classified: the subchunk the game removed is not
+ * there any more, world data mcme cannot read is a format
+ * problem, and so on. `chunk set` and `chunk fill` share it so
+ * one condition is one code whichever verb met it.
+ */
+static int refusal_exit(McmeWriteRefusal refusal)
+{
+    switch (refusal) {
+    case MCME_WRITE_REFUSAL_NOT_THERE:    return MCME_EXIT_NOT_FOUND;
+    case MCME_WRITE_REFUSAL_NOT_READABLE: return MCME_EXIT_BAD_FORMAT;
+    case MCME_WRITE_REFUSAL_STORE:        return MCME_EXIT_IO;
+    case MCME_WRITE_REFUSAL_USAGE:        return MCME_EXIT_USAGE;
+    case MCME_WRITE_REFUSAL_NONE:         /* false without a
+                                             reason is a bug */
+    case MCME_WRITE_REFUSAL_INTERNAL:     return MCME_EXIT_INTERNAL;
+    }
+    return MCME_EXIT_INTERNAL;
+}
+
 static int cmd_chunk_set(int argc, char **argv)
 {
     int32_t dimension = 0;
@@ -1071,48 +1093,24 @@ static int cmd_chunk_set(int argc, char **argv)
     int rc = parse_block_spec(argv[4], arena, name, sizeof name,
                               &states);
     if (rc == MCME_OK) {
-        /* A missing subchunk is "not found", not "i/o": the
-           edit refuses to create one, so check before the
-           edit decides. The store can change between this
-           check and the LOCK — set_block then refuses, and
-           then it is genuinely i/o. */
-        uint8_t key[14];
-        size_t key_len = 0;
-        if (!mcme_bedrock_subchunk_key((int32_t)x, (int32_t)y,
-                                       (int32_t)z, dimension,
-                                       key, sizeof key, &key_len)) {
-            rc = MCME_EXIT_USAGE;
-        } else {
-            McmeLevelDb *db = NULL;
-            if (!mcme_leveldb_open(&db, info.db_path)) {
-                rc = MCME_EXIT_IO;
-            } else {
-                bool present = mcme_leveldb_has(db, key, key_len);
-                mcme_leveldb_close(db);
-                if (!present) {
-                    mcme_set_error(
-                        "chunk: the subchunk of block "
-                        "(%ld, %ld, %ld) is not stored in "
-                        "this world; mcme does not create "
-                        "chunks", x, y, z);
-                    rc = MCME_EXIT_NOT_FOUND;
-                }
-            }
-        }
-    }
-
-    if (rc == MCME_OK) {
+        /* A subchunk the world has not stored is created, so
+           there is nothing to ask before the edit: set_block
+           opens the store, takes the LOCK, and either writes or
+           explains itself. */
         McmeNbtDoc entry;
         if (!mcme_bedrock_block_entry(arena, name, states, &entry)) {
             rc = MCME_EXIT_INTERNAL;
-        } else if (!mcme_bedrock_set_block(info.db_path,
-                                           (int32_t)x, (int32_t)y,
-                                           (int32_t)z, dimension,
-                                           &entry)) {
-            char why[256];
-            snprintf(why, sizeof why, "%s", mcme_last_error());
-            mcme_set_error("chunk: %s", why);
-            rc = MCME_EXIT_IO;
+        } else {
+            McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+            if (!mcme_bedrock_set_block(info.db_path,
+                                        (int32_t)x, (int32_t)y,
+                                        (int32_t)z, dimension,
+                                        &entry, &refusal)) {
+                char why[256];
+                snprintf(why, sizeof why, "%s", mcme_last_error());
+                mcme_set_error("chunk: %s", why);
+                rc = refusal_exit(refusal);
+            }
         }
     }
 
@@ -1363,14 +1361,16 @@ static int cmd_chunk_fill(int argc, char **argv)
         if (!mcme_leveldb_open_rw(&db, info.db_path)) {
             rc = MCME_EXIT_IO;
         } else {
-            if (!mcme_bedrock_fill_check(db, &box, dimension)) {
-                rc = MCME_EXIT_NOT_FOUND;
+            McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+            if (!mcme_bedrock_fill_check(db, &box, dimension,
+                                         &refusal)) {
+                rc = refusal_exit(refusal);
             } else if (!mcme_bedrock_fill(db, &box, dimension,
-                                          &entry)) {
+                                          &entry, &refusal)) {
                 char why[256];
                 snprintf(why, sizeof why, "%s", mcme_last_error());
                 mcme_set_error("chunk: %s", why);
-                rc = MCME_EXIT_IO;
+                rc = refusal_exit(refusal);
             }
             mcme_leveldb_close(db);
         }

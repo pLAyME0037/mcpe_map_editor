@@ -9,6 +9,75 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Making ground: `chunk set` writes where nothing was stored
+
+### Built
+
+- `mcme_bedrock_subchunk_air()` (bedrock_write.c/h)
+  builds the subchunk a write starts from when the
+  world has not stored one: version 8 or 9, a single
+  layer whose palette is only `minecraft:air`, and
+  the Y index byte for version 9 — the version that
+  carries one. It is the shape amulet writes for a
+  new subchunk, which is what the cross-check reads
+  back.
+- `mcme_bedrock_subchunk_get_or_create()` decodes a
+  stored subchunk, or hands back that all-air one for
+  a key the store does not have. The version is taken
+  from a neighbour — 9 when a neighbour carries the Y
+  index, 8 otherwise — so a created subchunk sits
+  quietly in a world that mixes versions. A deleted
+  subchunk stays an error: the game removed it, and
+  mcme does not resurrect it.
+- `chunk set` and `chunk fill` both write into ground
+  that was never saved now. mcme writes the subchunk
+  payload and nothing else — not the version record,
+  not the heightmap — so it remains an editor of a
+  stored world rather than a generator. `chunk get`
+  is untouched: reads report the store, so ground
+  never saved is still exit 2, and `chunk stats`
+  still counts it as air and says so.
+- `McmeWriteRefusal` names the classes a write can
+  be refused in, and both write verbs report them
+  through an out-parameter, so one condition is one
+  exit code across the CLI: the subchunk the game
+  deleted is `2`, world data mcme cannot read — or
+  the all-air marker, which has no layer to fill —
+  is `3`, a store failure `4`. Before this, a
+  corrupt subchunk was `4` on `set` and `2` on
+  `fill`, and neither agreed with `get`, which
+  already said `3`.
+- The selftest asserts the version matching (cy 3
+  beside a version-9 neighbour comes back version 9
+  with its index; an isolated chunk comes back 8),
+  the air that surrounds the new block, a fill that
+  creates a whole subchunk without disturbing the
+  one beside it, and the refusal classes. The
+  cross-check plants a payload amulet can carry and
+  mcme cannot read, and confirms both verbs exit 3
+  and write nothing. Nineteen checks.
+
+### Fixed
+
+- The old "refuse to create" cases named coordinates
+  that did not mean what their comments said: `(0,
+  0, 48)` is subchunk (0, 3) cy 0, not (0, 0) cy 3.
+  It never mattered while every absent subchunk was
+  refused alike; creation made the difference
+  observable, and the test was wrong, not the code.
+
+### Next
+
+Ground can now be made as well as edited. What still
+separates a world mcme can edit from one it can write
+whole is the rest of a save — the version record, the
+heightmap. The declared next features are unchanged:
+the region inventory verb that says which chunks a
+world actually stores, and heightmap reading for
+terrain shape.
+
+---
+
 ## 2026-10-12 — What a box is made of: `mcme chunk stats`
 
 ### Built
@@ -69,6 +138,8 @@ which chunks a world actually stores, or heightmap
 reading for terrain shape.
 
 ---
+
+## 2026-10-12 — A box at a time: `mcme chunk fill`
 
 ### Built
 

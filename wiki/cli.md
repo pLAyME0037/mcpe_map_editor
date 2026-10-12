@@ -229,17 +229,23 @@ number (the store's own dimension codes). Without it, the overworld. A zero
 dimension is omitted from the key the way the game omits it, so naming the
 overworld changes nothing on disk.
 
-The subchunk must already exist. The edit refuses to create chunks, so an
-absent subchunk is exit 2, not exit 4: the caller asked to edit what is there,
-and what is not there is "not found". A no-op edit — the same block that is
-already stored — is exit 0 and leaves the payload byte-identical.
+A subchunk the world has not stored is created: all air, in the version its
+neighbours use — 9 when a neighbour carries the Y index, 8 otherwise, which is
+what the reference writes for a new subchunk — and then edited like any other.
+mcme writes that payload and nothing else: not the version record, not the
+heightmap, not the other keys a real save touches, so this edits a stored world
+rather than generating one. A subchunk the game deleted is not resurrected: it
+is "not there", exit 2. A no-op edit — the same block that is already stored —
+is exit 0 and leaves the payload byte-identical.
 
 The store is opened with the game's own LOCK for the write, so a world
 Minecraft has open is refused, like `db put`.
 
-Exit codes: `0` set, `1` usage (bad coordinate, bad block spec), `2` not a
-world, not a Bedrock world, or the subchunk is not stored, `4` store error.
-Success prints nothing.
+Exit codes: `0` set, `1` usage (bad coordinate, bad block spec, a Y the format
+cannot address), `2` not a world, not a Bedrock world, or a subchunk the game
+deleted, `3` the stored payload is not the format mcme reads, `4` store error
+(including the world being open elsewhere), `6` internal. Success prints
+nothing.
 
 ### `mcme chunk get`
 
@@ -284,22 +290,26 @@ mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>
 $ mcme chunk fill mybedrock 12 64 -30 30 70 -12 'minecraft:stone'
 ```
 
-The corners are given in any order; both are inside the box. Every subchunk
-the box touches must already be stored: the fill checks first, under the same
-LOCK it then edits with, so a missing subchunk refuses the whole fill — exit 2,
-nothing written — instead of filling around a hole. Positions the box only
-reaches into keep what they held, and the subchunks' fluid layers are never
-touched.
+The corners are given in any order; both are inside the box. A subchunk the
+box touches that the world has not stored is created — all air, in its
+neighbours' version, then filled — so a box may reach into ground that was
+never saved, the same way `chunk set` does. Positions the box only reaches
+into keep what they held, and the subchunks' fluid layers are never touched.
 
-The cost is the subchunks touched, not the blocks in the box; a box entirely
-inside one subchunk is one payload write. A subchunk that exists but cannot be
-edited (a payload mcme cannot read) fails the fill with the subchunks before
-it already written — there is no transaction across puts — which is why the
-check comes first.
+The fill checks the whole box first, under the same LOCK it then edits with,
+so a subchunk it cannot edit refuses the whole fill — nothing written —
+instead of filling up to a hole. What it will not edit: one the game deleted
+("not there"), one whose payload is not a format mcme reads, and the all-air
+marker, which has no layer to fill. The cost is the subchunks touched, not
+the blocks in the box; a box entirely inside one subchunk is one payload
+write. There is no transaction across puts, so a subchunk that fails
+part-way leaves the ones before it already written.
 
 Exit codes: `0` filled, `1` usage (bad coordinate, bad block spec, a Y the
 format cannot address), `2` not a world, not a Bedrock world, or a subchunk
-the box touches is not stored, `4` store error. Success prints nothing.
+the box touches the game deleted, `3` a subchunk the box touches is not a
+format mcme reads (or is the all-air marker), `4` store error, `6` internal.
+Success prints nothing.
 
 ### `mcme chunk stats`
 
@@ -327,8 +337,9 @@ A subchunk the box touches that is not stored counts as its positions of
 `minecraft:air` — that is what the world is there, empty — and the count of
 such subchunks is reported (`mcme: chunk stats: N subchunks not stored,
 counted as air` on stderr, suppressed by `-q`). This is the one verb where
-missing storage is not exit 2: reading a hole is answerable, writing one is
-not.
+unstored ground is not exit 2: `get` will not read what was never saved, and
+`set` and `fill` would create it, so stats simply reports the ground as empty
+— which is what a plan needs before writing to it.
 
 Only layer zero is counted — the layer `set`, `get` and `fill` act on.
 Waterlogging layers are not blocks and are not counted.

@@ -21,6 +21,7 @@
 #include "mcme/core.h"
 #include "mcme/leveldb.h"
 #include "mcme/nbt.h"
+#include "mcme/bedrock_chunk.h"
 
 /*
  * Builds the key of the subchunk a block coordinate falls
@@ -39,6 +40,28 @@ bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
                                size_t *len);
 
 /*
+ * Why a write refused. The reasons are kept apart so a caller
+ * can report which class of failure it was — the world is
+ * missing something, the world is holding something mcme cannot
+ * read — while mcme_last_error() names the subchunk. Every
+ * write verb answers with the same list, so one condition is
+ * one exit code across the CLI.
+ */
+typedef enum {
+    MCME_WRITE_REFUSAL_NONE = 0,     /* nothing stood in the way  */
+    MCME_WRITE_REFUSAL_NOT_THERE,    /* the game deleted it       */
+    MCME_WRITE_REFUSAL_NOT_READABLE, /* undecodable payload, or
+                                        the all-air marker, which
+                                        has no layer to fill      */
+    MCME_WRITE_REFUSAL_STORE,        /* the store could not be
+                                        read or written           */
+    MCME_WRITE_REFUSAL_USAGE,        /* a null argument, or a
+                                        coordinate the key cannot
+                                        name                      */
+    MCME_WRITE_REFUSAL_INTERNAL      /* out of memory             */
+} McmeWriteRefusal;
+
+/*
  * Sets one block in a Bedrock world's store.
  *
  * `db_dir` is the world's db/ directory; `x`, `y`, `z` are
@@ -47,12 +70,15 @@ bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
  * compound of `name` (string), `states` (compound, possibly
  * empty) and `version` (int), in that order, the shape the
  * reference writes; build it with mcme_bedrock_block_entry().
+ * `refusal`, when it is not NULL, receives why the edit did
+ * not happen.
  *
- * The subchunk the block falls in must already exist: this
- * edit rewrites a stored payload. Creating chunks — the
- * version record, the heightmap, the records a real save
- * also touches — is a larger operation than this, and a
- * missing subchunk is refused, not created.
+ * A subchunk the block falls in that the world has not stored
+ * is created: all air, in the version its neighbours use, and
+ * then edited like any other. mcme writes the subchunk payload
+ * and nothing else — not the version record, not the heightmap,
+ * not the other keys a real save touches — so this edits a
+ * stored world rather than generating one.
  *
  * The store is opened with the exclusive LOCK for the
  * duration of the call, the way Minecraft opens one. The
@@ -60,12 +86,13 @@ bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
  * valid until the call returns.
  *
  * Returns false with mcme_last_error() saying what was
- * refused.
+ * refused, and `refusal` saying which class it was.
  */
 bool mcme_bedrock_set_block(const char *db_dir,
                             int32_t x, int32_t y, int32_t z,
                             int32_t dimension,
-                            const McmeNbtDoc *block);
+                            const McmeNbtDoc *block,
+                            McmeWriteRefusal *refusal);
 
 /*
  * Builds a palette-entry document for `name` with `states`
@@ -84,6 +111,42 @@ bool mcme_bedrock_block_entry(McmeArena *arena,
                               McmeNbtDoc *out);
 
 /*
+ * An all-air subchunk, built the way the reference writes a new
+ * one: `version` 8 or 9, a single layer whose palette is just
+ * minecraft:air, and — only for version 9 — the Y index byte
+ * `index`, since that is the version that carries it.
+ *
+ * Everything roots in `arena`. The caller edits it and encodes
+ * it; mcme never writes one it has not filled in.
+ */
+bool mcme_bedrock_subchunk_air(McmeArena *arena, uint8_t version,
+                               int8_t index, McmeBedrockSubchunk *sc);
+
+/*
+ * The subchunk at (`cx`, `cz`, `cy`), creating it in memory when
+ * the world has not stored it: a stored subchunk decodes exactly
+ * as it is, an absent one comes back all-air in the version its
+ * neighbours use — 9 if a neighbour carries the Y index, 8
+ * otherwise, which is what the reference writes for a new
+ * subchunk.
+ *
+ * A deleted subchunk is an error, not an absence: the game
+ * removed it, and mcme does not quietly resurrect it — which
+ * is what `refusal` distinguishes, when it is not NULL, from a
+ * payload that will not decode or a store that would not read.
+ *
+ * `sc`, and everything it points at, roots in `arena`. Encoding
+ * and writing it are the caller's business.
+ */
+bool mcme_bedrock_subchunk_get_or_create(McmeLevelDb *db,
+                                         int32_t cx, int32_t cz,
+                                         int32_t cy,
+                                         int32_t dimension,
+                                         McmeArena *arena,
+                                         McmeBedrockSubchunk *sc,
+                                         McmeWriteRefusal *refusal);
+
+/*
  * A box of block positions. Both corners are inside — the box is
  * inclusive, and the corners may be given in any order; fill
  * normalises them per axis.
@@ -94,21 +157,23 @@ typedef struct {
 } McmeBox;
 
 /*
- * Checks that every subchunk the box touches is stored, naming
- * the first one that is not.
+ * Checks that every subchunk the box touches can be edited,
+ * naming the first one that cannot and saying why through
+ * `refusal`, which may be NULL when the caller only wants yes or
+ * no. Subchunks the world has not stored are not a problem —
+ * fill creates those — so this no longer asks whether they
+ * exist.
  *
- * Fill writes nothing when a subchunk is missing, so this is the
- * whole question it can fail before it starts. Any open handle
- * answers it; the LOCK is not needed to ask — but taking it for
- * the check and the fill together is what removes the window in
- * which the store changes between them.
+ * Any open handle answers it; the LOCK is not needed to ask —
+ * but taking it for the check and the fill together is what
+ * removes the window in which the store changes between them.
  *
  * A box whose Y reaches past the key's signed byte is refused
- * here too: those subchunks cannot be stored, so they cannot be
- * found.
+ * here too: those subchunks cannot be stored at all.
  */
 bool mcme_bedrock_fill_check(McmeLevelDb *db, const McmeBox *box,
-                             int32_t dimension);
+                             int32_t dimension,
+                             McmeWriteRefusal *refusal);
 
 /*
  * Sets every block of the box to `entry` — one payload write per
@@ -117,19 +182,23 @@ bool mcme_bedrock_fill_check(McmeLevelDb *db, const McmeBox *box,
  * mcme_bedrock_block_entry() builds.
  *
  * The store must be open for writing: the caller holds the LOCK
- * for the whole fill. Every subchunk must already exist —
- * mcme_bedrock_fill_check() says, and this refuses before
- * writing anything if one does not. A subchunk that exists but
- * cannot be edited (undecodable payload, the all-air marker)
- * fails the fill with the subchunks before it already written:
- * there is no transaction across puts.
+ * for the whole fill. A subchunk the box touches that the world
+ * has not stored is created — all air, in its neighbours'
+ * version, then filled — so a box may reach into ground that was
+ * never saved. mcme_bedrock_fill_check() names a subchunk that
+ * cannot be edited, and this refuses before writing anything if
+ * one turns up. A subchunk that fails part-way leaves the
+ * subchunks before it already written: there is no transaction
+ * across puts.
  *
  * The block document, and everything it references, must stay
- * valid until the call returns.
+ * valid until the call returns. `refusal`, when it is not NULL,
+ * receives why the fill did not happen.
  */
 bool mcme_bedrock_fill(McmeLevelDb *db, const McmeBox *box,
                        int32_t dimension,
-                       const McmeNbtDoc *entry);
+                       const McmeNbtDoc *entry,
+                       McmeWriteRefusal *refusal);
 
 /*
  * Renders a palette entry as the block spec the CLI speaks: the

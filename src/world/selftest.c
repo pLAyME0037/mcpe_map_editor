@@ -1328,7 +1328,7 @@ static void test_bedrock_write(void)
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
                                        NULL, &placed));
 
-        CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, &placed));
+        CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, &placed, NULL));
         CHECK(mcme_leveldb_open(&db, dbdir));
         CHECK(load_subchunk(db, arena, 0, 0, 0, 0, &b));
 
@@ -1386,7 +1386,7 @@ static void test_bedrock_write(void)
         size_t want = (a.layers[0].indices[u] + 1)
                       % a.layers[0].palette_len;
         CHECK(mcme_bedrock_set_block(dbdir, 1, 0, 0, 0,
-                                     &a.layers[0].palette[want]));
+                                     &a.layers[0].palette[want], NULL));
         CHECK(mcme_leveldb_open(&db, dbdir));
         CHECK(load_subchunk(db, arena, 0, 0, 0, 0, &b));
 
@@ -1418,7 +1418,7 @@ static void test_bedrock_write(void)
         size_t u = 2 * 256 + 4 * 16 + 3;   /* block (2, 3, 4) */
         CHECK(mcme_bedrock_set_block(
                                      dbdir, 2, 3, 4, 0,
-                                     &a.layers[0].palette[a.layers[0].indices[u]]));
+                                     &a.layers[0].palette[a.layers[0].indices[u]], NULL));
         CHECK(mcme_leveldb_open(&db, dbdir));
 
         McmeBuffer raw;
@@ -1451,7 +1451,7 @@ static void test_bedrock_write(void)
                                        NULL, &placed));
 
         size_t u = 5 * 256 + 7 * 16 + 6;   /* block (5, 22, 7) */
-        CHECK(mcme_bedrock_set_block(dbdir, 5, 22, 7, 0, &placed));
+        CHECK(mcme_bedrock_set_block(dbdir, 5, 22, 7, 0, &placed, NULL));
         CHECK(mcme_leveldb_open(&db, dbdir));
         CHECK(load_subchunk(db, arena, 0, 0, 0, 1, &b));
 
@@ -1496,7 +1496,7 @@ static void test_bedrock_write(void)
                                        NULL, &placed));
 
         size_t u = 15;                     /* block (0, -1, 0) */
-        CHECK(mcme_bedrock_set_block(dbdir, 0, -1, 0, 0, &placed));
+        CHECK(mcme_bedrock_set_block(dbdir, 0, -1, 0, 0, &placed, NULL));
         CHECK(mcme_leveldb_open(&db, dbdir));
         CHECK(load_subchunk(db, arena, 0, 0, 0, -1, &b));
 
@@ -1527,7 +1527,7 @@ static void test_bedrock_write(void)
                                        NULL, &placed));
 
         size_t u = 4;                      /* block (0, 68, 0) */
-        CHECK(mcme_bedrock_set_block(dbdir, 0, 68, 0, 0, &placed));
+        CHECK(mcme_bedrock_set_block(dbdir, 0, 68, 0, 0, &placed, NULL));
         CHECK(mcme_leveldb_open(&db, dbdir));
         CHECK(load_subchunk(db, arena, 0, 0, 0, 4, &b));
 
@@ -1563,7 +1563,7 @@ static void test_bedrock_write(void)
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
                                        NULL, &placed));
 
-        CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 1, &placed));
+        CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 1, &placed, NULL));
         CHECK(mcme_leveldb_open(&db, dbdir));
         CHECK(load_subchunk(db, arena, 0, 0, 1, 0, &b));
 
@@ -1581,9 +1581,10 @@ static void test_bedrock_write(void)
         rmdir(tmp);
     }
 
-    /* --- Refusals: an absent subchunk is refused,
-           not created, and the direct API says what
-           it was handed. --- */
+    /* --- A subchunk the world has not stored is created:
+           the edit reaches into ground that was never
+           saved, and the direct API still says what it
+           was handed. --- */
     {
         CHECK(fresh_store_dir(tmp, sizeof tmp));
         snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
@@ -1591,20 +1592,88 @@ static void test_bedrock_write(void)
         CHECK(decode_fixture("v8-bits4", arena, &a));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
                                        NULL, &placed));
+        McmeNbtDoc air;
+        CHECK(mcme_bedrock_block_entry(arena, "minecraft:air",
+                                       NULL, &air));
+
+        /* Block (0, 48, 0) is subchunk (0, 0) cy 3, never
+           stored. Setting it creates the subchunk — in the
+           version its neighbour cy 4 uses, so version 9 with
+           the Y index — and the rest of it is air. */
+        CHECK(mcme_bedrock_set_block(dbdir, 0, 3 * 16, 0, 0,
+                                     &placed, NULL));
+        {
+            CHECK(mcme_leveldb_open(&db, dbdir));
+            McmeBedrockSubchunk c;
+            CHECK(load_subchunk(db, arena, 0, 0, 0, 3, &c));
+            CHECK(c.version == 9);
+            CHECK(c.has_index && c.index == 3);
+            CHECK(c.layer_count == 1);
+            CHECK(c.layers[0].palette_len == 2);
+            CHECK(docs_equal(&c.layers[0].palette[0], &air));
+            CHECK(docs_equal(&c.layers[0].palette[1], &placed));
+            CHECK(c.layers[0].indices[0] == 1);   /* x,y,z = 0 */
+            CHECK(c.layers[0].indices[4095] == 0); /* all air  */
+            mcme_leveldb_close(db);
+            db = NULL;
+        }
+
+        /* Block (32, 0, 0) is subchunk (2, 0) cy 0, with no
+           neighbour at all: version 8, the default every
+           version of the game reads. */
+        CHECK(mcme_bedrock_set_block(dbdir, 32, 0, 0, 0,
+                                     &placed, NULL));
+        {
+            CHECK(mcme_leveldb_open(&db, dbdir));
+            McmeBedrockSubchunk c;
+            CHECK(load_subchunk(db, arena, 2, 0, 0, 0, &c));
+            CHECK(c.version == 8);
+            CHECK(!c.has_index);
+            CHECK(c.layer_count == 1);
+            CHECK(c.layers[0].palette_len == 2);
+            CHECK(c.layers[0].indices[0] == 1);
+            mcme_leveldb_close(db);
+            db = NULL;
+        }
+
+        /* A payload the store will not decode is a format
+           problem: the write refuses it and says which class
+           of failure it was. */
+        uint8_t junk[8] = {8, 250, 'x', 'x', 'x', 'x', 'x', 'x'};
+        uint8_t skey[14];
+        size_t skey_len = 0;
+        CHECK(mcme_bedrock_key_build(skey, sizeof skey, &skey_len,
+                                     0, 0, 0,
+                                     MCME_BEDROCK_TAG_SUBCHUNK,
+                                     true, 5));
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(mcme_leveldb_put(db, skey, skey_len, junk,
+                               sizeof junk));
+        mcme_leveldb_close(db);
+        db = NULL;
 
         mcme_clear_error();
-        CHECK(!mcme_bedrock_set_block(dbdir, 0, 0, 3 * 16, 0,
-                                      &placed));
+        McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        CHECK(!mcme_bedrock_set_block(dbdir, 0, 5 * 16, 0, 0,
+                                      &placed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
         CHECK(mcme_last_error()[0] != '\0');
-        CHECK(!mcme_bedrock_set_block(dbdir, 32, 0, 0, 0,
-                                      &placed));
-        CHECK(mcme_last_error()[0] != '\0');
-        /* Subchunk Y past the key's signed byte. */
+
+        /* Subchunk Y past the key's signed byte, and the two
+           null arguments, are usage problems. */
+        refusal = MCME_WRITE_REFUSAL_NOT_THERE;
         CHECK(!mcme_bedrock_set_block(dbdir, 0, 2048, 0, 0,
-                                      &placed));
+                                      &placed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
         CHECK(mcme_last_error()[0] != '\0');
-        CHECK(!mcme_bedrock_set_block(NULL, 0, 0, 0, 0, &placed));
-        CHECK(!mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, NULL));
+        refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        CHECK(!mcme_bedrock_set_block(NULL, 0, 0, 0, 0, &placed,
+                                      &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        CHECK(!mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, NULL,
+                                      &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
         CHECK(mcme_last_error()[0] != '\0');
 
         /* Coordinates outside the subchunk, an
@@ -1668,8 +1737,8 @@ static void test_bedrock_write(void)
 
         McmeBox box = {2, 31, 1, 0, 0, 0};   /* reversed */
         CHECK(mcme_leveldb_open_rw(&db, dbdir));
-        CHECK(mcme_bedrock_fill_check(db, &box, 0));
-        CHECK(mcme_bedrock_fill(db, &box, 0, &placed));
+        CHECK(mcme_bedrock_fill_check(db, &box, 0, NULL));
+        CHECK(mcme_bedrock_fill(db, &box, 0, &placed, NULL));
         mcme_leveldb_close(db);
         db = NULL;
 
@@ -1753,24 +1822,28 @@ static void test_bedrock_write(void)
         rmdir(tmp);
     }
 
-    /* --- A fill whose subchunks are not all stored writes
-       nothing at all. --- */
+    /* --- A fill whose box reaches into ground that was
+       never stored creates those subchunks; the stored
+       ground around them is untouched. --- */
     {
         CHECK(fresh_store_dir(tmp, sizeof tmp));
         snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
         CHECK(copy_store(src, dbdir));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
                                        NULL, &placed));
+        McmeNbtDoc air;
+        CHECK(mcme_bedrock_block_entry(arena, "minecraft:air",
+                                       NULL, &air));
 
-        McmeBox hole = {0, 0, 0, 0, 48, 0};  /* cy3 absent */
+        /* The whole of cy3, which the world never stored. */
+        McmeBox hole = {0, 48, 0, 15, 63, 15};
         CHECK(mcme_leveldb_open_rw(&db, dbdir));
-        CHECK(!mcme_bedrock_fill_check(db, &hole, 0));
-        CHECK(mcme_last_error()[0] != '\0');
-        CHECK(!mcme_bedrock_fill(db, &hole, 0, &placed));
+        CHECK(mcme_bedrock_fill_check(db, &hole, 0, NULL));
+        CHECK(mcme_bedrock_fill(db, &hole, 0, &placed, NULL));
         mcme_leveldb_close(db);
         db = NULL;
 
-        /* Nothing moved: the first subchunk is still the
+        /* Nothing outside the box moved: cy0 is still the
            fixture, byte for byte. */
         {
             void *want = NULL;
@@ -1783,6 +1856,21 @@ static void test_bedrock_write(void)
             CHECK(raw_subchunk(db, 0, 0, 0, 0, &raw));
             CHECK(raw.len == want_len
                   && memcmp(raw.data, want, want_len) == 0);
+
+            /* cy3 did not exist; it does now, entirely
+               filled, in the version its neighbour cy4
+               uses. */
+            McmeBedrockSubchunk c;
+            CHECK(load_subchunk(db, arena, 0, 0, 0, 3, &c));
+            CHECK(c.version == 9);
+            CHECK(c.has_index && c.index == 3);
+            CHECK(c.layer_count == 1);
+            CHECK(c.layers[0].palette_len == 2);
+            CHECK(docs_equal(&c.layers[0].palette[0], &air));
+            CHECK(docs_equal(&c.layers[0].palette[1], &placed));
+            for (size_t u = 0; u < 4096; ++u) {
+                CHECK(c.layers[0].indices[u] == 1);
+            }
             mcme_leveldb_close(db);
             db = NULL;
             mcme_buffer_free(&raw);
@@ -1791,15 +1879,22 @@ static void test_bedrock_write(void)
 
         /* A box reaching past the key's signed byte is
            refused as unfindable, and null arguments are
-           refused. */
+           refused; each says which class of failure it
+           was, so the caller can pick its exit code. */
         CHECK(mcme_leveldb_open_rw(&db, dbdir));
         McmeBox deep = {0, -3000, 0, 0, -2000, 0};
-        CHECK(!mcme_bedrock_fill_check(db, &deep, 0));
-        CHECK(!mcme_bedrock_fill(db, &deep, 0, &placed));
-        CHECK(!mcme_bedrock_fill_check(NULL, &deep, 0));
-        CHECK(!mcme_bedrock_fill_check(db, NULL, 0));
-        CHECK(!mcme_bedrock_fill(db, NULL, 0, &placed));
-        CHECK(!mcme_bedrock_fill(db, &deep, 0, NULL));
+        McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        CHECK(!mcme_bedrock_fill_check(db, &deep, 0, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_bedrock_fill(db, &deep, 0, &placed, NULL));
+        refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        CHECK(!mcme_bedrock_fill_check(NULL, &deep, 0, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        CHECK(!mcme_bedrock_fill_check(db, NULL, 0, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_bedrock_fill(db, NULL, 0, &placed, NULL));
+        CHECK(!mcme_bedrock_fill(db, &deep, 0, NULL, NULL));
         CHECK(mcme_last_error()[0] != '\0');
         mcme_leveldb_close(db);
         db = NULL;
@@ -1829,6 +1924,15 @@ static void test_bedrock_write(void)
                                      true, 5));
         CHECK(mcme_leveldb_put(db, skey, skey_len, junk,
                                sizeof junk));
+        /* The same unreadable payload refuses a fill before it
+           writes anything, and the refusal says "not readable"
+           rather than "not there". */
+        McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        McmeBox unreadable = {0, 80, 0, 0, 80, 0};  /* cy5: junk */
+        CHECK(!mcme_bedrock_fill_check(db, &unreadable, 0,
+                                       &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+        CHECK(mcme_last_error()[0] != '\0');
 
         /* The tally of a box inside one subchunk, against the
            fixture's own indices counted by hand. */

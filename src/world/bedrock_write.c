@@ -138,12 +138,167 @@ bool mcme_bedrock_block_entry(McmeArena *arena,
     return true;
 }
 
+/* ========================================================================
+ * Creating a subchunk
+ * ======================================================================== */
+
+bool mcme_bedrock_subchunk_air(McmeArena *arena, uint8_t version,
+                               int8_t index, McmeBedrockSubchunk *sc)
+{
+    if (arena == NULL || sc == NULL) {
+        mcme_set_error("subchunk: air: null argument");
+        return false;
+    }
+    if (version != 8 && version != 9) {
+        mcme_set_error("subchunk: air: mcme creates a version 8 or 9 "
+                       "subchunk, not %u", version);
+        return false;
+    }
+
+    McmeBedrockLayer *layer = mcme_arena_alloc(arena, sizeof *layer);
+    uint16_t *indices =
+        mcme_arena_alloc(arena, MCME_BEDROCK_SUBCHUNK_BLOCKS * sizeof *indices);
+    McmeNbtDoc *palette = mcme_arena_alloc(arena, sizeof *palette);
+    if (layer == NULL || indices == NULL || palette == NULL) {
+        mcme_set_error("subchunk: air: out of memory");
+        return false;
+    }
+    memset(indices, 0,
+           MCME_BEDROCK_SUBCHUNK_BLOCKS * sizeof *indices);
+    if (!mcme_bedrock_block_entry(arena, "minecraft:air", NULL,
+                                  palette)) {
+        return false;
+    }
+
+    layer->bits = 0;        /* one entry fills the layer */
+    layer->indices = indices;
+    layer->palette_len = 1;
+    layer->palette = palette;
+
+    sc->version = version;
+    sc->has_index = (version == 9);
+    sc->index = index;
+    sc->layer_count = 1;
+    sc->layers = layer;
+    return true;
+}
+
+/* The version a stored neighbour uses, so a subchunk mcme
+   creates matches the world around it: 9 when a neighbour
+   carries the Y index, otherwise 8 — what the reference writes
+   for a new subchunk. Only the two neighbours are asked; a world
+   that mixes versions deeper than that gets 8, which every
+   version of the game reads. */
+static uint8_t neighbour_version(McmeLevelDb *db, int32_t cx,
+                                 int32_t cz, int32_t cy,
+                                 int32_t dimension)
+{
+    for (int d = -1; d <= 1; d += 2) {
+        int32_t ncy = cy + d;
+        if (ncy < INT8_MIN || ncy > INT8_MAX) continue;
+        uint8_t key[14];
+        size_t key_len = 0;
+        if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                    cx, cz, dimension,
+                                    MCME_BEDROCK_TAG_SUBCHUNK,
+                                    true, (int8_t)ncy)) {
+            continue;
+        }
+        McmeBuffer p;
+        mcme_buffer_init(&p);
+        bool deleted = false;
+        bool is_nine = mcme_leveldb_get(db, key, key_len, &p,
+                                        &deleted)
+                       && !deleted && p.len > 0 && p.data[0] == 9;
+        mcme_buffer_free(&p);
+        if (is_nine) return 9;
+    }
+    return 8;
+}
+
+bool mcme_bedrock_subchunk_get_or_create(McmeLevelDb *db,
+                                         int32_t cx, int32_t cz,
+                                         int32_t cy,
+                                         int32_t dimension,
+                                         McmeArena *arena,
+                                         McmeBedrockSubchunk *sc,
+                                         McmeWriteRefusal *refusal)
+{
+    if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_NONE;
+
+    if (db == NULL || arena == NULL || sc == NULL) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
+        mcme_set_error("subchunk: null argument");
+        return false;
+    }
+    if (cy < INT8_MIN || cy > INT8_MAX) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
+        mcme_set_error("subchunk: Y %d does not fit the key's "
+                       "signed byte", (int)cy);
+        return false;
+    }
+
+    uint8_t key[14];
+    size_t key_len = 0;
+    if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                cx, cz, dimension,
+                                MCME_BEDROCK_TAG_SUBCHUNK,
+                                true, (int8_t)cy)) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
+        return false;
+    }
+
+    if (!mcme_leveldb_has(db, key, key_len)) {
+        /* Absent: the subchunk the caller is about to fill in is
+           all air, in the version the neighbours use. The probe
+           above called absence "key not found"; that is the
+           answer, not a fault, so it does not stay behind as the
+           last error of a call that is about to succeed. */
+        uint8_t version = neighbour_version(db, cx, cz, cy,
+                                            dimension);
+        bool made = mcme_bedrock_subchunk_air(arena, version,
+                                              (int8_t)cy, sc);
+        if (made) {
+            mcme_clear_error();
+        } else if (refusal != NULL) {
+            *refusal = MCME_WRITE_REFUSAL_INTERNAL; /* OOM */
+        }
+        return made;
+    }
+
+    McmeBuffer payload;
+    mcme_buffer_init(&payload);
+    bool deleted = false;
+    if (!mcme_leveldb_get(db, key, key_len, &payload, &deleted)) {
+        mcme_buffer_free(&payload);
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_STORE;
+        return false;           /* the store's own error stands */
+    }
+    if (deleted) {
+        mcme_buffer_free(&payload);
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_NOT_THERE;
+        mcme_set_error("subchunk (%d, %d, %d) is deleted in this "
+                       "world", cx, cz, (int)cy);
+        return false;
+    }
+    bool ok = mcme_bedrock_subchunk_decode(sc, arena, payload.data,
+                                           payload.len);
+    if (!ok && refusal != NULL)
+        *refusal = MCME_WRITE_REFUSAL_NOT_READABLE;
+    mcme_buffer_free(&payload);
+    return ok;
+}
+
 bool mcme_bedrock_set_block(const char *db_dir,
                             int32_t x, int32_t y, int32_t z,
                             int32_t dimension,
-                            const McmeNbtDoc *block)
+                            const McmeNbtDoc *block,
+                            McmeWriteRefusal *refusal)
 {
+    if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_NONE;
+
     if (db_dir == NULL || block == NULL) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         mcme_set_error("set block: null argument");
         return false;
     }
@@ -151,6 +306,7 @@ bool mcme_bedrock_set_block(const char *db_dir,
     int32_t cx = floor_div16(x), cz = floor_div16(z);
     int32_t cy = floor_div16(y);
     if (cy < INT8_MIN || cy > INT8_MAX) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         mcme_set_error("set block: subchunk Y %d does not "
                        "fit the key's signed byte", cy);
         return false;
@@ -161,38 +317,24 @@ bool mcme_bedrock_set_block(const char *db_dir,
     if (!mcme_bedrock_subchunk_key(x, y, z, dimension,
                                    key, sizeof key,
                                    &key_len)) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         return false;
     }
 
     McmeLevelDb *db = NULL;
-    if (!mcme_leveldb_open_rw(&db, db_dir)) return false;
+    if (!mcme_leveldb_open_rw(&db, db_dir)) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_STORE;
+        return false;
+    }
 
-    /* Every path from here frees the same four things. A
+    /* Every path from here frees the same two things. A
        refusal after the store is opened leaves the store
        exactly as it was. */
     bool ok = false;
-    McmeBuffer payload;
-    mcme_buffer_init(&payload);
     McmeBuffer encoded;
     mcme_buffer_init(&encoded);
     McmeArena *arena = NULL;
-
-    if (!mcme_leveldb_has(db, key, key_len)) {
-        mcme_set_error("set block: subchunk (%d, %d, %d) is "
-                       "not stored in this world; creating "
-                       "chunks is not supported",
-                       cx, cz, (int)cy);
-        goto done;
-    }
-    bool deleted = false;
-    if (!mcme_leveldb_get(db, key, key_len, &payload, &deleted)) {
-        goto done;       /* the store's own error stands */
-    }
-    if (deleted) {
-        mcme_set_error("set block: subchunk (%d, %d, %d) is "
-                       "deleted in this world", cx, cz, (int)cy);
-        goto done;
-    }
+    McmeWriteRefusal why = MCME_WRITE_REFUSAL_INTERNAL;
 
     arena = mcme_arena_new();
     if (arena == NULL) {
@@ -200,42 +342,51 @@ bool mcme_bedrock_set_block(const char *db_dir,
         goto done;
     }
 
+    /* A subchunk the world has not stored comes back all air, so
+       this edit reaches into ground that was never saved rather
+       than refusing to create it. */
     McmeBedrockSubchunk sc;
-    if (!mcme_bedrock_subchunk_decode(&sc, arena,
-                                      payload.data, payload.len)) {
-        char why[256];
-        snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("set block: subchunk (%d, %d, %d) does "
-                       "not decode: %s", cx, cz, (int)cy, why);
+    if (!mcme_bedrock_subchunk_get_or_create(db, cx, cz, cy,
+                                             dimension, arena,
+                                             &sc, &why)) {
+        char why_text[256];
+        snprintf(why_text, sizeof why_text, "%s", mcme_last_error());
+        mcme_set_error("set block: subchunk (%d, %d, %d): %s",
+                       cx, cz, (int)cy, why_text);
         goto done;
     }
 
     if (!mcme_bedrock_subchunk_set(&sc, arena,
                                    mod16(x), mod16(y),
                                    mod16(z), block)) {
-        char why[256];
-        snprintf(why, sizeof why, "%s", mcme_last_error());
+        char why_text[256];
+        snprintf(why_text, sizeof why_text, "%s", mcme_last_error());
         mcme_set_error("set block: block (%d, %d, %d): %s",
-                       x, y, z, why);
+                       x, y, z, why_text);
+        why = MCME_WRITE_REFUSAL_INTERNAL;  /* mcme's own document */
         goto done;
     }
 
     if (!mcme_bedrock_subchunk_encode(&sc, &encoded)) {
-        char why[256];
-        snprintf(why, sizeof why, "%s", mcme_last_error());
+        char why_text[256];
+        snprintf(why_text, sizeof why_text, "%s", mcme_last_error());
         mcme_set_error("set block: subchunk (%d, %d, %d) does "
-                       "not re-encode: %s", cx, cz, (int)cy, why);
+                       "not re-encode: %s", cx, cz, (int)cy,
+                       why_text);
+        why = MCME_WRITE_REFUSAL_NOT_READABLE;
         goto done;
     }
 
     if (!mcme_leveldb_put(db, key, key_len,
                           encoded.data, encoded.len)) {
+        why = MCME_WRITE_REFUSAL_STORE;
         goto done;       /* the store's own error stands */
     }
+    why = MCME_WRITE_REFUSAL_NONE;
     ok = true;
 
 done:
-    mcme_buffer_free(&payload);
+    if (refusal != NULL) *refusal = why;
     mcme_buffer_free(&encoded);
     if (arena != NULL) mcme_arena_free(arena);
     mcme_leveldb_close(db);
@@ -261,9 +412,13 @@ static void box_subchunk_range(const McmeBox *box,
 }
 
 bool mcme_bedrock_fill_check(McmeLevelDb *db, const McmeBox *box,
-                             int32_t dimension)
+                             int32_t dimension,
+                             McmeWriteRefusal *refusal)
 {
+    if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_NONE;
+
     if (db == NULL || box == NULL) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         mcme_set_error("fill check: null argument");
         return false;
     }
@@ -271,6 +426,7 @@ bool mcme_bedrock_fill_check(McmeLevelDb *db, const McmeBox *box,
     int32_t cx1, cy1, cz1, cx2, cy2, cz2;
     box_subchunk_range(box, &cx1, &cy1, &cz1, &cx2, &cy2, &cz2);
     if (cy1 < INT8_MIN || cy2 > INT8_MAX) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         mcme_set_error("fill check: the box spans subchunk Y %d "
                        "to %d, beyond the key's signed byte",
                        (int)cy1, (int)cy2);
@@ -286,14 +442,72 @@ bool mcme_bedrock_fill_check(McmeLevelDb *db, const McmeBox *box,
                                             cx, cz, dimension,
                                             MCME_BEDROCK_TAG_SUBCHUNK,
                                             true, (int8_t)cy)) {
+                    if (refusal != NULL)
+                        *refusal = MCME_WRITE_REFUSAL_USAGE;
                     return false;
                 }
                 if (!mcme_leveldb_has(db, key, key_len)) {
+                    /* Absent: fill creates it, so "key not
+                       found" is the answer rather than a
+                       fault to remember. */
+                    mcme_clear_error();
+                    continue;
+                }
+
+                McmeBuffer payload;
+                mcme_buffer_init(&payload);
+                bool deleted = false;
+                if (!mcme_leveldb_get(db, key, key_len, &payload,
+                                      &deleted)) {
+                    mcme_buffer_free(&payload);
+                    if (refusal != NULL)
+                        *refusal = MCME_WRITE_REFUSAL_STORE;
+                    return false;   /* the store's own error */
+                }
+                if (deleted) {
+                    mcme_buffer_free(&payload);
+                    if (refusal != NULL)
+                        *refusal = MCME_WRITE_REFUSAL_NOT_THERE;
                     mcme_set_error("fill check: the subchunk (%d, "
-                                   "%d, %d) is not stored in this "
-                                   "world", (int)cx, (int)cz, (int)cy);
+                                   "%d, %d) is deleted in this "
+                                   "world", (int)cx, (int)cz,
+                                   (int)cy);
                     return false;
                 }
+
+                McmeArena *arena = mcme_arena_new();
+                if (arena == NULL) {
+                    mcme_buffer_free(&payload);
+                    if (refusal != NULL)
+                        *refusal = MCME_WRITE_REFUSAL_INTERNAL;
+                    mcme_set_error("fill check: out of memory");
+                    return false;
+                }
+                McmeBedrockSubchunk sc;
+                bool decodes =
+                    mcme_bedrock_subchunk_decode(&sc, arena,
+                                                 payload.data,
+                                                 payload.len);
+                if (decodes && sc.layer_count == 0) {
+                    mcme_set_error("fill check: the subchunk (%d, "
+                                   "%d, %d) is the all-air marker, "
+                                   "which has no layer to fill",
+                                   (int)cx, (int)cz, (int)cy);
+                    decodes = false;
+                }
+                if (!decodes) {
+                    char why[256];
+                    snprintf(why, sizeof why, "%s",
+                             mcme_last_error());
+                    mcme_set_error("fill check: the subchunk (%d, "
+                                   "%d, %d): %s", (int)cx, (int)cz,
+                                   (int)cy, why);
+                    if (refusal != NULL)
+                        *refusal = MCME_WRITE_REFUSAL_NOT_READABLE;
+                }
+                mcme_arena_free(arena);
+                mcme_buffer_free(&payload);
+                if (!decodes) return false;
             }
         }
     }
@@ -334,15 +548,91 @@ static bool fill_subchunk(McmeBedrockSubchunk *sc, McmeArena *arena,
     return true;
 }
 
+/*
+ * Writes one subchunk of a fill: the one the world has stored,
+ * or the all-air one it does not, filled across the box and put
+ * back. `refusal` says which class of failure it was, and
+ * mcme_last_error() names the subchunk.
+ */
+static bool fill_one(McmeLevelDb *db, const McmeBox *box,
+                     int32_t cx, int32_t cy, int32_t cz,
+                     int32_t dimension, const McmeNbtDoc *entry,
+                     McmeWriteRefusal *refusal)
+{
+    uint8_t key[14];
+    size_t key_len = 0;
+    if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                cx, cz, dimension,
+                                MCME_BEDROCK_TAG_SUBCHUNK,
+                                true, (int8_t)cy)) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
+        return false;
+    }
+
+    /* A subchunk the world has not stored comes back all air, so
+       the box may reach into ground that was never saved. */
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_INTERNAL;
+        mcme_set_error("fill: out of memory");
+        return false;
+    }
+
+    McmeBedrockSubchunk sc;
+    McmeWriteRefusal why = MCME_WRITE_REFUSAL_INTERNAL;
+    bool ok = mcme_bedrock_subchunk_get_or_create(db, cx, cz, cy,
+                                                  dimension, arena,
+                                                  &sc, &why);
+    if (ok) {
+        ok = fill_subchunk(&sc, arena, box, cx, cy, cz, entry);
+        if (!ok) {
+            /* The check accepted this subchunk a moment ago; the
+               block mcme was handed, not the world, is what went
+               wrong. */
+            why = MCME_WRITE_REFUSAL_INTERNAL;
+        }
+    }
+
+    McmeBuffer encoded;
+    mcme_buffer_init(&encoded);
+    if (ok) {
+        ok = mcme_bedrock_subchunk_encode(&sc, &encoded);
+        if (!ok) why = MCME_WRITE_REFUSAL_NOT_READABLE;
+    }
+    if (ok) {
+        ok = mcme_leveldb_put(db, key, key_len,
+                              encoded.data, encoded.len);
+        if (!ok) why = MCME_WRITE_REFUSAL_STORE;
+    }
+    if (!ok) {
+        char text[256];
+        snprintf(text, sizeof text, "%s", mcme_last_error());
+        mcme_set_error("fill: subchunk (%d, %d, %d): %s",
+                       (int)cx, (int)cz, (int)cy, text);
+    }
+
+    mcme_buffer_free(&encoded);
+    mcme_arena_free(arena);
+    if (refusal != NULL) *refusal = why;
+    return ok;
+}
+
 bool mcme_bedrock_fill(McmeLevelDb *db, const McmeBox *box,
                        int32_t dimension,
-                       const McmeNbtDoc *entry)
+                       const McmeNbtDoc *entry,
+                       McmeWriteRefusal *refusal)
 {
+    if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_NONE;
+
+    McmeWriteRefusal why = MCME_WRITE_REFUSAL_INTERNAL;
+
     if (db == NULL || box == NULL || entry == NULL) {
+        if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         mcme_set_error("fill: null argument");
         return false;
     }
-    if (!mcme_bedrock_fill_check(db, box, dimension)) {
+    if (!mcme_bedrock_fill_check(db, box, dimension, &why)) {
+        if (refusal != NULL) *refusal = why;
         return false;       /* the check's own error stands */
     }
 
@@ -352,69 +642,10 @@ bool mcme_bedrock_fill(McmeLevelDb *db, const McmeBox *box,
     for (int32_t cy = cy1; cy <= cy2; ++cy) {
         for (int32_t cz = cz1; cz <= cz2; ++cz) {
             for (int32_t cx = cx1; cx <= cx2; ++cx) {
-                uint8_t key[14];
-                size_t key_len = 0;
-                if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
-                                            cx, cz, dimension,
-                                            MCME_BEDROCK_TAG_SUBCHUNK,
-                                            true, (int8_t)cy)) {
+                if (!fill_one(db, box, cx, cy, cz, dimension, entry,
+                              refusal)) {
                     return false;
                 }
-
-                McmeBuffer payload;
-                mcme_buffer_init(&payload);
-                bool deleted = false;
-                bool ok = mcme_leveldb_get(db, key, key_len,
-                                           &payload, &deleted);
-                if (!ok) {
-                    mcme_buffer_free(&payload);
-                    return false;   /* the store's own error stands */
-                }
-                if (deleted) {
-                    mcme_buffer_free(&payload);
-                    mcme_set_error("fill: the subchunk (%d, %d, %d) "
-                                   "is deleted in this world",
-                                   (int)cx, (int)cz, (int)cy);
-                    return false;
-                }
-
-                McmeArena *arena = mcme_arena_new();
-                if (arena == NULL) {
-                    mcme_buffer_free(&payload);
-                    mcme_set_error("fill: out of memory");
-                    return false;
-                }
-                McmeBedrockSubchunk sc;
-                bool sub_ok =
-                    mcme_bedrock_subchunk_decode(&sc, arena,
-                                                 payload.data,
-                                                 payload.len);
-                if (sub_ok) {
-                    sub_ok = fill_subchunk(&sc, arena, box,
-                                           cx, cy, cz, entry);
-                }
-
-                McmeBuffer encoded;
-                mcme_buffer_init(&encoded);
-                if (sub_ok) {
-                    sub_ok = mcme_bedrock_subchunk_encode(&sc, &encoded);
-                }
-                if (sub_ok) {
-                    sub_ok = mcme_leveldb_put(db, key, key_len,
-                                              encoded.data,
-                                              encoded.len);
-                }
-                if (!sub_ok) {
-                    char why[256];
-                    snprintf(why, sizeof why, "%s", mcme_last_error());
-                    mcme_set_error("fill: subchunk (%d, %d, %d): %s",
-                                   (int)cx, (int)cz, (int)cy, why);
-                }
-
-                mcme_buffer_free(&encoded);
-                mcme_arena_free(arena);
-                mcme_buffer_free(&payload);
-                if (!sub_ok) return false;
             }
         }
     }
