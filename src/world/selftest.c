@@ -2476,6 +2476,307 @@ static void test_bedrock_entity(void)
     mcme_arena_free(arena);
 }
 
+/* ------------------------------------------------------------------------
+ * Block entity writes
+ *
+ * The record is spliced: only the document being changed is encoded,
+ * and the rest goes back as the bytes it arrived as. "The sign beside
+ * it is untouched" is a claim about bytes, not fields, so the splice
+ * is asserted byte for byte — before's prefix, this document, before's
+ * suffix IS the store's new value — with the fields checked after.
+ * ---------------------------------------------------------------------- */
+
+/* Where each document of a record sits, by the same walk the reader
+   does. Returns the count, or -1 when any part will not decode. */
+static int record_extents(const uint8_t *data, size_t len,
+                          McmeArena *arena, size_t *offs,
+                          size_t *lens, int max)
+{
+    int n = 0;
+    size_t at = 0;
+    while (at < len) {
+        McmeNbtDoc doc;
+        size_t consumed = 0;
+        if (!mcme_nbt_parse_prefix(&doc, arena, data + at, len - at,
+                                   true, &consumed)
+                || consumed == 0) {
+            return -1;
+        }
+        if (n < max) {
+            offs[n] = at;
+            lens[n] = consumed;
+        }
+        n++;
+        at += consumed;
+    }
+    return n;
+}
+
+/* The raw value the store holds for one chunk's entity record, fresh
+   in `out` (mcme_leveldb_get appends, so a caller's leftovers must not
+   become part of the answer). Returns false when the key is absent;
+   `deleted` says tombstone. */
+static bool raw_record(const char *db_dir, int32_t cx, int32_t cz,
+                       int32_t dimension, McmeBuffer *out,
+                       bool *deleted)
+{
+    uint8_t key[14];
+    size_t key_len = 0;
+    if (!mcme_bedrock_key_build(key, sizeof key, &key_len, cx, cz,
+                                dimension,
+                                MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                                false, 0)) {
+        return false;
+    }
+    mcme_buffer_free(out);
+    mcme_buffer_init(out);
+    *deleted = false;
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, db_dir)) return false;
+    bool got = mcme_leveldb_get(db, key, key_len, out, deleted);
+    mcme_leveldb_close(db);
+    return got;
+}
+
+/* One question, one handle: a write takes the LOCK, so no handle may
+   be held across one. */
+static McmeEntityStatus ask(const char *db_dir, int32_t x, int32_t y,
+                            int32_t z, int32_t dimension,
+                            McmeArena *arena, McmeNbtDoc *out)
+{
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, db_dir)) return MCME_ENTITY_STORE;
+    McmeEntityStatus status =
+        mcme_bedrock_block_entity(db, x, y, z, dimension, arena, out);
+    mcme_leveldb_close(db);
+    return status;
+}
+
+static void test_bedrock_entity_write(void)
+{
+    char src[512];
+    snprintf(src, sizeof src, "%s/db", kEntitiesWorld);
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP block entity write tests (%s not found; run "
+               "tools/ref_bedrock_entities.py)\n", src);
+        return;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        CHECK_MSG(false, "out of memory");
+        return;
+    }
+
+    char tmp[64];
+    char dbdir[512];
+    CHECK(fresh_store_dir(tmp, sizeof tmp));
+    snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+    CHECK(copy_store(src, dbdir));
+
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    McmeBuffer before, after, docbytes, want;
+    mcme_buffer_init(&before);
+    mcme_buffer_init(&after);
+    mcme_buffer_init(&docbytes);
+    mcme_buffer_init(&want);
+    bool deleted = false;
+    McmeNbtDoc got;
+
+    /* --- Replace the chest, with a document that carries no
+       coordinates: the position is the argument, so they are set
+       from it. The record must still hold its three documents
+       before the edit, or the splice proves nothing. --- */
+    const char *chest = "{id: \"minecraft:chest\", "
+                        "CustomName: \"stores\"}";
+    McmeTag *entity = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, chest, strlen(chest), &entity));
+    CHECK(raw_record(dbdir, 0, 0, 0, &before, &deleted));
+    CHECK(!deleted && before.len > 0);
+
+    size_t offs[8], lens[8];
+    int n = record_extents(before.data, before.len, arena, offs,
+                           lens, 8);
+    CHECK_MSG(n == 3, "the fixture record holds %d documents, want 3",
+              n);
+
+    CHECK(mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, entity,
+                                        arena, &refusal));
+    const McmeTag *gy = mcme_nbt_path(entity, "y");
+    CHECK(gy != NULL && gy->type == MCME_TAG_Int && gy->as_int == 64);
+
+    /* --- The neighbours are byte for byte: prefix, this document
+       as written, suffix — all of before, with only the chest's
+       extent exchanged. --- */
+    McmeNbtDoc written;
+    written.arena = arena;
+    written.root = entity;
+    written.root_name.data = (char *)"";
+    written.root_name.len = 0;
+    written.little_endian = true;
+    CHECK(mcme_nbt_write_binary(&written, &docbytes));
+    size_t tail = offs[0] + lens[0];
+    bool grew = mcme_buffer_append(&want, before.data, offs[0]);
+    grew = grew
+        && mcme_buffer_append(&want, docbytes.data, docbytes.len);
+    grew = grew
+        && mcme_buffer_append(&want, before.data + tail,
+                              before.len - tail);
+    CHECK(grew);
+    CHECK(raw_record(dbdir, 0, 0, 0, &after, &deleted));
+    CHECK_MSG(after.len == want.len,
+              "the record is %zu bytes, want the splice's %zu",
+              after.len, want.len);
+    if (after.len == want.len) {
+        CHECK(memcmp(after.data, want.data, want.len) == 0);
+    }
+
+    /* --- The new document reads back as written, and the two
+       documents behind it are as they were. --- */
+    CHECK(ask(dbdir, 12, 64, 3, 0, arena, &got)
+          == MCME_ENTITY_OK);
+    const McmeTag *field = mcme_nbt_path(got.root, "CustomName");
+    CHECK(field != NULL && field->type == MCME_TAG_String
+          && strcmp(field->string.data, "stores") == 0);
+    CHECK(ask(dbdir, 0, 65, 0, 0, arena, &got)
+          == MCME_ENTITY_OK);
+    field = mcme_nbt_path(got.root, "Text");
+    CHECK(field != NULL && field->type == MCME_TAG_String
+          && strcmp(field->string.data, "mcme fixture") == 0);
+    CHECK(ask(dbdir, 12, 64, 4, 0, arena, &got)
+          == MCME_ENTITY_ABSENT);
+
+    /* --- A chunk that holds no record at all gets one — writes
+       create, the way chunk set creates a subchunk. --- */
+    const char *sign = "{id: \"minecraft:sign\", "
+                       "Text: \"written\"}";
+    McmeTag *fresh = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, sign, strlen(sign), &fresh));
+    CHECK(mcme_bedrock_put_block_entity(dbdir, 40, 10, 40, 0, fresh,
+                                        arena, &refusal));
+    CHECK(ask(dbdir, 40, 10, 40, 0, arena, &got)
+          == MCME_ENTITY_OK);
+    field = mcme_nbt_path(got.root, "Text");
+    CHECK(field != NULL && strcmp(field->string.data, "written") == 0);
+
+    /* --- Deleting one document leaves the others: the sign goes,
+       the chest and the coordinateless document stay. --- */
+    CHECK(mcme_bedrock_del_block_entity(dbdir, 0, 65, 0, 0,
+                                        &refusal));
+    CHECK(ask(dbdir, 0, 65, 0, 0, arena, &got)
+          == MCME_ENTITY_ABSENT);
+    CHECK(ask(dbdir, 12, 64, 3, 0, arena, &got)
+          == MCME_ENTITY_OK);
+    mcme_buffer_free(&before);
+    mcme_buffer_init(&before);
+    CHECK(raw_record(dbdir, 0, 0, 0, &before, &deleted));
+    n = record_extents(before.data, before.len, arena, offs, lens, 8);
+    CHECK_MSG(n == 2, "record holds %d documents after a deletion, "
+              "want 2", n);
+
+    /* --- The last entity's record goes with it: the key is a
+       tombstone, which is the store's "no value", not a record
+       holding nothing. --- */
+    CHECK(mcme_bedrock_del_block_entity(dbdir, 40, 10, 40, 0,
+                                        &refusal));
+    CHECK(raw_record(dbdir, 2, 2, 0, &after, &deleted));
+    CHECK(deleted && after.len == 0);
+    CHECK(ask(dbdir, 40, 10, 40, 0, arena, &got)
+          == MCME_ENTITY_ABSENT);
+
+    /* --- Nothing there is a refusal that says so, not the store's
+       "key not found". --- */
+    CHECK(!mcme_bedrock_del_block_entity(dbdir, 5, 5, 5, 0,
+                                         &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+    CHECK(strstr(mcme_last_error(), "no block entity") != NULL);
+    CHECK(!mcme_bedrock_del_block_entity(dbdir, 40, 10, 40, 0,
+                                         &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+
+    /* --- What mcme will not write: the reference would drop it.
+       Each refusal leaves the record as it was. --- */
+    mcme_buffer_free(&before);
+    mcme_buffer_init(&before);
+    CHECK(raw_record(dbdir, 0, 0, 0, &before, &deleted));
+
+    McmeTag *bad = NULL;
+    const char *no_id = "{CustomName: \"stores\"}";
+    CHECK(mcme_nbt_parse_snbt(arena, no_id, strlen(no_id), &bad));
+    CHECK(!mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, bad,
+                                         arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    CHECK(strstr(mcme_last_error(), "\"id\"") != NULL);
+
+    const char *flat_id = "{id: \"chest\"}";
+    CHECK(mcme_nbt_parse_snbt(arena, flat_id, strlen(flat_id), &bad));
+    CHECK(!mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, bad,
+                                         arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+    McmeTag *number = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, "42", 2, &number));
+    CHECK(!mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, number,
+                                         arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+    CHECK(!mcme_bedrock_put_block_entity(NULL, 12, 64, 3, 0, entity,
+                                         arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    CHECK(!mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, NULL,
+                                         arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    CHECK(!mcme_bedrock_del_block_entity(NULL, 0, 0, 0, 0, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+    /* --- And what it will not rewrite: a record with a tail that
+       will not read. Both refusals come before any byte is
+       written. --- */
+    static const uint8_t junk_tail[] = {
+        0x0a, 0x00, 0x03, 'i', 'd', 0x08, 0x00, 0x04, 'x', 'x'
+    };
+    McmeBuffer junk;
+    mcme_buffer_init(&junk);
+    CHECK(mcme_buffer_append(&junk, before.data, before.len));
+    CHECK(mcme_buffer_append(&junk, junk_tail, sizeof junk_tail));
+    {
+        uint8_t key[14];
+        size_t key_len = 0;
+        CHECK(mcme_bedrock_key_build(key, sizeof key, &key_len, 0,
+                                     0, 0,
+                                     MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                                     false, 0));
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+        CHECK(mcme_leveldb_put(db, key, key_len, junk.data, junk.len));
+        mcme_leveldb_close(db);
+    }
+
+    CHECK(!mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, entity,
+                                         arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+    CHECK(!mcme_bedrock_del_block_entity(dbdir, 12, 64, 3, 0,
+                                         &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+
+    CHECK(raw_record(dbdir, 0, 0, 0, &after, &deleted));
+    CHECK_MSG(after.len == junk.len,
+              "a refused write changed the record: %zu bytes, want %zu",
+              after.len, junk.len);
+    if (after.len == junk.len) {
+        CHECK(memcmp(after.data, junk.data, junk.len) == 0);
+    }
+
+    mcme_buffer_free(&junk);
+    mcme_buffer_free(&docbytes);
+    mcme_buffer_free(&want);
+    mcme_buffer_free(&before);
+    mcme_buffer_free(&after);
+    mcme_arena_free(arena);
+    remove_store(dbdir);
+    rmdir(tmp);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -2488,6 +2789,7 @@ int mcme_test_world(void)
     test_bedrock_write();
     test_bedrock_column();
     test_bedrock_entity();
+    test_bedrock_entity_write();
 
     if (!mcme_fs_exists(kWorldDir)) {
         printf("  SKIP golden world (%s not found; run tools/ref_worlds.py)\n",

@@ -100,6 +100,16 @@ static void print_usage(FILE *out)
         "                    chest's contents, a sign's text —\n"
         "                    as SNBT, or JSON with --json. Exit 2\n"
         "                    if none is stored there.\n"
+        "  chunk entity set <world> <x> <y> <z> <snbt>\n"
+        "                    Store a block entity at one block:\n"
+        "                    the document in SNBT, the position\n"
+        "                    its own coordinates are set from.\n"
+        "                    The record's other documents go\n"
+        "                    back byte for byte.\n"
+        "  chunk entity del <world> <x> <y> <z>\n"
+        "                    Remove the block entity at one\n"
+        "                    block; the last one removes the\n"
+        "                    record. Exit 2 if none is there.\n"
         "  db <op> <world> <key-hex> [value-hex]\n"
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
@@ -1781,6 +1791,96 @@ static int cmd_chunk_entity(int argc, char **argv)
 }
 
 /* ========================================================================
+ * `mcme chunk entity set <world> <x> <y> <z> <snbt>` and
+ * `mcme chunk entity del <world> <x> <y> <z>`
+ *
+ * One body: the store layer splices a record the same way for both,
+ * and only the document argument differs. Nothing is printed on
+ * success, the way `chunk set` and `chunk fill` answer — the exit
+ * code is the answer.
+ * ======================================================================== */
+
+/*
+ * The edit behind both verbs: `set` parses the document it brings
+ * in SNBT and stores it at the block, `del` removes whatever is
+ * there. Split out so the verbs' argument checking stays flat and
+ * both map a refusal through refusal_exit() the same way. The
+ * document is the SNBT `chunk entity` prints, so read, edit,
+ * write back is one loop; one that will not parse is a bad
+ * argument, not bad world data.
+ */
+static int entity_edit(const char *db_dir, int32_t bx, int32_t by,
+                       int32_t bz, int32_t dimension, bool is_set,
+                       const char *snbt, McmeArena *arena)
+{
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    bool wrote;
+
+    if (is_set) {
+        McmeTag *entity = NULL;
+        if (!mcme_nbt_parse_snbt(arena, snbt, strlen(snbt), &entity)) {
+            return MCME_EXIT_USAGE;
+        }
+        wrote = mcme_bedrock_put_block_entity(db_dir, bx, by, bz,
+                                              dimension, entity, arena,
+                                              &refusal);
+    } else {
+        wrote = mcme_bedrock_del_block_entity(db_dir, bx, by, bz,
+                                              dimension, &refusal);
+    }
+
+    return wrote ? MCME_OK : refusal_exit(refusal);
+}
+
+static int cmd_chunk_entity_write(int argc, char **argv, bool is_set)
+{
+    const char *what = is_set ? "set" : "del";
+    int32_t dimension = 0;
+    if (!extract_dimension(&argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    int want = is_set ? 5 : 4;
+    if (argc != want) {
+        mcme_set_error("chunk: usage: chunk entity %s <world> <x> "
+                       "<y> <z>%s", what,
+                       is_set ? " <snbt-document>" : "");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long x, y, z;
+    if (!parse_coord(argv[1], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord(argv[2], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord(argv[3], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
+        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    /* `set` brings the document; `del` has none. */
+    const char *snbt = is_set ? argv[4] : NULL;
+    int32_t bx = (int32_t)x, by = (int32_t)y, bz = (int32_t)z;
+    int rc = entity_edit(info.db_path, bx, by, bz, dimension,
+                         is_set, snbt, arena);
+
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
+/* ========================================================================
  * db — raw key/value access to a Bedrock store
  * ======================================================================== */
 
@@ -2061,6 +2161,15 @@ static int dispatch(int argc, char **argv)
             return cmd_chunk_height(rest - 1, args + 1);
         }
         if (strcmp(args[0], "entity") == 0) {
+            /* set and del are subcommands of entity; a world
+               directory that is itself named "set" is read as
+               "./set", since the subcommand matches first. */
+            if (rest >= 2 && strcmp(args[1], "set") == 0) {
+                return cmd_chunk_entity_write(rest - 2, args + 2, true);
+            }
+            if (rest >= 2 && strcmp(args[1], "del") == 0) {
+                return cmd_chunk_entity_write(rest - 2, args + 2, false);
+            }
             return cmd_chunk_entity(rest - 1, args + 1);
         }
         mcme_set_error("chunk: unknown subcommand '%s' "

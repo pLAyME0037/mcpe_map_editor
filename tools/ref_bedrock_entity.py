@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """
-Cross-check: mcme reads a block entity, amulet reads the same
-record back.
+Cross-check: mcme and amulet read and write the same block entity
+record.
 
-The C selftest pins `mcme_bedrock_block_entity` against the
-fixture this tree generates. This tool proves it against the
-REFERENCE: it copies the golden entity store, asks mcme for the
-entity at a block, then reads the same chunk record with
-amulet-core 1.9.50's own loader — `_unpack_nbt_list`, the code
-path that reads worlds Minecraft loads — and requires the two to
-agree on the WHOLE document, field for field:
+The C selftest pins `mcme_bedrock_block_entity` and the write pair
+against the fixture this tree generates. This tool proves them
+against the REFERENCE: it copies the golden entity store, then
+
+  READ  — asks mcme for the entity at a block and reads the same
+          chunk record with amulet-core 1.9.50's own loader,
+          `_unpack_nbt_list`, the code path that reads worlds
+          Minecraft loads, requiring the two to agree on the WHOLE
+          document, field for field;
+
+  WRITE — asks mcme to store or remove a document and reads the
+          record back with the reference, byte for byte: the
+          record after the edit must be the record before it with
+          only the edited document's extent exchanged, because
+          "the documents beside the edit are untouched" is a claim
+          about bytes, not about fields.
+
+Covered:
 
   * a chest with two item stacks, a sign's text, a furnace's
     burn state, and a chest in another dimension
@@ -21,14 +32,19 @@ agree on the WHOLE document, field for field:
     same local block one chunk over is not that entity
   * no record at that block is exit 2, a record the game deleted
     is exit 2, and a record that will not decode is exit 3
+  * setting a document whose own coordinates are absent: the
+    position argument is what lands in the stored document
+  * a document whose id names no namespace is refused before the
+    store changes
+  * setting into a chunk with no record creates one, and removing
+    its last document removes the record
+  * a record that will not decode is one mcme will not rewrite,
+    and the refusals write no bytes
 
 The comparison is the whole tree rather than a few named fields:
 each side is reduced to plain Python (dicts, lists, strings,
 numbers) and compared for equality, so a reader that renames a
 field, drops one, or reads a byte as something else fails here.
-
-Direction is deliberate: mcme reads, the reference reads — the
-write cross-check runs the other way round.
 
 Usage:
     venv/bin/python tools/ref_bedrock_entity.py --mcme ./mcme
@@ -82,29 +98,118 @@ def field(comp, key):
     return comp[key] if key in comp else None
 
 
-def documents(iface, payload: bytes):
-    """The record's documents, decoded by the reference. A
-    document with no coordinates gets the sentinel far-off value,
-    which matches no block and so matches no query."""
+def coords(comp) -> tuple[int, int, int]:
+    """A document's block, or the far-off sentinel: coordinates
+    are ints or they are not coordinates, and a document without
+    them matches no position — the reference's own behaviour."""
     far = -1 << 30
+    return (
+        int(getattr(field(comp, "x"), "py_int", far)),
+        int(getattr(field(comp, "y"), "py_int", far)),
+        int(getattr(field(comp, "z"), "py_int", far)),
+    )
+
+
+def documents(iface, payload: bytes):
+    """The record's documents, decoded by the reference."""
     out = []
     for doc in iface._unpack_nbt_list(payload):
         comp = doc.tag
+        cx, cy, cz = coords(comp)
         out.append(
             {
                 "id": str(getattr(field(comp, "id"), "py_str", "")),
-                "x": int(getattr(field(comp, "x"), "py_int", far)),
-                "y": int(getattr(field(comp, "y"), "py_int", far)),
-                "z": int(getattr(field(comp, "z"), "py_int", far)),
+                "x": cx,
+                "y": cy,
+                "z": cz,
                 "doc": plain(comp.py_data),
             }
         )
     return out
 
 
+def stored_at(iface, payload: bytes, x: int, y: int, z: int):
+    """The documents claiming that block — one, unless the record
+    is stranger than a stored world should be."""
+    return [
+        d for d in documents(iface, payload)
+        if (d["x"], d["y"], d["z"]) == (x, y, z)
+    ]
+
+
+def spans(payload: bytes):
+    """Each document's byte extent in the record: where it starts
+    and how many bytes it occupies, read the way the reference
+    reads — load_nbt with a ReadContext, whose offset is where the
+    next document starts. A splice is checked against these."""
+    from amulet_nbt import ReadContext, load, utf8_escape_decoder
+
+    out = []
+    at = 0
+    raw = payload
+    while raw:
+        ctx = ReadContext()
+        tag = load(raw, little_endian=True, read_context=ctx,
+                   string_decoder=utf8_escape_decoder)
+        if ctx.offset <= 0:
+            raise AssertionError("the reference made no progress")
+        out.append((at, ctx.offset, tag))
+        at += ctx.offset
+        raw = raw[ctx.offset:]
+    if at != len(payload):
+        raise AssertionError(
+            f"the reference consumed {at} of {len(payload)} bytes")
+    return out
+
+
+def extent_at(payload: bytes, x: int, y: int, z: int):
+    """The bytes of the document at that block — the only extent
+    an edit is allowed to exchange."""
+    found = None
+    for at, length, tag in spans(payload):
+        if coords(tag.tag) == (x, y, z):
+            if found is not None:
+                raise AssertionError(
+                    f"two documents claim block ({x}, {y}, {z})")
+            found = (at, length)
+    if found is None:
+        raise AssertionError(
+            f"no document at block ({x}, {y}, {z}) to edit")
+    return found
+
+
+def check_splice(name: str, before: bytes, after: bytes, span,
+                 removed: bool = False) -> None:
+    """The record after the edit is `before` with only the edited
+    document's extent exchanged.
+
+    For a removal the answer is exactly prefix + suffix. For a
+    replacement the middle is whatever mcme wrote — its length is
+    derived from the two records, never assumed — and everything
+    either side of it must be the bytes it was, which is what
+    makes "the sign beside the chest is untouched" true rather
+    than merely plausible."""
+    at, length = span
+    if removed:
+        if after != before[:at] + before[at + length:]:
+            raise AssertionError(
+                f"{name}: a deletion rewrote more than the "
+                "document it removed")
+        return
+    kept = len(before) - length
+    middle = len(after) - kept
+    if middle < 0:
+        raise AssertionError(
+            f"{name}: the record shrank by more than the document "
+            "it replaced")
+    if after[:at] != before[:at] or after[at + middle:] != before[at + length:]:
+        raise AssertionError(
+            f"{name}: bytes outside the edited document changed")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="mcme reads a block entity, amulet reads it back"
+        description="mcme and amulet read and write one record"
     )
     ap.add_argument("--mcme", required=True, help="path to mcme")
     ap.add_argument(
@@ -135,26 +240,35 @@ def main() -> int:
         r = subprocess.run(cmd, capture_output=True, text=True)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
 
-    def expect_entity(name: str, x: int, y: int, z: int,
-                      dimension: int = 0):
-        nonlocal checks
-        cx, cz = x // 16, z // 16
+    def run_set(x: int, y: int, z: int, snbt: str):
+        cmd = [args.mcme, "chunk", "entity", "set", world,
+               str(x), str(y), str(z), snbt]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+    def run_del(x: int, y: int, z: int):
+        cmd = [args.mcme, "chunk", "entity", "del", world,
+               str(x), str(y), str(z)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+    def raw(cx: int, cz: int, dimension: int = 0):
+        """The record's bytes as the store holds them, or None."""
         db = LevelDB(db_path)
         try:
             try:
-                payload = db.get(record_key(cx, cz, dimension))
+                return db.get(record_key(cx, cz, dimension))
             except KeyError:
-                payload = None
+                return None
         finally:
             db.close()
 
-        here = []
-        if payload is not None:
-            here = [
-                d
-                for d in documents(iface, payload)
-                if (d["x"], d["y"], d["z"]) == (x, y, z)
-            ]
+    def expect_entity(name: str, x: int, y: int, z: int,
+                      dimension: int = 0):
+        nonlocal checks
+        payload = raw(x // 16, z // 16, dimension)
+        here = [] if payload is None else stored_at(
+            iface, payload, x, y, z)
 
         rc, out, err = run_entity(x, y, z, dimension)
         if not here:
@@ -195,6 +309,118 @@ def main() -> int:
     # --- Another dimension's own record.
     expect_entity("nether chest", 0, 5, 0, dimension=1)
 
+    # = The write half: mcme writes, the reference reads — the
+    #   direction the read half ran the other way round.
+
+    # --- set: replace the chest. The document carries no
+    #     coordinates, so the position argument is the only thing
+    #     that can land in it.
+    before = raw(0, 0)
+    span = extent_at(before, 12, 64, 3)
+    rc, out, err = run_set(
+        12, 64, 3,
+        '{id: "minecraft:chest", CustomName: "stores", '
+        'Items: [{Slot: 0b, id: "minecraft:diamond", '
+        'count: 3b, damage: 0s}]}')
+    if rc != 0 or out:
+        raise AssertionError(
+            f"set the chest: exit {rc}, stdout {out!r} ({err})")
+    checks += 1
+    _log("set: exit 0, no output")
+
+    after = raw(0, 0)
+    check_splice("set", before, after, span)
+    checks += 1
+    _log("set: the record is prefix + this document + suffix")
+
+    match = stored_at(iface, after, 12, 64, 3)
+    if len(match) != 1:
+        raise AssertionError(
+            f"set: the reference finds {len(match)} documents at "
+            "the block mcme wrote, want 1")
+    doc = match[0]["doc"]
+    if (doc.get("id"), doc.get("CustomName")) != (
+            "minecraft:chest", "stores"):
+        raise AssertionError(f"set: the reference read {doc!r}")
+    checks += 1
+    _log("set: the position's coordinates are what mcme stored")
+    expect_entity("chest after an edit", 12, 64, 3)
+    # --- The sign behind it reads as it did before the edit.
+    expect_entity("sign after an edit", 0, 65, 0)
+
+    # --- del: only the sign's bytes leave the record.
+    before = raw(0, 0)
+    span = extent_at(before, 0, 65, 0)
+    rc, out, err = run_del(0, 65, 0)
+    if rc != 0 or out:
+        raise AssertionError(
+            f"del the sign: exit {rc}, stdout {out!r} ({err})")
+    checks += 1
+    _log("del: exit 0, no output")
+
+    after = raw(0, 0)
+    check_splice("del", before, after, span, removed=True)
+    checks += 1
+    _log("del: the record is prefix + suffix, byte for byte")
+    if len(documents(iface, after)) != 2:
+        raise AssertionError(
+            "del: the reference reads other than 2 documents "
+            "after removing one")
+    checks += 1
+    expect_entity("chest after a deletion", 12, 64, 3)
+    expect_entity("the deleted sign", 0, 65, 0)
+
+    # --- A document mcme will not write: the reference drops one
+    #     whose id names no namespace, so mcme refuses it and the
+    #     record does not move.
+    before = raw(0, 0)
+    rc, out, err = run_set(12, 64, 3, '{id: "chest"}')
+    if rc != 1:
+        raise AssertionError(
+            f"an id with no namespace: exit {rc}, want 1 ({err})")
+    if raw(0, 0) != before:
+        raise AssertionError("a refused write changed the record")
+    checks += 1
+    _log("an id with no namespace: exit 1, record untouched")
+
+    # --- A chunk that holds no record at all gets one.
+    if raw(2, 2) is not None:
+        raise AssertionError(
+            "the fixture already has a record in chunk (2, 2)")
+    rc, out, err = run_set(
+        40, 10, 40, '{id: "minecraft:sign", Text: "written"}')
+    if rc != 0 or out:
+        raise AssertionError(
+            f"set into an empty chunk: exit {rc} ({err})")
+    created = raw(2, 2)
+    if created is None:
+        raise AssertionError("no record was created for chunk (2, 2)")
+    match = stored_at(iface, created, 40, 10, 40)
+    if len(match) != 1 or match[0]["doc"].get("Text") != "written":
+        raise AssertionError(
+            f"the reference read {match!r} from the new record")
+    checks += 1
+    _log("set: a chunk with no record gets one")
+    expect_entity("an entity in a chunk that had none", 40, 10, 40)
+
+    # --- Its last document's record goes with it.
+    rc, out, err = run_del(40, 10, 40)
+    if rc != 0 or out:
+        raise AssertionError(
+            f"del the last document: exit {rc} ({err})")
+    if raw(2, 2) is not None:
+        raise AssertionError(
+            "the record survived its last document")
+    checks += 1
+    _log("del: the last document's record is removed, not emptied")
+    expect_entity("after the record's last document", 40, 10, 40)
+    rc, out, err = run_del(40, 10, 40)
+    if rc != 2:
+        raise AssertionError(
+            f"del twice: exit {rc}, want 2 ({err})")
+    checks += 1
+    _log("del: a second time is exit 2")
+
     # --- A record the game deleted is an absence, not a fault.
     db = LevelDB(db_path)
     try:
@@ -203,7 +429,8 @@ def main() -> int:
         db.close()
     expect_entity("after a deletion", 12, 64, 3)
 
-    # --- A record that will not decode is exit 3.
+    # --- A record that will not decode is exit 3 for a read —
+    #     and one mcme will not rewrite either.
     db = LevelDB(db_path)
     try:
         db.put(record_key(0, 0), b"\x0a\x00\x03id\x08\x00\x04xx")
@@ -215,6 +442,20 @@ def main() -> int:
             f"junk record: exit {rc}, want 3 ({err})")
     checks += 1
     _log("junk record: exit 3")
+
+    before = raw(0, 0)
+    rc, out, err = run_set(12, 64, 3, '{id: "minecraft:chest"}')
+    if rc != 3:
+        raise AssertionError(
+            f"set into a junk record: exit {rc}, want 3 ({err})")
+    rc, out, err = run_del(12, 64, 3)
+    if rc != 3:
+        raise AssertionError(
+            f"del into a junk record: exit {rc}, want 3 ({err})")
+    if raw(0, 0) != before:
+        raise AssertionError("refused writes changed the record")
+    checks += 1
+    _log("junk record: set and del exit 3, record untouched")
 
     shutil.rmtree(tmp, ignore_errors=True)
     _log(f"ok — {checks} checks")

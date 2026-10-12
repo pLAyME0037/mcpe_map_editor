@@ -446,8 +446,13 @@ of one chunk are read by two calls and neither disturbs the other. An entity
 belongs to the chunk its own `x`/`z` fall in, so the record it is read from
 is the one at `floor(x/16)`, `floor(z/16)`. A document in that record that
 carries no `x`/`y`/`z` is not addressable by position and is not matched; a
-record that will not decode at all is exit 3, naming the chunk, because that
-is world data mcme cannot read rather than an absence.
+record any part of which mcme cannot read is exit 3, naming the chunk.
+Half a record is never an answer: `set` and `del` rewrite the record as a
+whole, and a read that answered from the part before a break would disagree
+with what a write is willing to touch.
+
+The subcommands `set` and `del` are matched before the path (see below), so
+a world directory that is itself named `set` is read as `./set`.
 
 Under `--json`:
 
@@ -461,6 +466,59 @@ Under `--json`:
 Exit codes: `0` an entity is stored at that block, `1` usage, `2` not a
 world, not a Bedrock world, or no block entity at that position, `3` the
 chunk's entity record is not a format mcme reads, `4` store error.
+
+### `mcme chunk entity set`
+
+Stores a block entity at one block. The document is an argument in SNBT —
+the same form `chunk entity` prints — so read, edit, write back is one
+loop.
+
+```
+mcme chunk entity set <world> <x> <y> <z> <snbt-document>
+```
+
+```
+$ mcme chunk entity set mybedrock 12 64 3 '{id: "minecraft:chest", CustomName: "stores", Items: []}'
+```
+
+The position is the argument, so it wins: the document's own `x`, `y`, `z`
+are set from it, overwriting any they carried, because a document naming
+another block would be stored where nothing can find it. `id` must be a
+namespaced string — `"minecraft:chest"`, with the colon — which is the
+form the game writes and the reference requires; anything else is exit 1,
+and so is SNBT that does not parse or a root that is not a compound.
+
+The documents beside it in the record are untouched, byte for byte: the
+record is spliced, not re-encoded, so changing one chest cannot reorder
+the sign beside it. A chunk with no entity record at all gets one —
+the way `chunk set` creates a subchunk the world never stored — and a
+record the game deleted counts as none: the chunk holds no entity, and
+storing one there is the operation, not a resurrection.
+
+Nothing is printed on success; like `chunk set`, the exit code is the
+answer.
+
+Exit codes: `0` written, `1` usage (bad coordinate, SNBT that does not
+parse, a root that is not a compound, an `id` that is not a namespaced
+string), `2` not a world or not a Bedrock world, `3` the record is not a
+format mcme reads, `4` store error, including a store the game has open.
+
+### `mcme chunk entity del`
+
+Removes the block entity stored at one block.
+
+```
+mcme chunk entity del <world> <x> <y> <z>
+```
+
+The documents beside it stay byte for byte, and when it was the last one
+the record itself is deleted: mcme does not keep a record holding
+nothing, which is also what the game stores — no key at all. Nothing is
+printed on success.
+
+Exit codes: `0` removed, `1` usage, `2` not a world, not a Bedrock
+world, or no block entity at that block, `3` the record is not a format
+mcme reads, `4` store error.
 
 ### `mcme db`
 

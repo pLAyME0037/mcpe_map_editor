@@ -9,6 +9,93 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Changing what's in the chest: `chunk entity set`/`del`
+
+### Built
+
+- `mcme_bedrock_put_block_entity()` and
+  `mcme_bedrock_del_block_entity()` (bedrock_entity.c/h):
+  the write half, answering with `McmeWriteRefusal` like
+  every other write verb and opening `db_dir` with the
+  exclusive LOCK the way `mcme_bedrock_set_block()` does,
+  so one condition is one exit code across the CLI.
+- The record is spliced, not re-encoded: only the changed
+  document's bytes leave, only its new bytes arrive, and
+  the documents beside it are written back as the exact
+  bytes they arrived as. "The sign beside the chest is
+  untouched" is a claim about bytes, so it is checked as
+  bytes — both in the selftest (prefix + this document +
+  suffix IS the store's new value) and against amulet,
+  which computes each document's extent itself.
+- The position argument wins: the document's own `x`, `y`
+  and `z` are set from it, overwriting or injecting,
+  because a document naming another block would be stored
+  where nothing finds it. `id` must be a namespaced
+  string — what `_decode_base_entity` requires to keep a
+  document at all — so what mcme stores is what the game
+  and the reference both read back, rather than what they
+  silently drop.
+- Writes create: a chunk with no record gets one, the way
+  `chunk set` creates a subchunk. A record the game
+  deleted counts as none too — adding an entity to a
+  chunk that has none is the operation, not a
+  resurrection of anything. That is the opposite of a
+  deleted subchunk, which is still refused: ground the
+  game removed carries meaning, an empty entity list
+  does not.
+- Removing the last document removes the record's key:
+  mcme does not keep a record holding nothing, which is
+  also what the game stores — no key at all. The store
+  answers a tombstone and the read still says exit 2.
+- Reads were tightened to agree with that: a read now
+  requires the WHOLE record to decode, not just the part
+  up to the match. Half a record a read would answer
+  from is half a record a write would refuse to rewrite,
+  and one rule beats two — cli.md now says "any part of
+  which mcme cannot read is exit 3".
+- Every false return says what was refused: a missing
+  record answers "no block entity is stored at block
+  (…)", not the store layer's "key not found".
+- `mcme chunk entity set <world> <x> <y> <z> <snbt>` and
+  `mcme chunk entity del <world> <x> <y> <z>`, documented
+  in cli.md before the code. The document is SNBT — the
+  same form the read prints, so read, edit, write back is
+  one loop. Silent on success, like `chunk set` and
+  `chunk fill`: the exit code is the answer. `set` and
+  `del` are matched before the path, so a world directory
+  named `set` reads as `./set`.
+
+### Cross-check
+
+- `tools/ref_bedrock_entity.py` grew from 8 to 25 checks
+  and now runs both directions: mcme reads what the
+  reference reads (whole document), and the reference
+  reads what mcme wrote — as bytes. The record after an
+  edit must be the record before it with only the edited
+  document's extent exchanged; the replacement's length
+  is derived from the two records, never assumed. Added:
+  coordinate injection landing where the argument said,
+  a set into a chunk with no record, the last document's
+  record disappearing, a second deletion being exit 2,
+  an un-namespaced `id` refused with the record
+  untouched, and a junk record refusing both verbs
+  without writing a byte.
+- Selftest `test_bedrock_entity_write` pins the same
+  from the library: the byte-for-byte splice, the
+  neighbours reading back unchanged, the tombstone a
+  last removal leaves, and the USAGE / NOT_THERE /
+  NOT_READABLE refusals with their messages.
+- Verified at commit: `./rebuild.sh test` PASS — 5
+  suites, 0 failures; ref tools 25 (entity) + write
+  PASS (19) + 28 (column); align.py 0 misalignments.
+
+### Next
+
+- The region inventory verb: what the `.mcr` files hold,
+  without opening the stores inside them.
+
+---
+
 ## 2026-10-12 — What's in the chest: `chunk entity`
 
 ### Built
