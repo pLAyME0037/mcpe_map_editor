@@ -301,6 +301,54 @@ Exit codes: `0` filled, `1` usage (bad coordinate, bad block spec, a Y the
 format cannot address), `2` not a world, not a Bedrock world, or a subchunk
 the box touches is not stored, `4` store error. Success prints nothing.
 
+### `mcme chunk stats`
+
+What a box of a world is made of — the counts an agent plans an edit with,
+before it writes anything.
+
+```
+mcme chunk stats <world> <x1> <y1> <z1> <x2> <y2> <z2>
+                         [--dimension <name|number>]
+```
+
+```
+$ mcme chunk stats mybedrock 12 64 -30 30 70 -12
+     4913 minecraft:stone
+      120 minecraft:dirt
+       11 minecraft:oak_log{pillar_axis: "y"}
+```
+
+One line per distinct block, `<count> <spec>` (count in a nine-wide
+right-aligned column), most frequent first (ties by spec). The spec is the
+same text `chunk get` prints, so a line can be pasted back into `set` or
+`fill`.
+
+A subchunk the box touches that is not stored counts as its positions of
+`minecraft:air` — that is what the world is there, empty — and the count of
+such subchunks is reported (`mcme: chunk stats: N subchunks not stored,
+counted as air` on stderr, suppressed by `-q`). This is the one verb where
+missing storage is not exit 2: reading a hole is answerable, writing one is
+not.
+
+Only layer zero is counted — the layer `set`, `get` and `fill` act on.
+Waterlogging layers are not blocks and are not counted.
+
+Under `--json`:
+
+```json
+{"missing_subchunks": 1,
+ "blocks": [{"block": "minecraft:stone", "count": 4913},
+            {"block": "minecraft:air", "count": 4096}]}
+```
+
+`blocks` is sorted the same way as the text lines. Counts are exact while a
+count fits a 64-bit integer; a box that large cannot be counted in practice
+anyway.
+
+Exit codes: `0` counted, `1` usage (bad coordinate, a Y the format cannot
+address), `2` not a world or not a Bedrock world, `3` a stored payload is not
+the format mcme reads, `4` store error.
+
 ### `mcme db`
 
 Raw key/value access to a Bedrock store. This is the write path's CLI surface

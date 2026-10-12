@@ -9,7 +9,66 @@ Status vocabulary:
 
 ---
 
-## 2026-10-12 — A box at a time: `mcme chunk fill`
+## 2026-10-12 — What a box is made of: `mcme chunk stats`
+
+### Built
+
+- `mcme_bedrock_count_box()` (bedrock_write.c/h):
+  the tally of a box — layer zero, the layer the
+  editing verbs act on — one row per distinct block,
+  sorted most frequent first, ties by spec so two
+  runs over one world agree. A subchunk the box
+  touches that is not stored, is deleted, or holds
+  the all-air marker counts its positions as
+  `minecraft:air`; the not-stored and deleted ones
+  are also reported through `missing`. A payload
+  that does not decode fails the call: that is
+  world data mcme cannot read, not an absence.
+- `mcme_bedrock_block_spec()` renders a palette
+  entry as the spec text the CLI speaks — the name,
+  states in braces when it has any. `chunk get`
+  uses it now instead of its own copy, so get and
+  stats cannot drift apart.
+- `mcme chunk stats <world> <x1> <y1> <z1> <x2>
+  <y2> <z2> [--dimension ...]`: `<count> <spec>`
+  lines (nine-wide count column), most frequent
+  first; stderr `N subchunks not stored, counted as
+  air` unless `-q`. The one verb in the chunk family
+  where a hole is exit 0: reading a hole is
+  answerable — it is empty — writing one is not.
+  `--json` carries `missing_subchunks` and the
+  sorted `blocks` array, as wiki/cli.md documented
+  before the code existed.
+- The selftest counts the fixture's own indices by
+  hand over a 4x16x4 box and compares row for row,
+  then the hole (one missing, one air, volume 49),
+  a planted undecodable payload, a Y past the key's
+  byte, and the null arguments.
+- The cross-check counts the filled box as exactly
+  its eight tnt, tallies an eight-position box
+  against one `chunk get` per position, parses
+  `--json`, and confirms the deep-Y refusal.
+  Nineteen checks, all green.
+- Alignment debt repaid: the byte-column checker had
+  holes — it skipped string-continuation lines and
+  lost its paren stack inside multi-line comments —
+  so earlier commits carried misaligned continuation
+  lines it never saw. The checker now models both,
+  and every line it flags across main.c,
+  bedrock_write.c and selftest.c is reindented to
+  the rule: content column = the call's paren
+  column + 1.
+
+### Next
+
+An agent can ask what a box holds before it edits
+it, and get an answer in its own units — counts and
+specs. What is still missing is what the world
+looks like: the region inventory verb that says
+which chunks a world actually stores, or heightmap
+reading for terrain shape.
+
+---
 
 ### Built
 

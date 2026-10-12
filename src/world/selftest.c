@@ -479,9 +479,9 @@ static void test_bedrock_keys(void)
             0xfc,                     /* Y index -4 */
         };
         CHECK(mcme_bedrock_key_build(key, sizeof key, &n,
-                                         -1, 2, 0,
-                                         MCME_BEDROCK_TAG_SUBCHUNK,
-                                         true, -4));
+                                     -1, 2, 0,
+                                     MCME_BEDROCK_TAG_SUBCHUNK,
+                                     true, -4));
         CHECK(n == sizeof want);
         CHECK(memcmp(key, want, sizeof want) == 0);
         CHECK(mcme_bedrock_key_parse(key, n, &k));
@@ -494,18 +494,18 @@ static void test_bedrock_keys(void)
     {
         size_t n = 0;
         CHECK(mcme_bedrock_key_build(key, sizeof key, &n,
-                                         0, 0, 1,
-                                         MCME_BEDROCK_TAG_CHUNK_VERSION,
-                                         false, 0));
+                                     0, 0, 1,
+                                     MCME_BEDROCK_TAG_CHUNK_VERSION,
+                                     false, 0));
         CHECK(n == 13);
         CHECK(mcme_bedrock_key_parse(key, n, &k));
         CHECK(k.has_dimension && k.dimension == 1);
         CHECK(k.tag == MCME_BEDROCK_TAG_CHUNK_VERSION);
 
         CHECK(mcme_bedrock_key_build(key, sizeof key, &n,
-                                         0, 0, 0,
-                                         MCME_BEDROCK_TAG_CHUNK_VERSION,
-                                         false, 0));
+                                     0, 0, 0,
+                                     MCME_BEDROCK_TAG_CHUNK_VERSION,
+                                     false, 0));
         CHECK(n == 9);
         CHECK(mcme_bedrock_key_parse(key, n, &k));
         CHECK(!k.has_dimension);
@@ -519,23 +519,23 @@ static void test_bedrock_keys(void)
         uint8_t exact[10];
         size_t n = 0;
         CHECK(mcme_bedrock_key_build(exact, sizeof exact, &n,
-                                         0, 0, 0,
-                                         MCME_BEDROCK_TAG_SUBCHUNK,
-                                         true, 0));
+                                     0, 0, 0,
+                                     MCME_BEDROCK_TAG_SUBCHUNK,
+                                     true, 0));
         CHECK(n == sizeof exact);
 
         CHECK(!mcme_bedrock_key_build(key, sizeof key, &n,
-                                          0, 0, 0,
-                                          MCME_BEDROCK_TAG_CHUNK_VERSION,
-                                          true, 0));
+                                      0, 0, 0,
+                                      MCME_BEDROCK_TAG_CHUNK_VERSION,
+                                      true, 0));
         CHECK(!mcme_bedrock_key_build(key, 8, &n,
-                                          0, 0, 0,
-                                          MCME_BEDROCK_TAG_SUBCHUNK,
-                                          true, 0));
+                                      0, 0, 0,
+                                      MCME_BEDROCK_TAG_SUBCHUNK,
+                                      true, 0));
         CHECK(!mcme_bedrock_key_build(NULL, sizeof key, &n,
-                                          0, 0, 0,
-                                          MCME_BEDROCK_TAG_SUBCHUNK,
-                                          false, 0));
+                                      0, 0, 0,
+                                      MCME_BEDROCK_TAG_SUBCHUNK,
+                                      false, 0));
         CHECK(mcme_last_error()[0] != '\0');
     }
 }
@@ -709,7 +709,7 @@ static void test_bedrock_subchunks(void)
                         McmeBuffer got;
                         mcme_buffer_init(&got);
                         CHECK(mcme_nbt_write_snbt(
-                            sc.layers[layer].palette[n].root, &got, 0));
+                                                  sc.layers[layer].palette[n].root, &got, 0));
                         CHECK_MSG(got.len == strlen(want) &&
                                   memcmp(got.data, want, got.len) == 0,
                                   "%s layer %zu palette %u SNBT differs\n"
@@ -1195,8 +1195,8 @@ static bool docs_equal(const McmeNbtDoc *a, const McmeNbtDoc *b)
 /* Decodes the subchunk payload a fixture ships, for
    the expectations an edit is checked against. */
 static bool decode_fixture(const char *case_name,
-                               McmeArena *arena,
-                               McmeBedrockSubchunk *out)
+                           McmeArena *arena,
+                           McmeBedrockSubchunk *out)
 {
     char path[512];
     snprintf(path, sizeof path,
@@ -1205,7 +1205,7 @@ static bool decode_fixture(const char *case_name,
     size_t size = 0;
     if (!mcme_fs_read(path, &data, &size)) return false;
     bool ok = mcme_bedrock_subchunk_decode(out, arena,
-                                                      data, size);
+                                           data, size);
     free(data);
     return ok;
 }
@@ -1220,9 +1220,9 @@ static bool load_subchunk(McmeLevelDb *db, McmeArena *arena,
     uint8_t key[14];
     size_t key_len = 0;
     if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
-                                        cx, cz, dimension,
-                                        MCME_BEDROCK_TAG_SUBCHUNK,
-                                        true, cy)) {
+                                cx, cz, dimension,
+                                MCME_BEDROCK_TAG_SUBCHUNK,
+                                true, cy)) {
         return false;
     }
     bool deleted = false;
@@ -1234,7 +1234,7 @@ static bool load_subchunk(McmeLevelDb *db, McmeArena *arena,
         return false;
     }
     bool ok = mcme_bedrock_subchunk_decode(
-        out, arena, payload.data, payload.len);
+                                           out, arena, payload.data, payload.len);
     mcme_buffer_free(&payload);
     return ok;
 }
@@ -1248,9 +1248,9 @@ static bool raw_subchunk(McmeLevelDb *db, int32_t cx, int32_t cz,
     uint8_t key[14];
     size_t key_len = 0;
     if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
-                                        cx, cz, dimension,
-                                        MCME_BEDROCK_TAG_SUBCHUNK,
-                                        true, cy)) {
+                                cx, cz, dimension,
+                                MCME_BEDROCK_TAG_SUBCHUNK,
+                                true, cy)) {
         return false;
     }
     bool deleted = false;
@@ -1264,6 +1264,35 @@ static bool fresh_store_dir(char *tmp, size_t cap)
 {
     snprintf(tmp, cap, "/tmp/opencode/mcme_write_XXXXXX");
     return mkdtemp(tmp) != NULL;
+}
+
+/* The tally row whose spec is exactly these `block_len` bytes,
+   or -1. Specs are arena-rooted and not terminated. */
+static int tally_find(const McmeBlockCount *tally, size_t len,
+                      const char *block, size_t block_len)
+{
+    for (size_t i = 0; i < len; ++i) {
+        if (strncmp(tally[i].block, block, block_len) == 0
+                && tally[i].block[block_len] == '\0') {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* Sorted the way count_box promises: most frequent first, ties
+   by spec. */
+static int block_count_cmp_ok(const McmeBlockCount *tally, size_t len)
+{
+    for (size_t i = 1; i < len; ++i) {
+        if (tally[i - 1].count > tally[i].count) continue;
+        if (tally[i - 1].count == tally[i].count
+                && strcmp(tally[i - 1].block, tally[i].block) < 0) {
+            continue;
+        }
+        return 0;
+    }
+    return 1;
 }
 
 static void test_bedrock_write(void)
@@ -1297,7 +1326,7 @@ static void test_bedrock_write(void)
         CHECK(copy_store(src, dbdir));
         CHECK(decode_fixture("v8-bits4", arena, &a));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
-                                              NULL, &placed));
+                                       NULL, &placed));
 
         CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, &placed));
         CHECK(mcme_leveldb_open(&db, dbdir));
@@ -1308,12 +1337,12 @@ static void test_bedrock_write(void)
               == a.layers[0].palette_len + 1);
         for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
             CHECK_MSG(docs_equal(&b.layers[0].palette[j],
-                                     &a.layers[0].palette[j]),
+                                 &a.layers[0].palette[j]),
                       "palette entry %zu changed", j);
         }
         CHECK(docs_equal(
-            &b.layers[0].palette[a.layers[0].palette_len],
-            &placed));
+                         &b.layers[0].palette[a.layers[0].palette_len],
+                         &placed));
         CHECK(b.layers[0].indices[0] == a.layers[0].palette_len);
         for (size_t v = 1; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
             CHECK_MSG(b.layers[0].indices[v]
@@ -1357,14 +1386,14 @@ static void test_bedrock_write(void)
         size_t want = (a.layers[0].indices[u] + 1)
                       % a.layers[0].palette_len;
         CHECK(mcme_bedrock_set_block(dbdir, 1, 0, 0, 0,
-                                          &a.layers[0].palette[want]));
+                                     &a.layers[0].palette[want]));
         CHECK(mcme_leveldb_open(&db, dbdir));
         CHECK(load_subchunk(db, arena, 0, 0, 0, 0, &b));
 
         CHECK(b.layers[0].palette_len == a.layers[0].palette_len);
         for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
             CHECK(docs_equal(&b.layers[0].palette[j],
-                                 &a.layers[0].palette[j]));
+                             &a.layers[0].palette[j]));
         }
         CHECK(b.layers[0].indices[u] == want);
         for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
@@ -1388,8 +1417,8 @@ static void test_bedrock_write(void)
 
         size_t u = 2 * 256 + 4 * 16 + 3;   /* block (2, 3, 4) */
         CHECK(mcme_bedrock_set_block(
-            dbdir, 2, 3, 4, 0,
-            &a.layers[0].palette[a.layers[0].indices[u]]));
+                                     dbdir, 2, 3, 4, 0,
+                                     &a.layers[0].palette[a.layers[0].indices[u]]));
         CHECK(mcme_leveldb_open(&db, dbdir));
 
         McmeBuffer raw;
@@ -1419,7 +1448,7 @@ static void test_bedrock_write(void)
         CHECK(copy_store(src, dbdir));
         CHECK(decode_fixture("v8-waterlogged", arena, &a));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
-                                              NULL, &placed));
+                                       NULL, &placed));
 
         size_t u = 5 * 256 + 7 * 16 + 6;   /* block (5, 22, 7) */
         CHECK(mcme_bedrock_set_block(dbdir, 5, 22, 7, 0, &placed));
@@ -1431,11 +1460,11 @@ static void test_bedrock_write(void)
               == a.layers[0].palette_len + 1);
         for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
             CHECK(docs_equal(&b.layers[0].palette[j],
-                                 &a.layers[0].palette[j]));
+                             &a.layers[0].palette[j]));
         }
         CHECK(docs_equal(
-            &b.layers[0].palette[a.layers[0].palette_len],
-            &placed));
+                         &b.layers[0].palette[a.layers[0].palette_len],
+                         &placed));
         CHECK(b.layers[0].indices[u] == a.layers[0].palette_len);
         CHECK(b.layers[0].bits == 2);
 
@@ -1445,7 +1474,7 @@ static void test_bedrock_write(void)
         CHECK(fluid->palette_len == fluid_a->palette_len);
         for (size_t j = 0; j < fluid_a->palette_len; ++j) {
             CHECK(docs_equal(&fluid->palette[j],
-                                 &fluid_a->palette[j]));
+                             &fluid_a->palette[j]));
         }
         for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
             CHECK(fluid->indices[v] == fluid_a->indices[v]);
@@ -1464,7 +1493,7 @@ static void test_bedrock_write(void)
         CHECK(copy_store(src, dbdir));
         CHECK(decode_fixture("v8-bpb0", arena, &a));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
-                                              NULL, &placed));
+                                       NULL, &placed));
 
         size_t u = 15;                     /* block (0, -1, 0) */
         CHECK(mcme_bedrock_set_block(dbdir, 0, -1, 0, 0, &placed));
@@ -1474,7 +1503,7 @@ static void test_bedrock_write(void)
         CHECK(b.version == 8 && b.layer_count == 1);
         CHECK(b.layers[0].palette_len == 2);
         CHECK(docs_equal(&b.layers[0].palette[0],
-                             &a.layers[0].palette[0]));
+                         &a.layers[0].palette[0]));
         CHECK(docs_equal(&b.layers[0].palette[1], &placed));
         CHECK(b.layers[0].indices[u] == 1);
         for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
@@ -1495,7 +1524,7 @@ static void test_bedrock_write(void)
         CHECK(copy_store(src, dbdir));
         CHECK(decode_fixture("v9-cy4", arena, &a));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
-                                              NULL, &placed));
+                                       NULL, &placed));
 
         size_t u = 4;                      /* block (0, 68, 0) */
         CHECK(mcme_bedrock_set_block(dbdir, 0, 68, 0, 0, &placed));
@@ -1507,11 +1536,11 @@ static void test_bedrock_write(void)
               == a.layers[0].palette_len + 1);
         for (size_t j = 0; j < a.layers[0].palette_len; ++j) {
             CHECK(docs_equal(&b.layers[0].palette[j],
-                                 &a.layers[0].palette[j]));
+                             &a.layers[0].palette[j]));
         }
         CHECK(docs_equal(
-            &b.layers[0].palette[a.layers[0].palette_len],
-            &placed));
+                         &b.layers[0].palette[a.layers[0].palette_len],
+                         &placed));
         CHECK(b.layers[0].indices[u] == a.layers[0].palette_len);
         for (size_t v = 0; v < MCME_BEDROCK_SUBCHUNK_BLOCKS; ++v) {
             if (v == u) continue;
@@ -1532,7 +1561,7 @@ static void test_bedrock_write(void)
         CHECK(copy_store(src, dbdir));
         CHECK(decode_fixture("v8-bits1", arena, &a));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
-                                              NULL, &placed));
+                                       NULL, &placed));
 
         CHECK(mcme_bedrock_set_block(dbdir, 0, 0, 0, 1, &placed));
         CHECK(mcme_leveldb_open(&db, dbdir));
@@ -1542,8 +1571,8 @@ static void test_bedrock_write(void)
         CHECK(b.layers[0].palette_len
               == a.layers[0].palette_len + 1);
         CHECK(docs_equal(
-            &b.layers[0].palette[a.layers[0].palette_len],
-            &placed));
+                         &b.layers[0].palette[a.layers[0].palette_len],
+                         &placed));
         CHECK(b.layers[0].indices[0] == a.layers[0].palette_len);
         /* Three entries outgrow one bit. */
         CHECK(b.layers[0].bits == 2);
@@ -1561,18 +1590,18 @@ static void test_bedrock_write(void)
         CHECK(copy_store(src, dbdir));
         CHECK(decode_fixture("v8-bits4", arena, &a));
         CHECK(mcme_bedrock_block_entry(arena, "mcme:placed",
-                                              NULL, &placed));
+                                       NULL, &placed));
 
         mcme_clear_error();
         CHECK(!mcme_bedrock_set_block(dbdir, 0, 0, 3 * 16, 0,
-                                          &placed));
+                                      &placed));
         CHECK(mcme_last_error()[0] != '\0');
         CHECK(!mcme_bedrock_set_block(dbdir, 32, 0, 0, 0,
-                                          &placed));
+                                      &placed));
         CHECK(mcme_last_error()[0] != '\0');
         /* Subchunk Y past the key's signed byte. */
         CHECK(!mcme_bedrock_set_block(dbdir, 0, 2048, 0, 0,
-                                          &placed));
+                                      &placed));
         CHECK(mcme_last_error()[0] != '\0');
         CHECK(!mcme_bedrock_set_block(NULL, 0, 0, 0, 0, &placed));
         CHECK(!mcme_bedrock_set_block(dbdir, 0, 0, 0, 0, NULL));
@@ -1772,6 +1801,139 @@ static void test_bedrock_write(void)
         CHECK(!mcme_bedrock_fill(db, NULL, 0, &placed));
         CHECK(!mcme_bedrock_fill(db, &deep, 0, NULL));
         CHECK(mcme_last_error()[0] != '\0');
+        mcme_leveldb_close(db);
+        db = NULL;
+
+        remove_store(dbdir);
+        rmdir(tmp);
+    }
+
+    /* --- stats counts what a box is made of: the tally of a
+       subchunk's own indices, air for a subchunk that is not
+       stored, refusal for one that does not decode. --- */
+    {
+        CHECK(fresh_store_dir(tmp, sizeof tmp));
+        snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+        CHECK(copy_store(src, dbdir));
+        CHECK(decode_fixture("v8-bits4", arena, &a));
+        CHECK(mcme_leveldb_open_rw(&db, dbdir));
+
+        /* A payload that does not decode must fail the count.
+           Plant it at cy5 before any counting happens. */
+        uint8_t junk[8] = {8, 250, 'x', 'x', 'x', 'x', 'x', 'x'};
+        uint8_t skey[14];
+        size_t skey_len = 0;
+        CHECK(mcme_bedrock_key_build(skey, sizeof skey, &skey_len,
+                                     0, 0, 0,
+                                     MCME_BEDROCK_TAG_SUBCHUNK,
+                                     true, 5));
+        CHECK(mcme_leveldb_put(db, skey, skey_len, junk,
+                               sizeof junk));
+
+        /* The tally of a box inside one subchunk, against the
+           fixture's own indices counted by hand. */
+        McmeBox box = {0, 0, 0, 3, 15, 3};   /* 4x16x4 of cy0 */
+        McmeBlockCount *tally = NULL;
+        size_t tally_len = 0;
+        int64_t missing = -1;
+        CHECK(mcme_bedrock_count_box(db, &box, 0, arena, &tally,
+                                     &tally_len, &missing));
+        CHECK_MSG(missing == 0, "stats: nothing missing, got %lld",
+                  (long long)missing);
+        CHECK(tally != NULL && tally_len > 0);
+        CHECK(block_count_cmp_ok(tally, tally_len));
+
+        size_t pal_len = a.layers[0].palette_len;
+        int64_t *want = mcme_arena_alloc(
+                                         arena, pal_len * sizeof *want);
+        CHECK(want != NULL);
+        memset(want, 0, pal_len * sizeof *want);
+        for (int lx = 0; lx <= 3; ++lx) {
+            for (int lz = 0; lz <= 3; ++lz) {
+                for (int ly = 0; ly <= 15; ++ly) {
+                    size_t u = (size_t)lx * 256
+                             + (size_t)lz * 16 + (size_t)ly;
+                    want[a.layers[0].indices[u]] += 1;
+                }
+            }
+        }
+        int64_t sum = 0;
+        for (size_t i = 0; i < tally_len; ++i) {
+            sum += tally[i].count;
+        }
+        CHECK_MSG(sum == 256, "stats: box volume, got %lld",
+                  (long long)sum);
+
+        size_t matched = 0;
+        for (size_t j = 0; j < pal_len; ++j) {
+            if (want[j] == 0) continue;
+            McmeBuffer spec;
+            mcme_buffer_init(&spec);
+            CHECK(mcme_bedrock_block_spec(a.layers[0].palette[j].root, &spec));
+            int at = tally_find(tally, tally_len,
+                                (const char *)spec.data, spec.len);
+            CHECK(at >= 0);
+            CHECK(tally[at].count == want[j]);
+            matched += 1;
+            mcme_buffer_free(&spec);
+        }
+        CHECK_MSG(matched == tally_len,
+                     "stats: every row accounted, %zu of %zu",
+                  matched, tally_len);
+
+        /* The fixture's own pattern makes stone 16 of the 256. */
+        int stone = tally_find(tally, tally_len,
+                               "minecraft:stone", 15);
+        CHECK(stone >= 0);
+        CHECK_MSG(tally[stone].count == 16,
+                     "stats: stone count, got %lld",
+                  (long long)tally[stone].count);
+
+        /* A box whose subchunk is not stored counts as air and
+           is reported, but is not an error. */
+        McmeBox hole = {0, 0, 0, 0, 48, 0};  /* y48 in cy3 */
+        tally = NULL;
+        tally_len = 0;
+        missing = -1;
+        CHECK(mcme_bedrock_count_box(db, &hole, 0, arena, &tally,
+                                     &tally_len, &missing));
+        CHECK_MSG(missing == 1, "stats: one missing, got %lld",
+                  (long long)missing);
+        CHECK(block_count_cmp_ok(tally, tally_len));
+        int air = tally_find(tally, tally_len, "minecraft:air", 13);
+        CHECK(air >= 0);
+        CHECK_MSG(tally[air].count == 1, "stats: air count, got %lld",
+                  (long long)tally[air].count);
+        sum = 0;
+        for (size_t i = 0; i < tally_len; ++i) {
+            sum += tally[i].count;
+        }
+        CHECK_MSG(sum == 49, "stats: hole volume, got %lld",
+                  (long long)sum);
+
+        /* Undecodable world data fails; so do null arguments and
+           a Y the key cannot name. */
+        McmeBox bad = {0, 80, 0, 0, 80, 0};  /* cy5: junk */
+        CHECK(!mcme_bedrock_count_box(db, &bad, 0, arena, &tally,
+                                      &tally_len, &missing));
+        CHECK(mcme_last_error()[0] != '\0');
+        CHECK(!mcme_bedrock_count_box(NULL, &hole, 0, arena,
+                                      &tally, &tally_len, &missing));
+        CHECK(!mcme_bedrock_count_box(db, &hole, 0, NULL,
+                                      &tally, &tally_len, &missing));
+        CHECK(!mcme_bedrock_count_box(db, &hole, 0, arena,
+                                      NULL, &tally_len, &missing));
+        CHECK(!mcme_bedrock_count_box(db, &hole, 0, arena,
+                                      &tally, &tally_len, NULL));
+        McmeBox deep = {0, 3000, 0, 0, 3200, 0};
+        CHECK(!mcme_bedrock_count_box(db, &deep, 0, arena, &tally,
+                                      &tally_len, &missing));
+        McmeBuffer nope;
+        mcme_buffer_init(&nope);
+        CHECK(!mcme_bedrock_block_spec(NULL, &nope));
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_buffer_free(&nope);
+
         mcme_leveldb_close(db);
         db = NULL;
 

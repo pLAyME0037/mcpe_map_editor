@@ -82,6 +82,11 @@ static void print_usage(FILE *out)
         "                    order). Every subchunk it touches must\n"
         "                    exist or nothing is written (exit 2).\n"
         "                    One payload write per subchunk.\n"
+        "  chunk stats <world> <x1> <y1> <z1> <x2> <y2> <z2>\n"
+        "                    Count what a box is made of: 'count\n"
+        "                    spec' lines, most frequent first.\n"
+        "                    Unstored subchunks count as air\n"
+        "                    (exit 0, noted on stderr).\n"
         "  db <op> <world> <key-hex> [value-hex]\n"
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
@@ -918,7 +923,7 @@ static int parse_block_spec(const char *spec, McmeArena *arena,
         }
         McmeTag *tag = NULL;
         if (!mcme_nbt_parse_snbt(arena, open,
-                                  spec_len - name_len, &tag)) {
+                                 spec_len - name_len, &tag)) {
             char why[256];
             snprintf(why, sizeof why, "%s", mcme_last_error());
             mcme_set_error("chunk: states of block '%s' do not "
@@ -1010,6 +1015,23 @@ static bool extract_dimension(int *argc, char **argv, int32_t *dim)
     return true;
 }
 
+/* A Y the key cannot name is a position the world cannot hold:
+   refuse as a coordinate problem, not a missing one. */
+static bool box_y_range_fits(const long *c)
+{
+    long ay1 = c[1] < c[4] ? c[1] : c[4];
+    long ay2 = c[1] < c[4] ? c[4] : c[1];
+    long cy1 = ay1 / 16, cy2 = ay2 / 16;
+    if (ay1 % 16 != 0 && ay1 < 0) cy1 -= 1;
+    if (ay2 % 16 != 0 && ay2 < 0) cy2 -= 1;
+    if (cy1 < INT8_MIN || cy2 > INT8_MAX) {
+        mcme_set_error("chunk: the box spans subchunk Y %ld to %ld, "
+                       "beyond the key's signed byte", cy1, cy2);
+        return false;
+    }
+    return true;
+}
+
 static int cmd_chunk_set(int argc, char **argv)
 {
     int32_t dimension = 0;
@@ -1047,7 +1069,7 @@ static int cmd_chunk_set(int argc, char **argv)
     char name[256];
     const McmeTag *states = NULL;
     int rc = parse_block_spec(argv[4], arena, name, sizeof name,
-                                   &states);
+                              &states);
     if (rc == MCME_OK) {
         /* A missing subchunk is "not found", not "i/o": the
            edit refuses to create one, so check before the
@@ -1084,9 +1106,9 @@ static int cmd_chunk_set(int argc, char **argv)
         if (!mcme_bedrock_block_entry(arena, name, states, &entry)) {
             rc = MCME_EXIT_INTERNAL;
         } else if (!mcme_bedrock_set_block(info.db_path,
-                                             (int32_t)x, (int32_t)y,
-                                             (int32_t)z, dimension,
-                                             &entry)) {
+                                           (int32_t)x, (int32_t)y,
+                                           (int32_t)z, dimension,
+                                           &entry)) {
             char why[256];
             snprintf(why, sizeof why, "%s", mcme_last_error());
             mcme_set_error("chunk: %s", why);
@@ -1193,7 +1215,7 @@ static int cmd_chunk_get(int argc, char **argv)
     if (rc == MCME_OK) {
         McmeBedrockSubchunk sc;
         if (!mcme_bedrock_subchunk_decode(&sc, arena,
-                                      payload.data, payload.len)) {
+                                          payload.data, payload.len)) {
             char why[256];
             snprintf(why, sizeof why, "%s", mcme_last_error());
             mcme_set_error("chunk: subchunk of block (%ld, %ld, %ld) "
@@ -1217,38 +1239,18 @@ static int cmd_chunk_get(int argc, char **argv)
                 mcme_set_error("chunk: the index at block (%ld, %ld, "
                                "%ld) is %u, outside its palette of "
                                "%zu entries", x, y, z, idx,
-                                layer->palette_len);
+                               layer->palette_len);
                 rc = MCME_EXIT_BAD_FORMAT;
             } else {
                 const McmeTag *entry = layer->palette[idx].root;
-                const McmeTag *name = mcme_nbt_path(entry, "name");
-                if (name == NULL || name->type != MCME_TAG_String) {
-                    mcme_set_error("chunk: the palette entry at block "
-                                   "(%ld, %ld, %ld) has no name",
-                                   x, y, z);
+                if (!mcme_bedrock_block_spec(entry, &spec)) {
+                    char why[256];
+                    snprintf(why, sizeof why, "%s",
+                             mcme_last_error());
+                    mcme_set_error("chunk: the palette entry at "
+                                   "block (%ld, %ld, %ld): %s",
+                                   x, y, z, why);
                     rc = MCME_EXIT_BAD_FORMAT;
-                } else if (!mcme_buffer_append(&spec, name->string.data,
-                                       name->string.len)) {
-                    rc = MCME_EXIT_INTERNAL;
-                } else {
-                    const McmeTag *states =
-                        mcme_nbt_path(entry, "states");
-                    if (states != NULL
-                            && states->type == MCME_TAG_Compound
-                            && states->compound.len > 0) {
-                        McmeBuffer snbt;
-                        mcme_buffer_init(&snbt);
-                        if (!mcme_nbt_write_snbt(states, &snbt, 0)) {
-                            mcme_buffer_free(&snbt);
-                            rc = MCME_EXIT_INTERNAL;
-                        } else {
-                            bool ok =
-                                mcme_buffer_append(&spec, snbt.data,
-                                               snbt.len);
-                            mcme_buffer_free(&snbt);
-                            if (!ok) rc = MCME_EXIT_INTERNAL;
-                        }
-                    }
                 }
             }
         }
@@ -1326,19 +1328,7 @@ static int cmd_chunk_fill(int argc, char **argv)
     for (int i = 0; i < 6; ++i) {
         if (!parse_coord(argv[1 + i], &c[i])) return MCME_EXIT_USAGE;
     }
-
-    /* A Y the key cannot name is a position the world cannot
-       hold: refuse now, so every later failure is "not found". */
-    long ay1 = c[1] < c[4] ? c[1] : c[4];
-    long ay2 = c[1] < c[4] ? c[4] : c[1];
-    long cy1 = ay1 / 16, cy2 = ay2 / 16;
-    if (ay1 % 16 != 0 && ay1 < 0) cy1 -= 1;
-    if (ay2 % 16 != 0 && ay2 < 0) cy2 -= 1;
-    if (cy1 < INT8_MIN || cy2 > INT8_MAX) {
-        mcme_set_error("chunk: the box spans subchunk Y %ld to %ld, "
-                       "beyond the key's signed byte", cy1, cy2);
-        return MCME_EXIT_USAGE;
-    }
+    if (!box_y_range_fits(c)) return MCME_EXIT_USAGE;
 
     McmeWorldInfo info;
     if (!mcme_world_probe(&info, path)) {
@@ -1383,6 +1373,123 @@ static int cmd_chunk_fill(int argc, char **argv)
                 rc = MCME_EXIT_IO;
             }
             mcme_leveldb_close(db);
+        }
+    }
+
+    mcme_arena_free(arena);
+    mcme_world_info_free(&info);
+    return rc;
+}
+
+/*
+ * `mcme chunk stats <world> <x1> <y1> <z1> <x2> <y2> <z2>` says
+ * what a box is made of: one line per distinct block, most
+ * frequent first, in the same spec text the other chunk verbs
+ * speak — a line can be pasted back into `set` or `fill`.
+ *
+ * A subchunk the box touches that is not stored counts its
+ * positions as minecraft:air and is reported on stderr:
+ * reading a hole is answerable — it is empty — where writing
+ * one is not. That is why this verb, alone in the chunk family,
+ * does not exit 2 for absence. Only layer zero is counted, the
+ * layer the editing verbs act on.
+ *
+ * Absence is data here; what fails is world data mcme cannot
+ * read (exit 3) or the store itself (exit 4).
+ */
+static int cmd_chunk_stats(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension(&argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 7) {
+        mcme_set_error("chunk: usage: chunk stats <world> <x1> <y1> "
+                       "<z1> <x2> <y2> <z2> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long c[6];
+    for (int i = 0; i < 6; ++i) {
+        if (!parse_coord(argv[1 + i], &c[i])) return MCME_EXIT_USAGE;
+    }
+    if (!box_y_range_fits(c)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
+        mcme_set_error("chunk: '%s' is not a Bedrock world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (arena == NULL) {
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    int rc = MCME_OK;
+    McmeBlockCount *tally = NULL;
+    size_t tally_len = 0;
+    int64_t missing = 0;
+    McmeBox box = { (int32_t)c[0], (int32_t)c[1], (int32_t)c[2],
+                    (int32_t)c[3], (int32_t)c[4], (int32_t)c[5] };
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, info.db_path)) {
+        rc = MCME_EXIT_IO;
+    } else {
+        bool counted = mcme_bedrock_count_box(db, &box, dimension,
+                                              arena, &tally,
+                                              &tally_len, &missing);
+        mcme_leveldb_close(db);
+        if (!counted) {
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk: %s", why);
+            rc = MCME_EXIT_BAD_FORMAT;
+        }
+    }
+
+    if (rc == MCME_OK) {
+        if (missing > 0 && !g_opts.quiet) {
+            fprintf(stderr,
+                    "mcme: chunk stats: %lld subchunk%s not stored, "
+                    "counted as air\n",
+                    (long long)missing, missing == 1 ? "" : "s");
+        }
+        if (g_opts.json) {
+            cJSON *root = cJSON_CreateObject();
+            cJSON_AddNumberToObject(root, "missing_subchunks",
+                                    (double)missing);
+            cJSON *blocks = cJSON_CreateArray();
+            for (size_t i = 0; i < tally_len; ++i) {
+                cJSON *row = cJSON_CreateObject();
+                cJSON_AddStringToObject(row, "block",
+                                        tally[i].block);
+                cJSON_AddNumberToObject(row, "count",
+                                        (double)tally[i].count);
+                cJSON_AddItemToArray(blocks, row);
+            }
+            cJSON_AddItemToObject(root, "blocks", blocks);
+            char *text = cJSON_PrintUnformatted(root);
+            if (text == NULL) {
+                mcme_set_error("chunk: out of memory");
+                rc = MCME_EXIT_INTERNAL;
+            } else {
+                printf("%s\n", text);
+                cJSON_free(text);
+            }
+            cJSON_Delete(root);
+        } else {
+            for (size_t i = 0; i < tally_len; ++i) {
+                printf("%9lld %s\n", (long long)tally[i].count,
+                       tally[i].block);
+            }
         }
     }
 
@@ -1652,7 +1759,7 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "
-                           "(expected set, get or fill)");
+                           "(expected set, get, fill or stats)");
             return MCME_EXIT_USAGE;
         }
         if (strcmp(args[0], "set") == 0) {
@@ -1664,8 +1771,11 @@ static int dispatch(int argc, char **argv)
         if (strcmp(args[0], "fill") == 0) {
             return cmd_chunk_fill(rest - 1, args + 1);
         }
+        if (strcmp(args[0], "stats") == 0) {
+            return cmd_chunk_stats(rest - 1, args + 1);
+        }
         mcme_set_error("chunk: unknown subcommand '%s' "
-                       "(expected set, get or fill)", args[0]);
+                       "(expected set, get, fill or stats)", args[0]);
         return MCME_EXIT_USAGE;
     }
     if (strcmp(cmd, "db") == 0)      return cmd_db(rest, args);

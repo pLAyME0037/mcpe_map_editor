@@ -5,6 +5,7 @@
 #include "mcme/leveldb.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The version the reference assigns a block that
@@ -210,8 +211,8 @@ bool mcme_bedrock_set_block(const char *db_dir,
     }
 
     if (!mcme_bedrock_subchunk_set(&sc, arena,
-                                  mod16(x), mod16(y),
-                                  mod16(z), block)) {
+                                   mod16(x), mod16(y),
+                                   mod16(z), block)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
         mcme_set_error("set block: block (%d, %d, %d): %s",
@@ -417,5 +418,235 @@ bool mcme_bedrock_fill(McmeLevelDb *db, const McmeBox *box,
             }
         }
     }
+    return true;
+}
+
+bool mcme_bedrock_block_spec(const McmeTag *entry, McmeBuffer *out)
+{
+    if (entry == NULL || out == NULL) {
+        mcme_set_error("block spec: null argument");
+        return false;
+    }
+    const McmeTag *name = mcme_nbt_path(entry, "name");
+    if (name == NULL || name->type != MCME_TAG_String) {
+        mcme_set_error("block spec: the palette entry has no name");
+        return false;
+    }
+    if (!mcme_buffer_append(out, name->string.data, name->string.len)) {
+        return false;
+    }
+    const McmeTag *states = mcme_nbt_path(entry, "states");
+    if (states != NULL && states->type == MCME_TAG_Compound
+            && states->compound.len > 0) {
+        return mcme_nbt_write_snbt(states, out, 0);
+    }
+    return true;
+}
+
+/* Adds `count` to the tally row for `block`, appending a row when
+   the block is new. The array roots in `arena` and grows only by
+   copying: the number of distinct blocks a world holds is small
+   compared to the number of positions. */
+static bool tally_add(McmeArena *arena, McmeBlockCount **tally,
+                      size_t *len, size_t *cap,
+                      const char *block, int64_t count)
+{
+    for (size_t i = 0; i < *len; ++i) {
+        if (strcmp((*tally)[i].block, block) == 0) {
+            (*tally)[i].count += count;
+            return true;
+        }
+    }
+    if (*len == *cap) {
+        size_t new_cap = *cap == 0 ? 16 : *cap * 2;
+        McmeBlockCount *grown =
+            mcme_arena_alloc(arena, new_cap * sizeof *grown);
+        if (grown == NULL) return false;
+        if (*tally != NULL) {
+            memcpy(grown, *tally, *len * sizeof *grown);
+        }
+        *tally = grown;
+        *cap = new_cap;
+    }
+    (*tally)[*len].block = block;
+    (*tally)[*len].count = count;
+    *len += 1;
+    return true;
+}
+
+/* Most frequent first; ties by spec, so the order is total and
+   two runs over one world agree. */
+static int count_cmp(const void *pa, const void *pb)
+{
+    const McmeBlockCount *a = pa;
+    const McmeBlockCount *b = pb;
+    if (a->count != b->count) {
+        return a->count > b->count ? -1 : 1;
+    }
+    return strcmp(a->block, b->block);
+}
+
+bool mcme_bedrock_count_box(McmeLevelDb *db, const McmeBox *box,
+                            int32_t dimension, McmeArena *arena,
+                            McmeBlockCount **out, size_t *out_len,
+                            int64_t *missing)
+{
+    if (db == NULL || box == NULL || arena == NULL || out == NULL
+            || out_len == NULL || missing == NULL) {
+        mcme_set_error("count box: null argument");
+        return false;
+    }
+    *out = NULL;
+    *out_len = 0;
+    *missing = 0;
+
+    int32_t x1 = i32_min(box->x1, box->x2);
+    int32_t x2 = i32_max(box->x1, box->x2);
+    int32_t y1 = i32_min(box->y1, box->y2);
+    int32_t y2 = i32_max(box->y1, box->y2);
+    int32_t z1 = i32_min(box->z1, box->z2);
+    int32_t z2 = i32_max(box->z1, box->z2);
+    int32_t cx1, cy1, cz1, cx2, cy2, cz2;
+    box_subchunk_range(box, &cx1, &cy1, &cz1, &cx2, &cy2, &cz2);
+    if (cy1 < INT8_MIN || cy2 > INT8_MAX) {
+        mcme_set_error("count box: the box spans subchunk Y %d to "
+                       "%d, beyond the key's signed byte",
+                       (int)cy1, (int)cy2);
+        return false;
+    }
+
+    size_t tally_len = 0, tally_cap = 0;
+    McmeBlockCount *tally = NULL;   /* arena-rooted */
+    bool ok = true;
+
+    for (int32_t cy = cy1; ok && cy <= cy2; ++cy) {
+        for (int32_t cz = cz1; ok && cz <= cz2; ++cz) {
+            for (int32_t cx = cx1; ok && cx <= cx2; ++cx) {
+                /* The box intersected with this subchunk. */
+                int32_t lx1 = i32_max(0, x1 - cx * 16);
+                int32_t lx2 = i32_min(15, x2 - cx * 16);
+                int32_t ly1 = i32_max(0, y1 - cy * 16);
+                int32_t ly2 = i32_min(15, y2 - cy * 16);
+                int32_t lz1 = i32_max(0, z1 - cz * 16);
+                int32_t lz2 = i32_min(15, z2 - cz * 16);
+                int64_t positions = (int64_t)(lx2 - lx1 + 1)
+                                  * (ly2 - ly1 + 1)
+                                  * (lz2 - lz1 + 1);
+
+                uint8_t key[14];
+                size_t key_len = 0;
+                if (!mcme_bedrock_key_build(key, sizeof key, &key_len,
+                                            cx, cz, dimension,
+                                            MCME_BEDROCK_TAG_SUBCHUNK,
+                                            true, (int8_t)cy)) {
+                    ok = false;
+                    break;
+                }
+
+                McmeBuffer payload;
+                mcme_buffer_init(&payload);
+                bool deleted = false;
+                bool got = mcme_leveldb_get(db, key, key_len, &payload,
+                                            &deleted);
+                if (!got || deleted) {
+                    /* Absent, or a tombstone: empty, and the
+                       caller is told how much of the box that
+                       was. */
+                    mcme_buffer_free(&payload);
+                    *missing += 1;
+                    ok = tally_add(arena, &tally, &tally_len,
+                                   &tally_cap, "minecraft:air",
+                                   positions);
+                    continue;
+                }
+
+                McmeArena *sub = mcme_arena_new();
+                McmeBedrockSubchunk sc;
+                bool dec = sub != NULL
+                        && mcme_bedrock_subchunk_decode(&sc, sub,
+                                                        payload.data,
+                                                        payload.len);
+                mcme_buffer_free(&payload);
+                if (!dec) {
+                    char why[256];
+                    snprintf(why, sizeof why, "%s", mcme_last_error());
+                    mcme_set_error("count box: subchunk (%d, %d, %d) "
+                                   "does not decode: %s", (int)cx,
+                                   (int)cz, (int)cy, why);
+                    ok = false;
+                } else if (sc.layer_count == 0) {
+                    /* The all-air marker: stored, empty. */
+                    ok = tally_add(arena, &tally, &tally_len,
+                                   &tally_cap, "minecraft:air",
+                                   positions);
+                } else {
+                    const McmeBedrockLayer *layer = &sc.layers[0];
+                    size_t counts_bytes =
+                        layer->palette_len * sizeof(int64_t);
+                    int64_t *counts =
+                        mcme_arena_alloc(sub, counts_bytes);
+                    ok = counts != NULL;
+                    if (ok) {
+                        memset(counts, 0, counts_bytes);
+                        for (int32_t ly = ly1; ok && ly <= ly2; ++ly) {
+                            for (int32_t lz = lz1;
+                                 ok && lz <= lz2; ++lz) {
+                                for (int32_t lx = lx1;
+                                     ok && lx <= lx2; ++lx) {
+                                    size_t u = (size_t)lx * 256
+                                        + (size_t)lz * 16
+                                        + (size_t)ly;
+                                    uint16_t idx = layer->indices[u];
+                                    if (idx >= layer->palette_len) {
+                                        int bx = (int)(cx * 16 + lx);
+                                        int by = (int)(cy * 16 + ly);
+                                        int bz = (int)(cz * 16 + lz);
+                                        mcme_set_error("count box: the "
+                                                       "index at block "
+                                                       "(%d, %d, %d) is "
+                                                       "%u, outside its "
+                                                       "palette of %zu "
+                                                       "entries", bx, by,
+                                                       bz, idx,
+                                                       layer->palette_len);
+                                        ok = false;
+                                        break;
+                                    }
+                                    counts[idx] += 1;
+                                }
+                            }
+                        }
+                    }
+                    for (size_t j = 0;
+                         ok && j < layer->palette_len; ++j) {
+                        if (counts[j] == 0) continue;
+                        const McmeNbtDoc *pal = &layer->palette[j];
+                        McmeBuffer spec;
+                        mcme_buffer_init(&spec);
+                        ok = mcme_bedrock_block_spec(pal->root, &spec);
+                        if (ok) {
+                            char *text = mcme_arena_alloc(arena,
+                                                          spec.len + 1);
+                            ok = text != NULL;
+                            if (ok) {
+                                memcpy(text, spec.data, spec.len);
+                                text[spec.len] = '\0';
+                                ok = tally_add(arena, &tally,
+                                               &tally_len, &tally_cap,
+                                               text, counts[j]);
+                            }
+                        }
+                        mcme_buffer_free(&spec);
+                    }
+                }
+                if (sub != NULL) mcme_arena_free(sub);
+            }
+        }
+    }
+    if (!ok) return false;
+
+    qsort(tally, tally_len, sizeof *tally, count_cmp);
+    *out = tally;
+    *out_len = tally_len;
     return true;
 }

@@ -131,4 +131,47 @@ bool mcme_bedrock_fill(McmeLevelDb *db, const McmeBox *box,
                        int32_t dimension,
                        const McmeNbtDoc *entry);
 
+/*
+ * Renders a palette entry as the block spec the CLI speaks: the
+ * name, with states in braces when the entry has any — the text
+ * `chunk get` prints and `chunk set` accepts. The entry is the
+ * compound a palette holds (name, states, version).
+ *
+ * Appends to `out`, which may already hold bytes. Returns false
+ * with mcme_last_error() when the entry is not a compound with a
+ * name.
+ */
+bool mcme_bedrock_block_spec(const McmeTag *entry, McmeBuffer *out);
+
+/*
+ * One row of a box tally: a block, and how many of the box's
+ * positions hold it. `block` is a spec (mcme_bedrock_block_spec)
+ * — arena-rooted, or the literal "minecraft:air".
+ */
+typedef struct {
+    const char *block;
+    int64_t     count;
+} McmeBlockCount;
+
+/*
+ * Counts what a box is made of — layer zero, the layer the
+ * editing verbs act on — into a tally sorted by count (most
+ * first), ties by spec.
+ *
+ * A subchunk the box touches that is not stored, is deleted, or
+ * is stored as the all-air marker counts its positions of the
+ * box as `minecraft:air`; the not-stored and deleted ones are
+ * reported through `missing` as well. Reading a hole is
+ * answerable — it is empty — where writing one is not.
+ *
+ * The tally and the spec strings root in `arena` and must not
+ * outlive it. A payload that does not decode, or an index
+ * outside its palette, fails the call: that is world data mcme
+ * cannot read, not an absence.
+ */
+bool mcme_bedrock_count_box(McmeLevelDb *db, const McmeBox *box,
+                            int32_t dimension, McmeArena *arena,
+                            McmeBlockCount **out, size_t *out_len,
+                            int64_t *missing);
+
 #endif /* MCME_BEDROCK_WRITE_H */

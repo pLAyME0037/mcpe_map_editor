@@ -32,6 +32,12 @@ path that reads worlds Minecraft loads — and asserts:
     the palette entry instead of appending, leaves the
     subchunk the box does not reach byte-identical, and a box
     with a missing subchunk refuses with exit 2
+  * `chunk stats` counts a box: the filled box is exactly its
+    eight tnt, an unstored subchunk counts as air with exit 0
+    and a stderr note, the tally agrees with one `chunk get`
+    per position, `--json` carries `missing_subchunks` and the
+    sorted `blocks` array, and a Y past the key's byte is a
+    coordinate error
 
 Direction is deliberate: mcme writes, the reference reads — the
 store layer's tests already run it the other way round.
@@ -368,6 +374,82 @@ def main() -> int:
     if rc != 2:
         raise AssertionError(f"fill missing subchunk: exit {rc}: {err}")
     print("  ok fill with a missing subchunk exits 2")
+
+    # --- stats counts what a box is made of, in the spec text
+    #     the other verbs speak. The filled box is one block. ---
+    rc, out, err = run_cli("chunk", "stats", world, 0, 0, 0, 1, 1, 1)
+    if rc != 0:
+        raise AssertionError(f"stats: exit {rc}: {err}")
+    if out.splitlines() != ["8 minecraft:tnt"]:   # run_cli strips
+        raise AssertionError(f"stats of the filled box: {out!r}")
+    if err:
+        raise AssertionError(f"stats of a stored box noted: {err!r}")
+    print("  ok stats counts the filled box exactly")
+
+    # --- a box with a missing subchunk counts it as air, exits
+    #     0 (reading a hole is answerable), and says so. ---
+    rc, out, err = run_cli("chunk", "stats", world, 0, 0, 0, 0, 48, 0)
+    if rc != 0:
+        raise AssertionError(f"stats hole: exit {rc}: {err}")
+    rows = []
+    for line in out.splitlines():
+        count_s, spec = line.split(None, 1)
+        rows.append((int(count_s), spec))
+    if sum(c for c, _ in rows) != 49:
+        raise AssertionError(f"stats hole total: {rows!r}")
+    if [c for c, s in rows if s == "minecraft:air"] != [1]:
+        raise AssertionError(f"stats hole air: {rows!r}")
+    counts = [c for c, _ in rows]
+    if counts != sorted(counts, reverse=True):
+        raise AssertionError(f"stats not sorted: {rows!r}")
+    if "1 subchunk not stored, counted as air" not in err:
+        raise AssertionError(f"stats hole stderr: {err!r}")
+    print("  ok stats counts an unstored subchunk as air")
+
+    # --- the same verdict by hand: one chunk get per position
+    #     of the small box, tallied. ---
+    per_position = {}
+    for x in range(0, 2):
+        for y in range(0, 2):
+            for z in range(0, 2):
+                rc, spec, err = run_get(x, y, z)
+                if rc != 0:
+                    raise AssertionError(
+                        f"get for stats: exit {rc}: {err}")
+                per_position[spec] = per_position.get(spec, 0) + 1
+    rc, out, err = run_cli("chunk", "stats", world, 0, 0, 0, 1, 1, 1)
+    if rc != 0:
+        raise AssertionError(f"stats re-run: exit {rc}: {err}")
+    got = {}
+    for line in out.splitlines():
+        count_s, spec = line.split(None, 1)
+        got[spec] = int(count_s)
+    if got != per_position:
+        raise AssertionError(f"stats vs get: {got} != {per_position}")
+    print("  ok stats agrees with chunk get, position by position")
+
+    # --- --json: missing_subchunks and the sorted blocks
+    #     array, exactly as wiki/cli.md documents. ---
+    rc, out, err = run_cli("--json", "chunk", "stats", world,
+                           0, 0, 0, 0, 48, 0)
+    if rc != 0:
+        raise AssertionError(f"stats --json: exit {rc}: {err}")
+    doc = json.loads(out)
+    if doc["missing_subchunks"] != 1:
+        raise AssertionError(f"stats --json missing: {doc!r}")
+    jcounts = [row["count"] for row in doc["blocks"]]
+    if jcounts != sorted(jcounts, reverse=True):
+        raise AssertionError(f"stats --json unsorted: {doc!r}")
+    if any(not isinstance(row["block"], str) for row in doc["blocks"]):
+        raise AssertionError(f"stats --json block field: {doc!r}")
+    print("  ok stats --json shape")
+
+    # --- a Y the key cannot name is a coordinate problem: the
+    #     box is refused before the store opens (exit 1). ---
+    rc, _, err = run_cli("chunk", "stats", world, 0, 0, 0, 0, 3000, 0)
+    if rc != 1:
+        raise AssertionError(f"stats deep Y: exit {rc}: {err}")
+    print("  ok stats refuses a Y beyond the key's byte")
 
     # --- The neighbour chunk is untouched, byte for byte. ---
     if read(1, -2, 0) != neighbour_before:
