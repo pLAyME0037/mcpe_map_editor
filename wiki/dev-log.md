@@ -9,6 +9,32 @@ Status vocabulary:
 
 ---
 
+## 2026-10-12 — Any dimension: `--dimension`
+
+### Built
+
+- `--dimension <overworld|nether|end|number>` on
+  `chunk set` and `chunk get`. Parsed per command
+  from its own arguments the way `chunks --count`
+  is; names exist because numbers are for machines.
+  Without the flag the overworld — and the key omits
+  a zero dimension the way the game does, so naming
+  the overworld changes nothing on disk. An unknown
+  name or a missing value is exit 1.
+- The cross-check grew the case that matters: the
+  same coordinates in dimension 1 edit the
+  dimension's own key — amulet confirms the block
+  changed there and the overworld subchunk is byte
+  identical after — and `get --dimension 1` reads
+  it back. Eleven checks, all green.
+
+### Next
+
+Box fill: one block spec across a box of positions,
+spanning subchunks, one LOCK for the whole edit.
+
+---
+
 ## 2026-10-12 — Read it back: `mcme chunk get`
 
 ### Built

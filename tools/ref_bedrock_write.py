@@ -23,6 +23,10 @@ path that reads worlds Minecraft loads — and asserts:
     can be set again, reusing the palette entry instead of
     appending a second one; under `--json` the same text comes
     back escaped, with the coordinates echoed
+  * `--dimension 1` edits the dimension's own key — same
+    coordinates, different store entry — the overworld
+    subchunk stays byte-identical, and an unknown dimension
+    name is a usage error
 
 Direction is deliberate: mcme writes, the reference reads — the
 store layer's tests already run it the other way round.
@@ -121,34 +125,38 @@ def main() -> int:
     shutil.copytree(args.world, world)
     db_path = os.path.join(world, "db")
 
-    def read(cx: int, cz: int, cy: int) -> bytes:
+    def read(cx: int, cz: int, cy: int, dimension: int = 0) -> bytes:
         db = LevelDB(db_path)
         try:
             try:
-                v = db.get(chunk_key(cx, cz, cy))
+                v = db.get(chunk_key(cx, cz, cy, dimension))
             except KeyError:
                 v = None
         finally:
             db.close()
         if v is None:
-            raise AssertionError(f"key ({cx}, {cz}, {cy}) not in store")
+            raise AssertionError(
+                f"key ({cx}, {cz}, {cy}, dim {dimension}) not in store"
+            )
         return v
 
     neighbour_before = read(1, -2, 0)
 
-    def run_set(x: int, y: int, z: int, block: str):
-        r = subprocess.run(
-            [args.mcme, "chunk", "set", world, str(x), str(y), str(z), block],
-            capture_output=True,
-            text=True,
-        )
+    def run_set(x: int, y: int, z: int, block: str, dimension: int = 0):
+        cmd = [args.mcme, "chunk", "set", world, str(x), str(y), str(z), block]
+        if dimension != 0:
+            cmd += ["--dimension", str(dimension)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
         return r.returncode, r.stderr.strip()
 
-    def run_get(x: int, y: int, z: int, json_mode: bool = False):
+    def run_get(x: int, y: int, z: int, json_mode: bool = False,
+                dimension: int = 0):
         cmd = [args.mcme]
         if json_mode:
             cmd.append("--json")
         cmd += ["chunk", "get", world, str(x), str(y), str(z)]
+        if dimension != 0:
+            cmd += ["--dimension", str(dimension)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
 
@@ -160,17 +168,18 @@ def main() -> int:
         block_name: str,
         states: CompoundTag,
         spec: str,
+        dimension: int = 0,
     ) -> None:
         cx, cz = x // 16, z // 16
         cy = y // 16
         lx, ly, lz = x & 15, y & 15, z & 15
 
-        before_payload = read(cx, cz, cy)
+        before_payload = read(cx, cz, cy, dimension)
         before = decode_payload(iface, before_payload)
-        rc, err = run_set(x, y, z, spec)
+        rc, err = run_set(x, y, z, spec, dimension=dimension)
         if rc != 0:
             raise AssertionError(f"{name}: mcme exit {rc}: {err}")
-        after_payload = read(cx, cz, cy)
+        after_payload = read(cx, cz, cy, dimension)
         version, layers = decode_payload(iface, after_payload)
 
         if version != before[0]:
@@ -277,6 +286,35 @@ def main() -> int:
     if doc != {"block": want_spec, "x": 0, "y": 68, "z": 0}:
         raise AssertionError(f"get --json: exit {rc}, {doc!r}: {err}")
     print("  ok get --json")
+
+    # --- --dimension 1 edits the dimension's own key: same
+    #     coordinates, different store entry, and the overworld
+    #     subchunk is byte-identical after. ---
+    overworld_before = read(0, 0, 0)
+    edit_case(
+        "tnt in dimension 1 at (0, 0, 0)",
+        0, 0, 0,
+        "minecraft:tnt",
+        CompoundTag(),
+        "minecraft:tnt",
+        dimension=1,
+    )
+    if read(0, 0, 0) != overworld_before:
+        raise AssertionError("the dimension-1 edit touched the overworld")
+    rc, out, err = run_get(0, 0, 0, dimension=1)
+    if rc != 0 or out != "minecraft:tnt":
+        raise AssertionError(f"get --dimension 1: exit {rc}, {out!r}: {err}")
+    print("  ok dimension 1 reads back, overworld untouched")
+
+    # --- an unknown dimension name is a usage error. ---
+    r = subprocess.run(
+        [args.mcme, "chunk", "set", world, "0", "0", "0",
+         "minecraft:tnt", "--dimension", "mars"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 1:
+        raise AssertionError(f"bad dimension name: exit {r.returncode}")
+    print("  ok bad dimension name exits 1")
 
     # --- The neighbour chunk is untouched, byte for byte. ---
     if read(1, -2, 0) != neighbour_before:

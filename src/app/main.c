@@ -71,11 +71,12 @@ static void print_usage(FILE *out)
         "                    states in braces:\n"
         "                    minecraft:oak_log{pillar_axis:\"x\"}\n"
         "                    The subchunk must already exist. Takes\n"
-        "                    the LOCK.\n"
+        "                    the LOCK. --dimension overworld|nether|\n"
+        "                    end|<number> (default overworld).\n"
         "  chunk get <world> <x> <y> <z>\n"
         "                    Print one block as the spec `chunk set`\n"
         "                    accepts. Exit 2 if the subchunk is not\n"
-        "                    stored.\n"
+        "                    stored. Takes --dimension too.\n"
         "  db <op> <world> <key-hex> [value-hex]\n"
         "                    Raw Bedrock store access. op = get | put | del.\n"
         "                    Keys and values are hex; get prints value-hex.\n"
@@ -883,8 +884,10 @@ static int cmd_chunks(int argc, char **argv)
  * exit 4 with mcme_last_error() on stderr. Success prints nothing,
  * like `db put`.
  *
- * The overworld only: a `--dimension` flag belongs with the verb
- * that needs it, not before it.
+ * --dimension names the dimension to edit (overworld, nether, end,
+ * or a raw number); without it, the overworld. The key omits a
+ * zero dimension the way the game does, so naming the overworld
+ * changes nothing on disk.
  */
 
 /* Splits a block spec into name and states. States, when present,
@@ -957,11 +960,60 @@ static bool parse_coord(const char *text, long *out)
     return true;
 }
 
+/* Pulls a `--dimension <name|number>` out of the argument vector.
+   Names exist because numbers are for machines; 0 is the
+   overworld, and the key builder omits a zero dimension the way
+   the game does. Absent, the dimension is the overworld. */
+static bool extract_dimension(int *argc, char **argv, int32_t *dim)
+{
+    for (int i = 0; i < *argc; ++i) {
+        if (strcmp(argv[i], "--dimension") != 0) continue;
+        if (i + 1 >= *argc) {
+            mcme_set_error("chunk: --dimension needs a value "
+                           "(overworld, nether, end, or a "
+                           "number)");
+            return false;
+        }
+        const char *v = argv[i + 1];
+        long n;
+        char *end = NULL;
+        if (strcmp(v, "overworld") == 0) {
+            n = 0;
+        } else if (strcmp(v, "nether") == 0) {
+            n = 1;
+        } else if (strcmp(v, "end") == 0) {
+            n = 2;
+        } else {
+            n = strtol(v, &end, 10);
+            if (end == v || *end != '\0') {
+                mcme_set_error("chunk: '%s' is not a dimension "
+                               "(overworld, nether, end, or a "
+                               "number)", v);
+                return false;
+            }
+        }
+        if (n < INT32_MIN || n > INT32_MAX) {
+            mcme_set_error("chunk: dimension '%s' is outside "
+                           "the range", v);
+            return false;
+        }
+        *dim = (int32_t)n;
+        for (int j = i; j + 2 < *argc; ++j) argv[j] = argv[j + 2];
+        *argc -= 2;
+        return true;
+    }
+    return true;
+}
+
 static int cmd_chunk_set(int argc, char **argv)
 {
+    int32_t dimension = 0;
+    if (!extract_dimension(&argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
     if (argc != 5) {
         mcme_set_error("chunk: usage: chunk set <world> <x> <y> <z> "
-                       "<block>");
+                       "<block> [--dimension <name|number>]");
         return MCME_EXIT_USAGE;
     }
     const char *path = argv[0];
@@ -1000,7 +1052,7 @@ static int cmd_chunk_set(int argc, char **argv)
         uint8_t key[14];
         size_t key_len = 0;
         if (!mcme_bedrock_subchunk_key((int32_t)x, (int32_t)y,
-                                       (int32_t)z, 0,
+                                       (int32_t)z, dimension,
                                        key, sizeof key, &key_len)) {
             rc = MCME_EXIT_USAGE;
         } else {
@@ -1028,7 +1080,8 @@ static int cmd_chunk_set(int argc, char **argv)
             rc = MCME_EXIT_INTERNAL;
         } else if (!mcme_bedrock_set_block(info.db_path,
                                              (int32_t)x, (int32_t)y,
-                                             (int32_t)z, 0, &entry)) {
+                                             (int32_t)z, dimension,
+                                             &entry)) {
             char why[256];
             snprintf(why, sizeof why, "%s", mcme_last_error());
             mcme_set_error("chunk: %s", why);
@@ -1061,8 +1114,13 @@ static int cmd_chunk_set(int argc, char **argv)
  */
 static int cmd_chunk_get(int argc, char **argv)
 {
+    int32_t dimension = 0;
+    if (!extract_dimension(&argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
     if (argc != 4) {
-        mcme_set_error("chunk: usage: chunk get <world> <x> <y> <z>");
+        mcme_set_error("chunk: usage: chunk get <world> <x> <y> <z> "
+                       "[--dimension <name|number>]");
         return MCME_EXIT_USAGE;
     }
     const char *path = argv[0];
@@ -1084,7 +1142,7 @@ static int cmd_chunk_get(int argc, char **argv)
     uint8_t key[14];
     size_t key_len = 0;
     if (!mcme_bedrock_subchunk_key((int32_t)x, (int32_t)y,
-                                   (int32_t)z, 0,
+                                   (int32_t)z, dimension,
                                    key, sizeof key, &key_len)) {
         mcme_world_info_free(&info);
         return MCME_EXIT_USAGE;
