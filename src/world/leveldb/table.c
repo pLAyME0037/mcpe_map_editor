@@ -627,12 +627,17 @@ bool mcme_ldb_table_scan(McmeLdbTable *t,
  *
  * The mirror of everything above, and the piece that lets a log be flushed
  * into a table so it can then be replaced — compaction rests on this
- * producing files that this directory's reader and stock LevelDB both accept.
+ * producing files that this directory's reader and the game both accept.
  *
- * Uncompressed blocks (type 0). Every block states its own compression in
- * its trailer, so this is a valid table for every reader; compressing would
- * save disk at the cost of output the golden fixtures could no longer diff
- * against a byte-level description.
+ * Blocks go out as bare DEFLATE when it helps (type 4 — the codec Minecraft's
+ * own fork writes, which the reader above has always decoded) and raw when it
+ * does not. D9 wrote everything raw so fixtures could diff a byte-level
+ * description; the goldens in this tree diff merged views through Python's
+ * binding instead, and the real cost showed up on a real world: the game
+ * holding the same store at 259 MB while mcme's own compaction wrote 2.2 GB.
+ * Every block still states its own compression in its trailer, and the
+ * checksum still covers what is on disk, not what it decodes to — D9's rule,
+ * unchanged.
  *
  * Index keys are the full last key of each block rather than upstream's
  * shortest separator. A separator is a size optimisation; the full key is
@@ -713,38 +718,64 @@ static bool block_builder_add(LdbBlockBuilder *b,
 
 /*
  * Appends the finished block to `out` and reports the handle size a caller
- * must record: the contents only. The five-byte trailer follows and is
+ * must record: the stored contents only. The five-byte trailer follows and is
  * excluded — bug #2 in decisions.md#D9, now written rather than only read.
+ *
+ * The contents go out bare DEFLATE when that is smaller than storing them
+ * raw, because that is the codec the game writes and both readers here
+ * decode; raw when it is not, which covers the blocks deflate cannot shrink —
+ * the empty metaindex, a restart-only block, incompressible bytes. The
+ * trailer names whichever was chosen, so this choice is never guessed from
+ * anything but the block itself.
  */
 static bool block_builder_finish(LdbBlockBuilder *b, McmeBuffer *out,
                                  size_t *out_size)
 {
-    size_t start = out->len;
-
-    if (!mcme_buffer_append(out, b->entries.data, b->entries.len) ||
-        !mcme_buffer_append(out, b->restarts.data, b->restarts.len)) {
-        return false;
-    }
+    /* The block's contents, assembled before the storage choice: entries,
+       restart array, restart count. */
+    McmeBuffer raw;
+    mcme_buffer_init(&raw);
+    bool ok = mcme_buffer_append(&raw, b->entries.data, b->entries.len) &&
+              mcme_buffer_append(&raw, b->restarts.data, b->restarts.len);
 
     uint32_t nr = (uint32_t)(b->restarts.len / 4);
     uint8_t le[4] = { (uint8_t)nr, (uint8_t)(nr >> 8),
                       (uint8_t)(nr >> 16), (uint8_t)(nr >> 24) };
-    if (!mcme_buffer_append(out, le, 4)) return false;
+    ok = ok && mcme_buffer_append(&raw, le, 4);
 
-    size_t size = out->len - start;
-
-    /* Trailer: type byte, then the masked CRC32C over contents AND type —
-       bug #3 from D9: the checksum covers what is on disk, not what it
-       decompresses to. read_block() verifies exactly this. */
+    McmeBuffer packed;
+    mcme_buffer_init(&packed);
     uint8_t type = LDB_BLOCK_NO_COMPRESSION;
-    uint32_t crc = mcme_ldb_crc32c(0, out->data + start, size);
+    const uint8_t *stored = raw.data;
+    size_t size = raw.len;
+
+    if (ok) {
+        ok = mcme_compress(MCME_COMPRESS_RAW_DEFLATE,
+                           raw.data, raw.len, &packed);
+        if (ok && packed.len < raw.len) {
+            type = LDB_BLOCK_RAW_DEFLATE;
+            stored = packed.data;
+            size = packed.len;
+        }
+    }
+
+    /* Trailer: type byte, then the masked CRC32C over the stored bytes AND
+       type — bug #3 from D9: the checksum covers what is on disk, not what it
+       decompresses to. read_block() verifies exactly this. */
+    uint32_t crc = ok ? mcme_ldb_crc32c(0, stored, size) : 0;
     crc = mcme_ldb_crc32c(crc, &type, 1);
     crc = mcme_ldb_mask_crc(crc);
     uint8_t trailer[LDB_BLOCK_TRAILER] = {
         type, (uint8_t)crc, (uint8_t)(crc >> 8),
         (uint8_t)(crc >> 16), (uint8_t)(crc >> 24)
     };
-    if (!mcme_buffer_append(out, trailer, sizeof trailer)) return false;
+
+    if (ok) ok = mcme_buffer_append(out, stored, size) &&
+                 mcme_buffer_append(out, trailer, sizeof trailer);
+
+    mcme_buffer_free(&raw);
+    mcme_buffer_free(&packed);
+    if (!ok) return false;
 
     *out_size = size;
     return true;

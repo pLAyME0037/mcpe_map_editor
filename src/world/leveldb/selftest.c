@@ -1394,6 +1394,26 @@ static bool expect_deleted(McmeLevelDb *db, const char *key)
     return ok;
 }
 
+/* Finds a store's single .ldb file, for the tests below and for the big-table
+   test further down. */
+static bool find_table(const char *dir, char *out, size_t cap)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL) return false;
+
+    struct dirent *e;
+    bool found = false;
+    while (!found && (e = readdir(d)) != NULL) {
+        size_t n = strlen(e->d_name);
+        if (n > 4 && strcmp(e->d_name + n - 4, ".ldb") == 0) {
+            snprintf(out, cap, "%s/%s", dir, e->d_name);
+            found = true;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
 static void test_compact(void)
 {
     const char *src = "tests/golden/worlds/bedrock-forge/db";
@@ -1413,6 +1433,32 @@ static void test_compact(void)
     OwnedEntry *after2 = NULL;   /* after a post-compaction write + compact */
     OwnedEntry *reopen = NULL;   /* what a fresh handle sees at the end */
 
+    /* Payloads the storage choice in block_builder_finish has to see
+       (decisions.md#D14): one compressible enough to land bare DEFLATE, one
+       printable but noisy enough to stay raw. Both must survive every
+       compaction below byte for byte. */
+    /* One byte past each payload holds a NUL: expect_value measures with
+       strlen, the payloads themselves are stored without it. */
+    size_t big_len = 65536;
+    char *big = (char *)malloc(big_len + 1);
+    CHECK(big != NULL);
+    if (big != NULL) {
+        memset(big, 'a', big_len);
+        big[big_len] = '\0';
+    }
+
+    size_t noise_len = 16384;
+    char *noise = (char *)malloc(noise_len + 1);
+    CHECK(noise != NULL);
+    if (noise != NULL) {
+        uint32_t x = 12345;
+        for (size_t i = 0; i < noise_len; ++i) {
+            x = x * 1103515245u + 12345u;
+            noise[i] = (char)(' ' + (x >> 16) % 95);
+        }
+        noise[noise_len] = '\0';
+    }
+
     /* --- A read-only handle refuses to compact, and says so. --- */
     {
         McmeLevelDb *db = NULL;
@@ -1428,6 +1474,15 @@ static void test_compact(void)
         CHECK(mcme_leveldb_open_rw(&db, dbdir));
 
         CHECK(mcme_leveldb_put(db, "compact/a", 9, "alpha", 5));
+        if (big != NULL) {
+            CHECK(mcme_leveldb_put(db, "compact/big", sizeof("compact/big") - 1,
+                                   big, big_len));
+        }
+        if (noise != NULL) {
+            CHECK(mcme_leveldb_put(db, "compact/noise",
+                                   sizeof("compact/noise") - 1,
+                                   noise, noise_len));
+        }
         /* `edge/single` lives in the fixture's table and was overwritten in
            its log; deleting it puts a tombstone in the log, and compaction
            must carry that tombstone into the table rather than drop it and
@@ -1457,8 +1512,25 @@ static void test_compact(void)
                         after1, (size_t)arrlen(after1)));
 
         CHECK(expect_value(db, "compact/a", "alpha"));
+        CHECK(expect_value(db, "compact/big", big));
+        CHECK(expect_value(db, "compact/noise", noise));
         CHECK(expect_deleted(db, "edge/single"));
         CHECK(mcme_leveldb_has(db, "edge/single", 11));
+
+        /* The table must be smaller than the compressible payload on its
+           own: the blocks went out bare DEFLATE, not raw (D14). Without
+           this the write path could quietly stop compressing and every
+           check above would still pass. */
+        {
+            char table_path[600];
+            struct stat st;
+            bool statted = find_table(dbdir, table_path, sizeof table_path) &&
+                           stat(table_path, &st) == 0;
+            CHECK_MSG(statted, "no statable .ldb after compaction");
+            CHECK_MSG(!statted || (size_t)st.st_size < big_len,
+                      "compacted table is %zu bytes — blocks stored raw?",
+                      statted ? (size_t)st.st_size : (size_t)0);
+        }
 
         mcme_leveldb_close(db);
     }
@@ -1501,6 +1573,8 @@ static void test_compact(void)
         free_owned(mid);
         CHECK(expect_value(db, "compact/a", "alpha"));
         CHECK(expect_value(db, "compact/b", "beta"));
+        CHECK(expect_value(db, "compact/big", big));
+        CHECK(expect_value(db, "compact/noise", noise));
         CHECK(expect_deleted(db, "edge/single"));
 
         mcme_leveldb_close(db);
@@ -1515,10 +1589,15 @@ static void test_compact(void)
         CHECK(same_view(after2, (size_t)arrlen(after2),
                         reopen, (size_t)arrlen(reopen)));
         CHECK(expect_value(db, "compact/b", "beta"));
+        CHECK(expect_value(db, "compact/big", big));
+        CHECK(expect_value(db, "compact/noise", noise));
         CHECK(expect_deleted(db, "edge/single"));
 
         mcme_leveldb_close(db);
     }
+
+    free(big);
+    free(noise);
 
     free_owned(before);
     free_owned(after1);
@@ -1539,25 +1618,6 @@ static void test_compact(void)
  * handle still names its own offset: the size is what is under test, not the
  * volume, and a hole costs nothing to write or read.
  * ======================================================================== */
-
-/* Finds the store's .ldb file (the fixtures hold exactly one). */
-static bool find_table(const char *dir, char *out, size_t cap)
-{
-    DIR *d = opendir(dir);
-    if (d == NULL) return false;
-
-    struct dirent *e;
-    bool found = false;
-    while (!found && (e = readdir(d)) != NULL) {
-        size_t n = strlen(e->d_name);
-        if (n > 4 && strcmp(e->d_name + n - 4, ".ldb") == 0) {
-            snprintf(out, cap, "%s/%s", dir, e->d_name);
-            found = true;
-        }
-    }
-    closedir(d);
-    return found;
-}
 
 /* Rewrites the table with `hole` bytes of hole immediately before its
    footer: every block handle still names its own offset, the footer is still

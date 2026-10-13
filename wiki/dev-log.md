@@ -9,6 +9,61 @@ Status vocabulary:
 
 ---
 
+## 2026-10-13 — Compaction writes the game's own blocks (bare DEFLATE)
+
+### Built
+
+- `block_builder_finish` now assembles a block's contents first
+  and then chooses how to store them: bare DEFLATE (type 4) when
+  that is smaller than raw, raw (type 0) when it is not. The
+  trailer still names the choice, and the CRC32C still covers the
+  stored bytes plus that type — D9's on-disk rule, untouched. The
+  writer's old comment said compressing "would cost golden
+  diffability"; the goldens diff merged views through the Python
+  binding and never looked at block bytes, while the real cost of
+  staying raw sat on disk: the same world at 259 MB in the game's
+  hands and 2.27 GB in ours (D14).
+- The decode side needed nothing — the fixtures have always
+  carried type-4 blocks. The encode side had no coverage: the
+  compress suite's round-trip and bound tables gained
+  `MCME_COMPRESS_RAW_DEFLATE`.
+- `test_compact` now pushes a 64 KiB compressible payload and a
+  16 KiB noisy one through both compactions and both reopens, and
+  asserts the compacted table is smaller than the compressible
+  payload alone. View equality passes even if the write path
+  silently stops compressing; the size assertion is what makes
+  that failure loud.
+
+### Cross-check
+
+- 5 suites PASS under ASan; reference battery 11/11 rc=0,
+  including ref_bedrock_write — Amulet reads the compressed
+  tables mcme now writes. Goldens untouched, align.py 0.
+- Real world (the copy, world closed): `db compact` over its
+  2.27 GB raw table → one 460 MB table in 1m35s;
+  `chunks --count` 47,253, the same count the store had before.
+  4.7× off mcme's own raw output, with the game's 259 MB still
+  ahead by 1.78× — the block-size gap, recorded in D14 as its
+  own dial.
+
+### Known gaps
+
+- Stock google/leveldb refuses a world mcme compacted (type 4 is
+  not a codec it knows); D14 accepts that — it never read
+  Bedrock worlds either.
+- Compaction is 36s → 1m35s at this size: deflate over every
+  payload, once per compact.
+- Block target stays 4 KiB where the game's ~100 KiB blocks
+  compress ~1.8× tighter; revisiting that is a separate
+  decision.
+
+### Next
+
+- Convert's loudest drops (D12): block entities and waterlogging
+  carry-over.
+
+---
+
 ## 2026-10-13 — LevelDB tables are read a block at a time; file size is no longer a refusal
 
 ### Built

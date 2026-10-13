@@ -178,13 +178,15 @@ typedef struct {
 } McmeLdbTableEntry;
 
 /*
- * Writes `entries` as one SSTable to `path`, uncompressed blocks, and returns
- * with the file complete on disk (mcme_fs_write does the atomic rename).
+ * Writes `entries` as one SSTable to `path` — bare-DEFLATE blocks when
+ * that is smaller than raw, raw when it is not (D14) — and returns with
+ * the file complete on disk (mcme_fs_write does the atomic rename).
  *
  * Entries must be in ascending internal-key order; the writer does not sort
  * and does not check. The resulting file is readable by this directory's
- * reader and by stock LevelDB — the latter verified against Minecraft's own
- * binding, not assumed.
+ * reader, by the game, and by Amulet — every reader a Bedrock store has.
+ * Stock google/leveldb is not one of them: it knows neither the world nor
+ * the block type (D14).
  */
 bool mcme_ldb_table_write(const char *path,
                           const McmeLdbTableEntry *entries, size_t n);

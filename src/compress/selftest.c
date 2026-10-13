@@ -150,6 +150,7 @@ static void test_round_trip(void)
     static const McmeCompression codecs[] = {
         MCME_COMPRESS_STORE, MCME_COMPRESS_GZIP,
         MCME_COMPRESS_ZLIB, MCME_COMPRESS_LZ4,
+        MCME_COMPRESS_RAW_DEFLATE,
     };
 
     /* Small, hand-written payloads. The golden vectors cover realistic sizes;
@@ -366,6 +367,7 @@ static void test_detect(void)
     static const McmeCompression codecs[] = {
         MCME_COMPRESS_STORE, MCME_COMPRESS_GZIP,
         MCME_COMPRESS_ZLIB, MCME_COMPRESS_LZ4,
+        MCME_COMPRESS_RAW_DEFLATE,
     };
     for (size_t c = 0; c < sizeof(codecs) / sizeof(codecs[0]); ++c) {
         size_t bound = mcme_compress_bound(codecs[c], sizeof(payload));

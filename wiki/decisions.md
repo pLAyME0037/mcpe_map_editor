@@ -496,3 +496,51 @@ the write verbs already point at. One verb, one truth.
 compact verb runs; actor records of pruned chunks remain until the entity
 work; a Bedrock prune scans the store's whole keyspace (O(entries)) rather
 than synthesising keys, because only the scan sees every companion record.
+
+---
+
+## D14 — Compacted tables carry bare-DEFLATE blocks when that helps
+
+`db compact` writes the whole store as one table (D11). The blocks it
+writes now go out compressed — bare DEFLATE, type 4, the codec Minecraft's
+own fork writes — whenever deflate makes a block smaller than storing it
+raw, and as type 0 when it does not. This supersedes D11's "Blocks are
+uncompressed (type 0)" sentence; D11 stays as written.
+
+**The trigger was measured, not theorised.** The same world, both ways: the
+game holding its own compaction at ~130 files / 259 MB, mcme writing the
+identical merged view as one 2.27 GB table — every block raw. An 8.7× churn
+paid on each compact against a byte-level diff the goldens never asked for:
+they diff merged views through the Python binding, never block bytes.
+
+**One codec, chosen per block, announced by the trailer.** The reader has
+always decoded type 4 — the fixtures were full of it before anything here
+wrote it — and Amulet and the game read it natively, so the reader and the
+reference battery needed no change at all. The CRC32C still covers the
+stored bytes plus the type byte (D9's on-disk rule): compressing changed
+what sits under the checksum, not what the checksum promises. Raw remains
+the honest fallback for blocks deflate cannot shrink — the empty
+metaindex, a restart-only block, incompressible payloads.
+
+**Rejected.**
+- *Raw blocks for stock google/leveldb compatibility*: no stock LevelDB
+  reads Bedrock worlds, and the three readers this store has — mcme, the
+  game, Amulet — all decode type 4. Compatibility with a reader that will
+  never open the file is not compatibility.
+- *zlib-wrapped or LZ4 blocks*: the game's blocks are bare DEFLATE; using
+  its codec means every reader here decodes with no sniffing and no guess.
+- *Raising the block target to the game's ~100 KiB at the same time*: the
+  game's bigger blocks hold ~1.8× tighter (259 MB vs 460 MB on the same
+  world), but block size is its own dial — write granularity, read
+  amplification, restart density — and D14 changes the codec, not the
+  shape of the table.
+
+**Cost accepted.** A compacted store can no longer be described
+byte-for-byte as raw block bytes, and stock LevelDB tooling refuses what it
+cannot inflate — a cost paid only by tools that could never read these
+worlds anyway. Compacting the 2.2 GB world went 36s → 1m35s: deflate over
+every payload, once per compact.
+
+**Reverses if:** a real workflow needs mcme's compacted output opened by
+stock google/leveldb, or the per-block deflate cost shows up in editing
+loops rather than the rare compact.
