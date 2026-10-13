@@ -38,18 +38,27 @@
 
 #include "mcme/compress.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "stb_ds.h"
 
-/* The footer is fixed width: two block handles, padded, then the magic. */
-#define LDB_FOOTER_SIZE 48
+/* The footer's width is declared in internal.h, where the test that splices
+   footers around can share it. */
+#define LDB_FOOTER_SIZE MCME_LDB_FOOTER_SIZE
 
-/* Table files are tens of megabytes at most for a Bedrock world; refuse
-   anything larger rather than let a bogus size drive the allocation. */
-#define LDB_TABLE_MAX ((size_t)512u * 1024u * 1024u)
+/* A block's contents, at most. The file has no ceiling at all — compaction
+   writes the whole store as one table, and refusing to read what this
+   directory's own writer produced is the bug this replaced. What stays
+   bounded is the allocation a single block handle can name: a corrupt or
+   forged size in an otherwise large file must not drive the read, so a handle
+   over this is refused before anything is allocated. Real blocks are 4 KiB
+   here and ~100 KiB in Minecraft's own fork; even a single over-large value
+   written through `db put` arrives as one batch record, under 32 MiB. */
+#define LDB_BLOCK_MAX ((size_t)512u * 1024u * 1024u)
 
 /* ========================================================================
  * Block contents
@@ -238,44 +247,21 @@ static bool block_iter_next(LdbBlockIter *it)
  * Table
  * ======================================================================== */
 
-/* Records a decompressed block so table_close() can free it. Returns the
-   pointer, or NULL with the error set. */
-static uint8_t *own_block(McmeLdbTable *t, uint8_t *data)
-{
-    if (t->inflated_count == t->inflated_cap) {
-        size_t next = t->inflated_cap ? t->inflated_cap * 2 : 8;
-        uint8_t **grown = (uint8_t **)realloc(t->inflated, next * sizeof *grown);
-        if (grown == NULL) return NULL;
-        t->inflated = grown;
-        t->inflated_cap = next;
-    }
-    t->inflated[t->inflated_count++] = data;
-    return data;
-}
-
-static void free_inflated(McmeLdbTable *t)
-{
-    for (size_t i = 0; i < t->inflated_count; ++i) free(t->inflated[i]);
-    free(t->inflated);
-    t->inflated = NULL;
-    t->inflated_count = 0;
-    t->inflated_cap = 0;
-}
-
 /*
- * Reads one block, verifying its trailer and decompressing it if needed.
+ * Reads one block from the file, verifying its trailer and decompressing it
+ * if needed.
  *
  * `size` is the block handle's stored size, which counts the contents and NOT
  * the five-byte trailer. *out_len is the length of the returned contents,
  * which differs from `size` whenever the block was compressed — callers must
  * use it rather than the handle's size.
  *
- * For an uncompressed block the result points into the mapped file. For a
- * compressed one it points into a buffer this function allocates and records
- * on `t` for table_close() to free.
+ * The block comes back owned, compressed or not, and the caller frees it: the
+ * file is a stream, not a mapping, so nothing else holds the bytes. One block
+ * is in memory at a time, which is what lets a table of any size be read.
  */
 static bool read_block(McmeLdbTable *t, size_t offset, size_t size,
-                       const uint8_t **out, size_t *out_len)
+                       uint8_t **out, size_t *out_len)
 {
     if (size == 0 || offset > t->size || size > t->size - offset) {
         mcme_set_error("leveldb: block at %zu size %zu is outside %s",
@@ -291,7 +277,31 @@ static bool read_block(McmeLdbTable *t, size_t offset, size_t size,
         return false;
     }
 
-    const uint8_t *block = t->file + offset;
+    /* In bounds, then still bounded: inside a multi-gigabyte file a forged
+       handle can name any size the file will hold, and this is where that
+       stops — before the allocation the old whole-file ceiling used to be. */
+    if (size > LDB_BLOCK_MAX) {
+        mcme_set_error("leveldb: block at %zu in %s is %zu bytes, over the "
+                       "%zu limit", offset, t->path, size,
+                       LDB_BLOCK_MAX);
+        return false;
+    }
+
+    size_t need = size + LDB_BLOCK_TRAILER;
+    uint8_t *block = (uint8_t *)malloc(need);
+    if (block == NULL) {
+        mcme_set_error("leveldb: out of memory reading a block of %s", t->path);
+        return false;
+    }
+
+    if (fseek(t->fp, (long)offset, SEEK_SET) != 0 ||
+        fread(block, 1, need, t->fp) != need) {
+        mcme_set_error("leveldb: cannot read the block at %zu of %s: %s",
+                       offset, t->path, strerror(errno));
+        free(block);
+        return false;
+    }
+
     uint8_t type = block[size];
 
     uint32_t stored = (uint32_t)block[size + 1] |
@@ -308,6 +318,7 @@ static bool read_block(McmeLdbTable *t, size_t offset, size_t size,
     if (mcme_ldb_mask_crc(crc) != stored) {
         mcme_set_error("leveldb: block at %zu in %s fails its checksum",
                        offset, t->path);
+        free(block);
         return false;
     }
 
@@ -328,7 +339,7 @@ static bool read_block(McmeLdbTable *t, size_t offset, size_t size,
         mcme_buffer_init(&plain);
 
         if (!mcme_decompress(MCME_COMPRESS_RAW_DEFLATE, block, size,
-                             &plain, LDB_TABLE_MAX)) {
+                             &plain, LDB_BLOCK_MAX)) {
             /* mcme_set_error and mcme_last_error share one buffer, so the
                inner message has to be copied out before it is overwritten. */
             char why[256];
@@ -336,17 +347,12 @@ static bool read_block(McmeLdbTable *t, size_t offset, size_t size,
             mcme_set_error("leveldb: block at %zu in %s is raw DEFLATE but "
                            "does not decode: %s", offset, t->path, why);
             mcme_buffer_free(&plain);
+            free(block);
             return false;
         }
 
-        uint8_t *owned = own_block(t, plain.data);
-        if (owned == NULL) {
-            mcme_buffer_free(&plain);
-            mcme_set_error("leveldb: out of memory reading a block of %s",
-                           t->path);
-            return false;
-        }
-        *out = owned;
+        free(block);
+        *out = plain.data;      /* the caller frees it, like any other block */
         *out_len = plain.len;
         return true;
     }
@@ -354,6 +360,7 @@ static bool read_block(McmeLdbTable *t, size_t offset, size_t size,
     mcme_set_error("leveldb: block at %zu in %s uses compression type %u; "
                    "only uncompressed and raw-DEFLATE blocks are read",
                    offset, t->path, (unsigned)type);
+    free(block);
     return false;
 }
 
@@ -390,17 +397,19 @@ static bool read_handle(const uint8_t **p, const uint8_t *end,
  */
 static bool table_check_meta(McmeLdbTable *t, size_t offset, size_t size)
 {
-    const uint8_t *block = NULL;
+    uint8_t *block = NULL;
     size_t block_len = 0;
     if (!read_block(t, offset, size, &block, &block_len)) return false;
+
+    bool ok = true;
     if (!block_is_wellformed(block, block_len)) {
         mcme_set_error("leveldb: malformed metaindex block in %s", t->path);
+        free(block);
         return false;
     }
 
     LdbBlockIter it;
     block_iter_init(&it, block, block_len);
-    bool ok = true;
 
     while (ok && block_iter_next(&it)) {
         static const char kFilterPrefix[] = "filter.";
@@ -419,6 +428,7 @@ static bool table_check_meta(McmeLdbTable *t, size_t offset, size_t size)
     }
 
     block_iter_free(&it);
+    free(block);
     if (it.failed) {
         mcme_set_error("leveldb: malformed metaindex entry in %s", t->path);
         ok = false;
@@ -430,15 +440,25 @@ bool mcme_ldb_table_open(McmeLdbTable *t, const char *path)
 {
     memset(t, 0, sizeof *t);
 
-    if (!mcme_ldb_read_file(path, &t->file, &t->size, LDB_TABLE_MAX)) {
+    /* The size comes from stat, and the file is then read at need — nothing
+       about the total drives an allocation, which is the whole point: a
+       store's table can be as large as the store. */
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        mcme_set_error("leveldb: cannot open '%s': %s", path, strerror(errno));
+        return false;
+    }
+    t->size = (size_t)st.st_size;
+    t->fp = fopen(path, "rb");
+    if (t->fp == NULL) {
+        mcme_set_error("leveldb: cannot open '%s': %s", path, strerror(errno));
+        memset(t, 0, sizeof *t);
         return false;
     }
     t->path = strdup(path);
     if (t->path == NULL) {
-        free(t->file);
-        memset(t, 0, sizeof *t);
         mcme_set_error("leveldb: out of memory");
-        return false;
+        goto fail;
     }
 
     if (t->size < LDB_FOOTER_SIZE) {
@@ -449,7 +469,13 @@ bool mcme_ldb_table_open(McmeLdbTable *t, const char *path)
 
     /* The footer sits at the very end and ends in a magic number, which is the
        quickest proof that this really is a table file. */
-    const uint8_t *footer = t->file + t->size - LDB_FOOTER_SIZE;
+    uint8_t footer[LDB_FOOTER_SIZE];
+    if (fseek(t->fp, (long)(t->size - LDB_FOOTER_SIZE), SEEK_SET) != 0 ||
+        fread(footer, 1, LDB_FOOTER_SIZE, t->fp) != LDB_FOOTER_SIZE) {
+        mcme_set_error("leveldb: cannot read the footer of %s: %s", path,
+                       strerror(errno));
+        goto fail;
+    }
     uint64_t magic = 0;
     for (int i = 0; i < 8; ++i) {
         magic |= (uint64_t)footer[LDB_FOOTER_SIZE - 8 + i] << (i * 8);
@@ -478,11 +504,14 @@ bool mcme_ldb_table_open(McmeLdbTable *t, const char *path)
 
     /* The index block holds one entry per data block. Collect the handles so
        the scan is a simple loop over an array rather than a nested walk. */
-    const uint8_t *index_block = NULL;
+    uint8_t *index_block = NULL;
     size_t index_len = 0;
     if (!read_block(t, index_off, index_size, &index_block, &index_len)) goto fail;
+
+    bool ok = true;
     if (!block_is_wellformed(index_block, index_len)) {
         mcme_set_error("leveldb: malformed index block in %s", path);
+        free(index_block);
         goto fail;
     }
 
@@ -490,14 +519,14 @@ bool mcme_ldb_table_open(McmeLdbTable *t, const char *path)
     block_iter_init(&it, index_block, index_len);
     size_t cap = 0;
 
-    while (block_iter_next(&it)) {
+    while (ok && block_iter_next(&it)) {
         const uint8_t *hp = it.val;
         const uint8_t *hend = it.val + it.val_len;
         size_t off = 0, sz = 0;
         if (!read_handle(&hp, hend, &off, &sz)) {
             mcme_set_error("leveldb: %s has an unreadable block handle", path);
-            block_iter_free(&it);
-            goto fail;
+            ok = false;
+            break;
         }
 
         if (t->block_count == cap) {
@@ -505,8 +534,8 @@ bool mcme_ldb_table_open(McmeLdbTable *t, const char *path)
             void *grown = realloc(t->blocks, cap * sizeof *t->blocks);
             if (grown == NULL) {
                 mcme_set_error("leveldb: out of memory indexing %s", path);
-                block_iter_free(&it);
-                goto fail;
+                ok = false;
+                break;
             }
             t->blocks = grown;
         }
@@ -514,28 +543,27 @@ bool mcme_ldb_table_open(McmeLdbTable *t, const char *path)
         t->blocks[t->block_count].size = sz;
         t->block_count++;
     }
-    if (it.failed) {
+    if (ok && it.failed) {
         mcme_set_error("leveldb: malformed index entry in %s", path);
-        block_iter_free(&it);
-        goto fail;
+        ok = false;
     }
     block_iter_free(&it);
+    free(index_block);
+    if (!ok) goto fail;
 
     return true;
 
 fail:
-    free_inflated(t);
     free(t->path);
-    free(t->file);
     free(t->blocks);
+    if (t->fp != NULL) fclose(t->fp);
     memset(t, 0, sizeof *t);
     return false;
 }
 
 void mcme_ldb_table_close(McmeLdbTable *t)
 {
-    free_inflated(t);
-    free(t->file);
+    if (t->fp != NULL) fclose(t->fp);
     free(t->path);
     free(t->blocks);
     memset(t, 0, sizeof *t);
@@ -554,7 +582,7 @@ bool mcme_ldb_table_scan(McmeLdbTable *t,
                          McmeLdbRawEntry **entries)
 {
     for (size_t b = 0; b < t->block_count; ++b) {
-        const uint8_t *block = NULL;
+        uint8_t *block = NULL;
         size_t block_len = 0;
         if (!read_block(t, t->blocks[b].offset, t->blocks[b].size,
                         &block, &block_len)) {
@@ -562,6 +590,7 @@ bool mcme_ldb_table_scan(McmeLdbTable *t,
         }
         if (!block_is_wellformed(block, block_len)) {
             mcme_set_error("leveldb: malformed data block %zu in %s", b, t->path);
+            free(block);
             return false;
         }
 
@@ -574,20 +603,21 @@ bool mcme_ldb_table_scan(McmeLdbTable *t,
             e.voff = arrlen(*valbuf);
             e.vlen = it.val_len;
 
-            /* Copy into the buffers rather than pointing into the file, so the
-               entries outlive the table being closed. */
+            /* Copy into the buffers rather than pointing into the block, so
+               the entries outlive this block being freed. */
             for (size_t i = 0; i < it.key_len; ++i) arrput(*keybuf, it.key[i]);
             for (size_t i = 0; i < it.val_len; ++i) arrput(*valbuf, it.val[i]);
 
             arrput(*entries, e);
         }
-        if (it.failed) {
+        bool bad = it.failed;
+        if (bad) {
             mcme_set_error("leveldb: malformed entry in data block %zu of %s",
                            b, t->path);
-            block_iter_free(&it);
-            return false;
         }
         block_iter_free(&it);
+        free(block);
+        if (bad) return false;
     }
     return true;
 }

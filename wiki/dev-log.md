@@ -9,6 +9,98 @@ Status vocabulary:
 
 ---
 
+## 2026-10-13 — LevelDB tables are read a block at a time; file size is no longer a refusal
+
+### Built
+
+- The table reader streams. `mcme_ldb_table_open` stats the
+  file and keeps a `FILE *`: the footer is read from the
+  end, the metaindex and index blocks are read and freed,
+  and the scan reads one data block at a time — verify,
+  decode, copy the entries out, free it. The old path read
+  the whole file into memory and refused anything over
+  512 MiB, and it did so *after* the read: the ceiling did
+  not even save the allocation it was defending.
+- The 512 MiB number survives as a per-block guard: an
+  index handle naming more than that is refused before
+  anything is allocated. That was the ceiling's real job —
+  a bogus size must not drive an allocation — and at block
+  granularity, where reads actually happen, it still holds
+  it while the file beneath can be any size the store has.
+- With the slurp went the split ownership that needed
+  tracking: an uncompressed block used to alias the file
+  buffer while a decompressed one was recorded on the
+  handle for `table_close` to free. Now every block read
+  is owned by its caller and freed after its iteration,
+  compressed or not — one rule — and the `inflated` array
+  went with it.
+
+The bug was self-inflicted and total. D11 compaction
+writes the store as one table, so editing a real world —
+`db put`, `db del`, any write past the log trigger —
+compacted it into a single `.ldb`, and every mcme verb
+that opens the store then refused that file: `info`,
+`chunks`, `fill`, `get`, `convert`, `prune`, all dead on a
+world mcme itself had written. A 2.2 GB one, reported
+from the field.
+
+### Cross-check
+
+- New selftest `big table`, on a copy of the bedrock-forge
+  store: the `.ldb` is spliced with a 512 MiB hole right
+  before its footer — every handle still names its offset,
+  the footer is still the last 48 bytes, and the file now
+  reports over the old ceiling — and the store must open
+  and answer with the byte-identical view, sequences
+  included. Then the index handle is forged to claim
+  nearly the whole file: in bounds, so the bounds guard
+  passes; over the block ceiling, so the open must refuse
+  it and the message must say the size is why. Both
+  halves fail under the old reader, and the hole keeps
+  the test instant — the size is what is under test, not
+  the volume.
+- The real world that reported the bug,
+  `LP_pLAyME_28-Aug-26_copy`, whose db is one 2.2 GB table
+  mcme's own compaction wrote: `info` reads it with no
+  warn; `chunks` counts 46,594 (36,916 overworld / 4,290
+  nether / 5,388 end) in 12 s; and the command that
+  failed — `chunk prune <world> -200 0 -400 -400 0 -500`
+  — prunes all 104 of its columns in 24 s, 46,594 →
+  46,490 chunks, the tombstones one 18 KiB log record
+  over a view of 1,461,244 keys, under the 8M ceiling.
+- `./rebuild.sh test` PASS — 5 suites, 0 failures;
+  `./rebuild.sh release` builds; ref tools 28 (bedrock
+  column) + 25 (bedrock entity) + bedrock write (PASS) +
+  13 (prune) + 4 (convert) + 8 (java blocks) + 8 (java
+  fill) + 17 (region chunk) + 14 (inventory) + 9 (region
+  write) + 12 (compact); golden worlds untouched — every
+  fixture is copied before it is opened.
+
+### Known gaps
+
+- Compaction still writes the whole store as one table.
+  It reads back at any size now, but a multi-gigabyte
+  single file is not a shape stock LevelDB produces, and
+  whether Mojang's own reader takes one has not been
+  verified here. Splitting compaction output across files
+  is the honest fix.
+- The merged view is still built whole in memory, so a
+  store's ceiling is RAM rather than file size — this
+  world's view is ~2.4 GB of key and value bytes.
+- Every successful write reloads the view from disk
+  (D9-era choice: one merge implementation), so a prune
+  sliced into many batches pays a reload per batch;
+  slicing by bytes instead of by count would make any
+  realistic prune one record and one reload.
+
+### Next
+
+- Convert's two loudest drops — block entities and the
+  waterlogging layer — remain the next phase of that
+  feature.
+
+---
+
 ## 2026-10-13 — Prune: `mcme chunk prune`, whole chunks deleted by a box of columns
 
 ### Built

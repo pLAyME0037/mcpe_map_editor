@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "stb_ds.h"
@@ -1529,6 +1530,195 @@ static void test_compact(void)
 }
 
 /* ========================================================================
+ * A table past what a whole-file reader would take
+ *
+ * The reader used to load the whole .ldb into memory and refuse anything over
+ * 512 MiB — which meant refusing tables this directory's own compaction
+ * writes, since a compaction writes the store as one table. The test splices
+ * a hole before the footer so the file reports over that ceiling while every
+ * handle still names its own offset: the size is what is under test, not the
+ * volume, and a hole costs nothing to write or read.
+ * ======================================================================== */
+
+/* Finds the store's .ldb file (the fixtures hold exactly one). */
+static bool find_table(const char *dir, char *out, size_t cap)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL) return false;
+
+    struct dirent *e;
+    bool found = false;
+    while (!found && (e = readdir(d)) != NULL) {
+        size_t n = strlen(e->d_name);
+        if (n > 4 && strcmp(e->d_name + n - 4, ".ldb") == 0) {
+            snprintf(out, cap, "%s/%s", dir, e->d_name);
+            found = true;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* Rewrites the table with `hole` bytes of hole immediately before its
+   footer: every block handle still names its own offset, the footer is still
+   the last 48 bytes, and the file now reports over the ceiling the old
+   whole-file read enforced. fseek past EOF then one write is a hole. */
+static bool grow_table(const char *path, size_t hole)
+{
+    void *data = NULL;
+    size_t len = 0;
+    if (!mcme_fs_read(path, &data, &len)) return false;
+    if (len < MCME_LDB_FOOTER_SIZE) {
+        free(data);
+        return false;
+    }
+
+    FILE *f = fopen(path, "wb");
+    if (f == NULL) {
+        free(data);
+        return false;
+    }
+    bool ok = fwrite(data, 1, len - MCME_LDB_FOOTER_SIZE, f) ==
+              len - MCME_LDB_FOOTER_SIZE;
+    ok = ok && fseek(f, (long)hole, SEEK_CUR) == 0;
+    ok = ok && fwrite((uint8_t *)data + len - MCME_LDB_FOOTER_SIZE, 1,
+                      MCME_LDB_FOOTER_SIZE, f) == MCME_LDB_FOOTER_SIZE;
+    if (fclose(f) != 0) ok = false;
+    free(data);
+    return ok;
+}
+
+/* Rewrites the footer's index handle so it claims nearly the whole file:
+   still inside the file's bounds — so the bounds guard passes — but over the
+   per-block ceiling, which is what has to refuse it. Slack of eight bytes
+   keeps the trailer guard passing too, so the refusal can only come from the
+   size. */
+static bool forge_index_size(const char *path)
+{
+    FILE *f = fopen(path, "r+b");
+    if (f == NULL) return false;
+
+    bool ok = fseek(f, 0, SEEK_END) == 0;
+    long end = ok ? ftell(f) : -1;
+    ok = ok && end >= (long)MCME_LDB_FOOTER_SIZE &&
+         fseek(f, end - MCME_LDB_FOOTER_SIZE, SEEK_SET) == 0;
+
+    uint8_t footer[MCME_LDB_FOOTER_SIZE];
+    ok = ok && fread(footer, 1, MCME_LDB_FOOTER_SIZE, f) ==
+                MCME_LDB_FOOTER_SIZE;
+
+    uint64_t meta_off = 0, meta_size = 0, index_off = 0;
+    const uint8_t *p = footer;
+    const uint8_t *limit = footer + MCME_LDB_FOOTER_SIZE - 8;
+    if (ok) {
+        size_t n = mcme_ldb_varint_get(p, limit, &meta_off);
+        p += n;
+        ok = n != 0;
+        n = ok ? mcme_ldb_varint_get(p, limit, &meta_size) : 0;
+        p += n;
+        ok = ok && n != 0;
+        n = ok ? mcme_ldb_varint_get(p, limit, &index_off) : 0;
+        ok = ok && n != 0;
+    }
+    uint64_t claimed = ok ? (uint64_t)end - index_off - 8 : 0;
+
+    McmeBuffer out;
+    mcme_buffer_init(&out);
+    if (ok) {
+        ok = mcme_ldb_varint_put(&out, meta_off) &&
+             mcme_ldb_varint_put(&out, meta_size) &&
+             mcme_ldb_varint_put(&out, index_off) &&
+             mcme_ldb_varint_put(&out, claimed);
+        while (ok && out.len < MCME_LDB_FOOTER_SIZE - 8) {
+            ok = mcme_buffer_append_u8(&out, 0);
+        }
+        for (int i = 0; ok && i < 8; ++i) {
+            ok = mcme_buffer_append_u8(&out,
+                 (uint8_t)((MCME_LDB_MAGIC >> (i * 8)) & 0xff));
+        }
+    }
+    if (ok) ok = fseek(f, end - MCME_LDB_FOOTER_SIZE, SEEK_SET) == 0;
+    if (ok) ok = fwrite(out.data, 1, out.len, f) == out.len;
+    mcme_buffer_free(&out);
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+static void test_big_table(void)
+{
+    const char *src = "tests/golden/worlds/bedrock-forge/db";
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP big table test (%s not found)\n", src);
+        return;
+    }
+
+    char tmp[] = "/tmp/opencode/mcme_ldb_big_XXXXXX";
+    CHECK(mkdtemp(tmp) != NULL);
+    char dbdir[512];
+    snprintf(dbdir, sizeof dbdir, "%s/db", tmp);
+    CHECK(copy_store(src, dbdir));
+
+    char table_path[600];
+    CHECK_MSG(find_table(dbdir, table_path, sizeof table_path),
+              "no .ldb in the copied store");
+
+    /* The view before the splice: the grown file must read back exactly
+       this, byte for byte, sequences included. */
+    OwnedEntry *before = NULL;
+    {
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        if (db != NULL) {
+            mcme_leveldb_iterate(db, capture_owned, &before);
+            mcme_leveldb_close(db);
+        }
+        CHECK(before != NULL && (size_t)arrlen(before) > 0);
+    }
+
+    /* --- Grow past the ceiling: the store opens and answers with the same
+           view. Under the old whole-file read this open refused outright. */
+    {
+        const size_t hole = (size_t)512u * 1024u * 1024u;
+        CHECK(grow_table(table_path, hole));
+
+        struct stat st;
+        CHECK_MSG(stat(table_path, &st) == 0 &&
+                  (size_t)st.st_size > (size_t)512u * 1024u * 1024u,
+                  "table did not grow past the ceiling");
+
+        McmeLevelDb *db = NULL;
+        CHECK_MSG(mcme_leveldb_open(&db, dbdir),
+                  "open of the grown store failed: %s", mcme_last_error());
+        if (db != NULL) {
+            OwnedEntry *seen = NULL;
+            mcme_leveldb_iterate(db, capture_owned, &seen);
+            CHECK_MSG(same_view(before, (size_t)arrlen(before),
+                                seen, (size_t)arrlen(seen)),
+                      "view changed after growing the table");
+            free_owned(seen);
+            mcme_leveldb_close(db);
+        }
+    }
+
+    /* --- The forged index handle: in bounds but over the block ceiling, so
+           the open must refuse it — and say the size is why. */
+    {
+        CHECK(forge_index_size(table_path));
+
+        McmeLevelDb *db = NULL;
+        CHECK(!mcme_leveldb_open(&db, dbdir));
+        CHECK(db == NULL);
+        CHECK_MSG(strstr(mcme_last_error(), "over the") != NULL,
+                  "expected the block-size ceiling, got: %s",
+                  mcme_last_error());
+    }
+
+    free_owned(before);
+    remove_store(dbdir);
+    rmdir(tmp);
+}
+
+/* ========================================================================
  * Entry point
  * ======================================================================== */
 
@@ -1556,6 +1746,9 @@ int mcme_test_leveldb(void)
 
     printf("  compact\n");
     test_compact();
+
+    printf("  big table\n");
+    test_big_table();
 
     test_store();
 

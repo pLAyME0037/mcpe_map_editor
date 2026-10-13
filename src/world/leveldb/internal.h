@@ -20,6 +20,9 @@
    the fastest way to recognise one. */
 #define MCME_LDB_MAGIC 0xdb4775248b80fb57ULL
 
+/* The footer is fixed width: two block handles, padded, then the magic. */
+#define MCME_LDB_FOOTER_SIZE 48
+
 /* ValueType, as stored in the low byte of an internal key's tag. */
 typedef enum {
     MCME_LDB_DELETION = 0,
@@ -138,21 +141,19 @@ typedef struct {
     size_t voff, vlen;
 } McmeLdbRawEntry;
 
+/* A table is read, never loaded: `fp` stays open while the handle is open and
+   read_block() seeks out one block at a time. The file's size is a property of
+   the store, not a memory budget — compaction writes the whole store as one
+   table, which for a real world runs to gigabytes, and a reader that slurped
+   the file would refuse what this directory's own writer produced. */
 typedef struct {
-    uint8_t *file;
+    FILE    *fp;
     size_t   size;
     char    *path;
 
     /* Block offsets, collected from the index block. */
     struct { size_t offset; size_t size; } *blocks;
     size_t block_count;
-
-    /* Blocks that had to be decompressed out of the file. Each is owned and
-       freed on close; read_block() hands back a pointer into one. An
-       uncompressed block is a pointer into `file` and never appears here. */
-    uint8_t **inflated;
-    size_t    inflated_count;
-    size_t    inflated_cap;
 } McmeLdbTable;
 
 bool mcme_ldb_table_open(McmeLdbTable *t, const char *path);
