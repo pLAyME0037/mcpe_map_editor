@@ -9,7 +9,114 @@ Status vocabulary:
 
 ---
 
-## 2026-10-12 — Java blocks: `chunk get`/`chunk set`
+## 2026-10-13 — Java fill: `chunk fill` for both worlds
+
+### Built
+
+- `chunk fill` answers for Java worlds now, same
+  box, corners in any order, the probe deciding the
+  half that edits — Bedrock's body moved into its own
+  branch unchanged, Java's into `java_fill`. A script
+  fills one world or the other without knowing which.
+- The box goes through the palettes as one pass per
+  section, the unit the fill exists for: decode the
+  section's 4096 entries once, point the box's
+  positions at the target entry, repack once. A box a
+  million blocks long costs one loop per section it
+  touches, not a palette edit per block. The target is
+  reused from the palette when it holds the block and
+  appended when it does not — the append-only rule
+  `set` established, one truth for both verbs.
+- A section the box covers end to end lands the
+  format's own shorthand for one block: a single-entry
+  palette and no data array, the stale one gone with
+  the compound it was written in — what the reference
+  itself writes for a section that holds one block.
+  The air rules carry over unchanged: air where no
+  section covers invents nothing, and a fill that
+  changes nothing rewrites nothing — `changed` false,
+  the CLI skips the write, every region file keeps its
+  bytes.
+- The fill runs in two passes over every region file
+  the box touches — check, then write — so one bad
+  chunk refuses the whole fill with nothing written
+  anywhere. Here Java parts company with Bedrock
+  fill, which creates the subchunks it needs: a chunk
+  document carries bookkeeping (`Status`,
+  `Heightmaps`) mcme will not invent, so a chunk the
+  region file does not have is exit 2 for the whole
+  box. What is promised stops at the pass boundary,
+  like Bedrock's honesty across puts: a chunk gone
+  between check and fill leaves the earlier writes
+  already landed. A region handle never survives its
+  own write — open, read, close, then append — so no
+  table is ever read stale.
+- Refusals ride the shared vocabulary
+  (`USAGE`/`NOT_THERE`/`NOT_READABLE`/`INTERNAL`/
+  `STORE`) into the same exit codes the rest of the
+  write verbs speak; the check's own message stands,
+  the write's is wrapped in "chunk: " the way
+  Bedrock's is.
+- **The bug the ref tool caught before the commit:**
+  a packing slot holds one position *of its chunk* —
+  `(18, 44, 3)` shares slot sx=2 with in-box
+  `(2, 44, 3)`, but they are different chunks' trees.
+  The first version tested the box against the residue
+  class, so a box reaching a neighbour's column moved
+  this chunk's slot too. `mcme_java_fill_box` now
+  takes the chunk's `cx, cz` and tests the box against
+  the chunk's own world columns, in 64-bit arithmetic
+  so a far chunk cannot overflow them. A selftest case
+  (a box entirely past this tree's columns) pins it.
+
+### Cross-check
+
+- `tools/ref_java_fill.py`, 8 checks, all on copies
+  of the golden worlds, read with no mcme code — its
+  own sector-table walk, its own palette unpacking.
+  ABSENT: a box reaching a region file the world does
+  not have, and a box reaching a chunk the file does
+  not have, both exit 2 with every region file byte
+  for byte unchanged. FILL: a whole-section box lands
+  one entry and no data array, and the walk reads the
+  block at every position of the box. NO-OP: the same
+  fill again, and air on an all-air section, leave the
+  region file identical. PARTIAL: the box's edges and
+  the section's own edges keep their air, the palette
+  is air plus the block with its Properties read back,
+  and `chunk get` agrees with the walk. CROSS: a box
+  spanning two stored chunks fills both and every
+  neighbour — chunk, section, edge — keeps its block.
+  CROSS-FILE: a box in `r.-1.-1.mca` fills chunk
+  (-1, -1) there, shorthand included. ROOM: usage and
+  absence codes, and Bedrock fill still writes what
+  its own `get` reads back after the restructure.
+- Selftest `test_java_fill`: partial boxes with
+  corners in either order, target reuse without
+  palette growth, the box-past-this-chunk case, the
+  uniform shorthand with its data array gone, no-ops,
+  section creation at both ends in Y order, air that
+  invents nothing, every refusal class (nulls, bad
+  states, non-compound root, a box past the section
+  byte both directions, a data array too short), and
+  the file-level pair — check refuses with the bytes
+  untouched, fill writes only what changes, the
+  second run changes nothing.
+- Verified at commit: `./rebuild.sh test` PASS — 5
+  suites, 0 failures; `./rebuild.sh release` builds;
+  ref tools 8 (java fill) + 8 (java blocks) + 12
+  (compact) + 9 (write) + 17 (chunk) + 14 (inventory)
+  + 25 (entity) + 19 (bedrock write) + 28 (bedrock
+  column); align.py 0 misalignments; golden worlds
+  untouched — every write in the suite ran against a
+  scratch copy.
+
+### Next
+
+- Phase 4 reservation `convert` is what the roadmap
+  names after this.
+
+---
 
 ### Built
 

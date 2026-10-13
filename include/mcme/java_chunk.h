@@ -21,11 +21,13 @@
 #define MCME_JAVA_CHUNK_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "mcme/core.h"
 #include "mcme/nbt.h"
 #include "mcme/bedrock_write.h"   /* McmeWriteRefusal: the CLI's shared
-                                     write vocabulary, as in region.h */
+                                     write vocabulary, as in region.h —
+                                     and McmeBox, the corners fill speaks */
 
 /*
  * The block at world block coordinates (x, y, z) inside the chunk
@@ -81,5 +83,82 @@ bool mcme_java_set_block(McmeArena *arena, McmeTag *root,
                          const char *name, const McmeTag *states,
                          bool *changed,
                          McmeWriteRefusal *refusal);
+
+/*
+ * Every position of `box` inside the chunk document `root` becomes
+ * the block — the whole box in one pass: each section the box
+ * touches is decoded once, the box's positions pointed at the
+ * target entry, and the section repacked once, rather than a
+ * palette edit per block. The target is reused from the palette
+ * when it holds the block and appended when it does not, never
+ * replacing an entry in place — see mcme_java_set_block. A section
+ * the box covers end to end lands as the format's own shorthand
+ * for one block: a single-entry palette and no data array. Sections
+ * the chunk does not list are created and kept in Y order; air on a
+ * position no section covers edits nothing, the column already
+ * says it.
+ *
+ * The tree is one chunk's, and `cx`, `cz` say which: a packing
+ * slot holds one position of that chunk, so the box is tested
+ * against the chunk's own world columns — x = cx*16 + (slot), z =
+ * cz*16 + (slot) — not against the residue class. A box reaching
+ * another chunk's column with the same slot leaves this one alone.
+ *
+ * `changed` (when not NULL) reports whether the tree says anything
+ * different afterwards: a box already standing in this block edits
+ * nothing, and the caller writes nothing.
+ *
+ * `refusal` (when not NULL): USAGE for a null argument or states
+ * that are not a compound; NOT_READABLE where the stored tree is
+ * not the format mcme reads; INTERNAL for arithmetic past the
+ * format — a box whose Y spans past the byte that keeps a
+ * section's Y, a palette past the 15 bits a packed entry allows.
+ *
+ * The tree is edited; writing each chunk back is the caller's job.
+ */
+bool mcme_java_fill_box(McmeArena *arena, McmeTag *root,
+                        int cx, int cz,
+                        const McmeBox *box,
+                        const char *name, const McmeTag *states,
+                        bool *changed,
+                        McmeWriteRefusal *refusal);
+
+/*
+ * Every chunk of `cx1..cx2, cz1..cz2` in the region file `file`,
+ * put through the same edit mcme_java_fill_box makes and never
+ * written: the preflight the fill runs over every file the box
+ * touches BEFORE writing any of them, so one bad chunk refuses the
+ * whole fill with nothing written anywhere. A chunk the region file
+ * does not have refuses with NOT_THERE — a chunk document carries
+ * bookkeeping mcme will not invent, which is where Java fill parts
+ * from Bedrock's, which creates the subchunks it needs. A chunk
+ * that will not read, or whose tree the edit cannot make, refuses
+ * with NOT_READABLE.
+ */
+bool mcme_java_fill_check(const char *file,
+                          int cx1, int cx2, int cz1, int cz2,
+                          const McmeBox *box,
+                          const char *name, const McmeTag *states,
+                          McmeWriteRefusal *refusal);
+
+/*
+ * The same chunks, edited and written: every section the box
+ * touches repacked once, each changed chunk re-encoded, compressed
+ * and appended through mcme_region_set_chunk at timestamp `ts`, a
+ * chunk whose sections the box does not change not written at all.
+ * `changed` (when not NULL) reports whether any chunk changed — a
+ * fill that was already this block rewrites nothing.
+ *
+ * Same refusals as mcme_java_fill_check. Run that first over every
+ * file the box touches: this one alone promises no transaction
+ * across chunks, and a chunk gone between check and fill refuses
+ * with NOT_THERE with the earlier writes already landed.
+ */
+bool mcme_java_fill(const char *file,
+                    int cx1, int cx2, int cz1, int cz2,
+                    const McmeBox *box,
+                    const char *name, const McmeTag *states,
+                    uint32_t ts, bool *changed,
+                    McmeWriteRefusal *refusal);
 
 #endif /* MCME_JAVA_CHUNK_H */

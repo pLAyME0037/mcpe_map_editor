@@ -467,8 +467,8 @@ not take the LOCK — the game can hold the world open.
 ### `mcme chunk fill`
 
 Sets a box of blocks to one block — the whole box, in one command, one
-payload write per subchunk the box touches. Bedrock only: a Java world is
-answered by `chunk get` and `chunk set`, one block at a time.
+payload write per subchunk the box touches (Bedrock), one repack per
+section of every chunk the box touches (Java).
 
 ```
 mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>
@@ -494,10 +494,31 @@ the blocks in the box; a box entirely inside one subchunk is one payload
 write. There is no transaction across puts, so a subchunk that fails
 part-way leaves the ones before it already written.
 
+A Java world is edited the same way at a different grain: the box is
+applied to each section of each chunk it touches — one decode and one
+repack per section, not one palette edit per block. A section the box
+covers end to end lands as the format's own shorthand for one block: a
+single-entry palette and no data array. Sections the chunk does not
+list are created and kept in Y order, and air keeps the rule `set`
+gives it — a position no section covers already holds air, so that
+edit invents nothing. What differs is the unit of refusal. Bedrock
+fill creates the subchunks it needs; Java will not invent a chunk
+document — the bookkeeping (`Status`, `Heightmaps`) would have to come
+from somewhere — so every region file the box touches is checked
+first, and a chunk the region file does not have refuses the whole
+fill, exit 2, with nothing written anywhere. A fill that changes
+nothing rewrites nothing: a box already standing in this block leaves
+every region file byte-identical. There is no transaction across
+chunks either — a chunk that fails part-way leaves the ones before it
+already written, the same honesty Bedrock keeps across puts.
+
 Exit codes: `0` filled, `1` usage (bad coordinate, bad block spec, a Y the
-format cannot address), `2` not a world, not a Bedrock world, or a subchunk
-the box touches the game deleted, `3` a subchunk the box touches is not a
-format mcme reads (or is the all-air marker), `4` store error, `6` internal.
+format cannot address), `2` not a world, not a Bedrock or Java world, a
+subchunk the box touches the game deleted (Bedrock), or a chunk the box
+touches the region file does not have (Java), `3` a subchunk the box
+touches is not a format mcme reads (or is the all-air marker), or a
+chunk the box touches that will not read or is not the format the edit
+needs (Java), `4` store error, `6` internal.
 Success prints nothing.
 
 ### `mcme chunk stats`

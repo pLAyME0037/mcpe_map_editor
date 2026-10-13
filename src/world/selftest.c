@@ -1287,6 +1287,351 @@ static void test_java_chunk(void)
     mcme_arena_free(arena);
 }
 
+static void test_java_fill(void)
+{
+    printf("  java fill (one repack per section, whole-fill refusals)\n");
+
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) return;
+
+    bool changed;
+    McmeWriteRefusal refusal;
+
+    /* A box inside one section: only the slots it reaches move,
+       corners in either order, and the target entry is reused the
+       next time. */
+    {
+        McmeTag *root = two_block_chunk(arena, 0, 1, 256);
+        CHECK(root != NULL);
+        if (root != NULL) {
+            McmeBox box = { 15, 0, 15, 8, 15, 8 };  /* reversed */
+            changed = true; refusal = MCME_WRITE_REFUSAL_NONE;
+            CHECK(mcme_java_fill_box(arena, root, 0, 0, &box,
+                                     "minecraft:oak_planks", NULL,
+                                     &changed, &refusal));
+            CHECK(changed);
+            check_java_block(root, 0, 0, 0, "minecraft:dirt");
+            check_java_block(root, 7, 5, 7, "minecraft:stone");
+            check_java_block(root, 15, 5, 7, "minecraft:stone");
+            check_java_block(root, 8, 0, 8, "minecraft:oak_planks");
+            check_java_block(root, 15, 15, 15,
+                             "minecraft:oak_planks");
+            const McmeTag *secs = mcme_nbt_get(root, "sections");
+            const McmeTag *bs = NULL;
+            if (secs != NULL && secs->list.len > 0) {
+                bs = mcme_nbt_get(&secs->list.items[0],
+                                  "block_states");
+            }
+            CHECK(bs != NULL && bs->compound.len > 0);
+            const McmeTag *pal = bs != NULL
+                ? mcme_nbt_get(bs, "palette") : NULL;
+            CHECK(pal != NULL && pal->list.len == 3);
+
+            /* the same box again: the block is already standing
+               there, so nothing is edited and nothing to grow */
+            changed = true;
+            CHECK(mcme_java_fill_box(arena, root, 0, 0, &box,
+                                     "minecraft:oak_planks", NULL,
+                                     &changed, &refusal));
+            CHECK(!changed);
+            CHECK(pal != NULL && pal->list.len == 3);
+
+            /* a second box with the same block reuses that entry:
+               three stays, no fourth */
+            McmeBox box2 = { 0, 0, 0, 3, 15, 3 };
+            changed = false;
+            CHECK(mcme_java_fill_box(arena, root, 0, 0, &box2,
+                                     "minecraft:oak_planks", NULL,
+                                     &changed, &refusal));
+            CHECK(changed);
+            check_java_block(root, 0, 0, 0, "minecraft:oak_planks");
+            CHECK(pal != NULL && pal->list.len == 3);
+
+            /* a box in another chunk's columns: this tree holds
+               x 0..15, so a box at x 16..17 reaches nothing in it
+               — the same slot in the next chunk is not this
+               chunk's position */
+            McmeBox elsewhere = { 16, 0, 8, 17, 15, 15 };
+            changed = true;
+            CHECK(mcme_java_fill_box(arena, root, 0, 0, &elsewhere,
+                                     "minecraft:dirt", NULL, &changed,
+                                     &refusal));
+            CHECK(!changed);
+            check_java_block(root, 0, 0, 9, "minecraft:stone");
+
+            /* a box covering the whole section lands the format's
+               own shorthand for one block: a single-entry palette
+               and no data array, the stale one gone with the
+               compound it was written in. The compound itself is
+               replaced, so the tree is asked again. */
+            McmeBox all = { -5, 0, -3, 20, 15, 18 };
+            changed = false;
+            CHECK(mcme_java_fill_box(arena, root, 0, 0, &all,
+                                     "minecraft:stone", NULL,
+                                     &changed, &refusal));
+            CHECK(changed);
+            secs = mcme_nbt_get(root, "sections");
+            bs = (secs != NULL && secs->list.len > 0)
+                ? mcme_nbt_get(&secs->list.items[0],
+                               "block_states") : NULL;
+            pal = bs != NULL ? mcme_nbt_get(bs, "palette") : NULL;
+            CHECK(pal != NULL && pal->list.len == 1);
+            CHECK(bs != NULL && mcme_nbt_get(bs, "data") == NULL);
+            check_java_block(root, 0, 0, 0, "minecraft:stone");
+            check_java_block(root, 15, 15, 15, "minecraft:stone");
+            changed = true;
+            CHECK(mcme_java_fill_box(arena, root, 0, 0, &all,
+                                     "minecraft:stone", NULL,
+                                     &changed, &refusal));
+            CHECK(!changed);
+
+            /* air through a section that holds blocks: still the
+               shorthand, one entry, no data */
+            changed = false;
+            CHECK(mcme_java_fill_box(arena, root, 0, 0, &all,
+                                     "minecraft:air", NULL,
+                                     &changed, &refusal));
+            CHECK(changed);
+            secs = mcme_nbt_get(root, "sections");
+            bs = (secs != NULL && secs->list.len > 0)
+                ? mcme_nbt_get(&secs->list.items[0],
+                               "block_states") : NULL;
+            pal = bs != NULL ? mcme_nbt_get(bs, "palette") : NULL;
+            CHECK(pal != NULL && pal->list.len == 1);
+            CHECK(bs != NULL && mcme_nbt_get(bs, "data") == NULL);
+            check_java_block(root, 8, 8, 8, "minecraft:air");
+        }
+    }
+
+    /* Sections the chunk does not list: created, kept in Y order,
+       and air where no section covers invents nothing. On the
+       golden chunk, whose sections 0..15 are stored without
+       block_states — the format's own air. */
+    {
+        char src[512];
+        char dst[] = "build/jf.mca";
+        snprintf(src, sizeof src, "%s/region/r.0.0.mca", kWorldDir);
+        void *golden;
+        size_t golden_len;
+        if (!mcme_fs_read(src, &golden, &golden_len)) {
+            printf("  SKIP java fill (cannot read %s)\n", src);
+            mcme_arena_free(arena);
+            return;
+        }
+        CHECK(mcme_fs_write(dst, golden, golden_len));
+        free(golden);
+
+        McmeRegion reg;
+        CHECK(mcme_region_open(&reg, dst));
+        McmeBuffer nbt;
+        mcme_buffer_init(&nbt);
+        CHECK(mcme_region_read_chunk(&reg, 0, 0, NULL, &nbt));
+        mcme_region_close(&reg);
+        McmeNbtDoc doc;
+        CHECK(mcme_nbt_parse(&doc, arena, nbt.data, nbt.len, false));
+        mcme_buffer_free(&nbt);
+        McmeTag *root = doc.root;
+
+        const McmeTag *secs = mcme_nbt_get(root, "sections");
+        CHECK(secs != NULL && secs->list.len == 16);
+
+        /* stone above the top: section 16 appended, in order.
+           Creating a section replaces root's list with a grown
+           one, so the tree is asked again after each fill. */
+        McmeBox hi = { 0, 256, 0, 15, 271, 15 };
+        changed = false;
+        CHECK(mcme_java_fill_box(arena, root, 0, 0, &hi, "minecraft:stone",
+                                 NULL, &changed, &refusal));
+        CHECK(changed);
+        secs = mcme_nbt_get(root, "sections");
+        CHECK(secs != NULL && secs->list.len == 17);
+        const McmeTag *top = (secs != NULL && secs->list.len == 17)
+            ? &secs->list.items[16] : NULL;
+        const McmeTag *ytag = top != NULL
+            ? mcme_nbt_get(top, "Y") : NULL;
+        CHECK(ytag != NULL && mcme_nbt_byte_or(ytag, -99) == 16);
+        check_java_block(root, 0, 256, 0, "minecraft:stone");
+        check_java_block(root, 0, 255, 0, "minecraft:air");
+
+        /* stone below the bottom: section -1 goes to the front */
+        McmeBox lo = { 0, -16, 0, 15, -1, 15 };
+        changed = false;
+        CHECK(mcme_java_fill_box(arena, root, 0, 0, &lo, "minecraft:stone",
+                                 NULL, &changed, &refusal));
+        CHECK(changed);
+        secs = mcme_nbt_get(root, "sections");
+        CHECK(secs != NULL && secs->list.len == 18);
+        const McmeTag *first = (secs != NULL && secs->list.len == 18)
+            ? &secs->list.items[0] : NULL;
+        ytag = first != NULL ? mcme_nbt_get(first, "Y") : NULL;
+        CHECK(ytag != NULL && mcme_nbt_byte_or(ytag, -99) == -1);
+        check_java_block(root, 0, -1, 0, "minecraft:stone");
+
+        /* air where no section covers: the column already says
+           it, so no section is invented to hold it */
+        McmeBox lower = { 0, -32, 0, 15, -17, 15 };
+        changed = true;
+        CHECK(mcme_java_fill_box(arena, root, 0, 0, &lower, "minecraft:air",
+                                 NULL, &changed, &refusal));
+        CHECK(!changed);
+        CHECK(secs != NULL && secs->list.len == 18);
+        check_java_block(root, 0, -32, 0, "minecraft:air");
+
+        remove(dst);
+    }
+
+    /* The refusals a box can carry. */
+    {
+        McmeBox box = { 0, 0, 0, 1, 1, 1 };
+        McmeTag *root = two_block_chunk(arena, 0, 1, 256);
+        CHECK(root != NULL);
+        McmeTag *not_root = mcme_nbt_new(arena, MCME_TAG_String);
+        McmeTag *bad_states = mcme_nbt_new(arena, MCME_TAG_String);
+        CHECK(not_root != NULL && bad_states != NULL);
+        const char *s = "x";
+        if (bad_states != NULL) {
+            CHECK(mcme_nbt_set_string(arena, bad_states, s, 1));
+        }
+
+        changed = true; refusal = MCME_WRITE_REFUSAL_NONE;
+        CHECK(!mcme_java_fill_box(NULL, root, 0, 0, &box,
+                                  "minecraft:stone", NULL, &changed,
+                                  &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!changed);          /* cleared before anything else */
+        CHECK(!mcme_java_fill_box(arena, NULL, 0, 0, &box,
+                                  "minecraft:stone", NULL, &changed,
+                                  &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_java_fill_box(arena, root, 0, 0, NULL, "minecraft:stone",
+                                  NULL, &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_java_fill_box(arena, root, 0, 0, &box, NULL, NULL,
+                                  &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_java_fill_box(arena, root, 0, 0, &box, "minecraft:stone",
+                                  bad_states, &changed, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_java_fill_box(arena, not_root, 0, 0, &box,
+                                  "minecraft:stone", NULL, &changed,
+                                  &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+
+        /* a box whose Y spans past the byte that keeps a section's
+           Y — the CLI's range check answers this one with usage
+           before the library sees it, so the library's own guard
+           shows here: arithmetic past the format is internal */
+        McmeBox deep = { 0, -5000, 0, 1, -4000, 1 };
+        CHECK(!mcme_java_fill_box(arena, root, 0, 0, &deep,
+                                  "minecraft:stone", NULL, &changed,
+                                  &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_INTERNAL);
+        McmeBox sky = { 0, 3000, 0, 1, 3100, 1 };
+        CHECK(!mcme_java_fill_box(arena, root, 0, 0, &sky,
+                                  "minecraft:stone", NULL, &changed,
+                                  &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_INTERNAL);
+
+        /* a data array too short for the palette it carries: the
+           decode the box would repack does not hold */
+        McmeTag *short_chunk = two_block_chunk(arena, 0, 1, 1);
+        CHECK(short_chunk != NULL);
+        CHECK(!mcme_java_fill_box(arena, short_chunk, 0, 0, &box,
+                                  "minecraft:stone", NULL, &changed,
+                                  &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+
+        CHECK(!mcme_java_fill_check(NULL, 0, 0, 0, 0, &box,
+                                    "minecraft:stone", NULL,
+                                    &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    }
+
+    /* The file-level fill on the golden chunk's region file: the
+       check refuses the whole box before a byte is written, the
+       fill writes only the chunks it changed, and a second run
+       changes nothing at all. */
+    {
+        char src[512];
+        char dst[] = "build/jf2.mca";
+        snprintf(src, sizeof src, "%s/region/r.0.0.mca", kWorldDir);
+        void *golden;
+        size_t golden_len;
+        CHECK(mcme_fs_read(src, &golden, &golden_len));
+        CHECK(mcme_fs_write(dst, golden, golden_len));
+        free(golden);
+
+        /* The golden file holds chunks (0,0), (1,0), (0,1) and
+           (31,31): a box reaching chunk (1,1) touches a chunk the
+           region file does not have, and nothing may be written */
+        void *before;
+        size_t before_len;
+        CHECK(mcme_fs_read(dst, &before, &before_len));
+        CHECK(before_len == golden_len);
+
+        McmeBox bad = { 0, 0, 0, 31, 15, 31 };
+        refusal = MCME_WRITE_REFUSAL_NONE;
+        CHECK(!mcme_java_fill_check(dst, 0, 1, 0, 1, &bad,
+                                    "minecraft:stone", NULL,
+                                    &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+        void *checked;
+        size_t checked_len;
+        CHECK(mcme_fs_read(dst, &checked, &checked_len));
+        CHECK(checked_len == before_len
+              && memcmp(checked, before, checked_len) == 0);
+
+        /* the box the file can hold: chunks (0,0) and (1,0) */
+        McmeBox box = { 0, 0, 0, 31, 15, 15 };
+        changed = false;
+        CHECK(mcme_java_fill(dst, 0, 1, 0, 0, &box, "minecraft:stone",
+                             NULL, 1u, &changed, &refusal));
+        CHECK(changed);
+        {
+            McmeArena *a2 = mcme_arena_new();
+            CHECK(a2 != NULL);
+            McmeRegion reg;
+            CHECK(mcme_region_open(&reg, dst));
+            McmeBuffer nbt;
+            mcme_buffer_init(&nbt);
+            CHECK(mcme_region_read_chunk(&reg, 1, 0, NULL, &nbt));
+            mcme_region_close(&reg);
+            McmeNbtDoc d2;
+            CHECK(mcme_nbt_parse(&d2, a2, nbt.data, nbt.len, false));
+            mcme_buffer_free(&nbt);
+            check_java_block(d2.root, 20, 5, 3, "minecraft:stone");
+            check_java_block(d2.root, 20, 16, 3, "minecraft:air");
+            mcme_arena_free(a2);
+        }
+
+        /* the same fill again: no chunk says anything different,
+           so the file keeps its bytes */
+        void *after;
+        size_t after_len;
+        CHECK(mcme_fs_read(dst, &after, &after_len));
+        changed = true;
+        CHECK(mcme_java_fill(dst, 0, 1, 0, 0, &box, "minecraft:stone",
+                             NULL, 2u, &changed, &refusal));
+        CHECK(!changed);
+        void *again;
+        size_t again_len;
+        CHECK(mcme_fs_read(dst, &again, &again_len));
+        CHECK(again_len == after_len
+              && memcmp(again, after, again_len) == 0);
+        CHECK(after_len != before_len
+              || memcmp(after, before, after_len) != 0);
+
+        free(before);
+        free(checked);
+        free(after);
+        free(again);
+        remove(dst);
+    }
+
+    mcme_arena_free(arena);
+}
+
 /* Builds a chunk key the way a store holds one: x, z, [dimension], tag,
    [index]. Kept local so the test states the layout it expects rather than
    calling the code under test to build its own input. */
@@ -3738,6 +4083,7 @@ int mcme_test_world(void)
     test_region_write();
     test_region_compact();
     test_java_chunk();
+    test_java_fill();
 
     return g_failed;
 }

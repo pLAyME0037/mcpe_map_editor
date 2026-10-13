@@ -5,9 +5,12 @@
  */
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "mcme/java_chunk.h"
+#include "mcme/region.h"   /* the fill's read and write: the region file
+                              the chunks live in */
 
 enum {
     kBlocksPerSection = 4096,  /* 16 x 16 x 16                */
@@ -225,6 +228,77 @@ static bool spec_is_air(const char *name, const McmeTag *states)
                    && states->compound.len == 0));
 }
 
+/* The block as a palette entry: its Name, and its Properties when
+   the states say any — the compound the reference stores. */
+static McmeTag *block_entry(McmeArena *arena, const char *name,
+                            const McmeTag *states)
+{
+    McmeTag *entry = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *nm = mcme_nbt_new(arena, MCME_TAG_String);
+    if (entry == NULL || nm == NULL
+            || !mcme_nbt_compound_init(arena, entry, 2)
+            || !mcme_nbt_set_string(arena, nm, name, strlen(name))
+            || !mcme_nbt_compound_put(arena, entry, "Name", 4, nm)) {
+        return NULL;
+    }
+    if (states != NULL && states->compound.len > 0) {
+        if (!mcme_nbt_compound_put(arena, entry, "Properties", 10,
+                                   (McmeTag *)states)) {
+            return NULL;
+        }
+    }
+    return entry;
+}
+
+/* The palette for an append: the old entries as they stand — the
+   implicit air becoming the explicit entry 0 the format says it
+   was — with `entry` at the end. */
+static McmeTag *grown_palette(McmeArena *arena, const SectionPalette *v,
+                              size_t old_len, size_t new_len,
+                              const McmeTag *entry)
+{
+    McmeTag *pal = mcme_nbt_new(arena, MCME_TAG_List);
+    if (pal == NULL
+            || !mcme_nbt_list_alloc(arena, pal, MCME_TAG_Compound,
+                                    new_len)) {
+        return NULL;
+    }
+    if (v->palette == NULL) {
+        McmeTag *air = mcme_nbt_new(arena, MCME_TAG_Compound);
+        McmeTag *anm = mcme_nbt_new(arena, MCME_TAG_String);
+        if (air == NULL || anm == NULL
+                || !mcme_nbt_compound_init(arena, air, 1)
+                || !mcme_nbt_set_string(arena, anm, kAir,
+                                        sizeof kAir - 1)
+                || !mcme_nbt_compound_put(arena, air, "Name", 4,
+                                          anm)) {
+            return NULL;
+        }
+        pal->list.items[0] = *air;
+    } else {
+        for (size_t i = 0; i < old_len; ++i) {
+            pal->list.items[i] = v->palette->list.items[i];
+        }
+    }
+    pal->list.items[old_len] = *entry;
+    return pal;
+}
+
+/* The entry to point at: an existing one when the palette holds
+   the block, one past the end when it does not. Never replacing an
+   entry in place — that would change what every other position
+   holding the old entry means; it keeps its index. */
+static size_t target_index(const SectionPalette *v, size_t old_len,
+                           const char *name, const McmeTag *states)
+{
+    for (size_t i = 0; v->palette != NULL && i < old_len; ++i) {
+        if (entry_is(mcme_nbt_at(v->palette, i), name, states)) {
+            return i;
+        }
+    }
+    return old_len;
+}
+
 bool mcme_java_block_spec(const McmeTag *root, int x, int y, int z,
                           McmeBuffer *out)
 {
@@ -397,17 +471,8 @@ bool mcme_java_set_block(McmeArena *arena, McmeTag *root,
     }
 
     /* The entry to point at: one the palette already holds when the
-       block is one, a new one at the end when it is not — never
-       replacing an entry in place, which would change what every
-       other position holding the old entry means. The old entry
-       keeps its index for the positions that still mean it. */
-    size_t target = old_len;
-    for (size_t i = 0; v.palette != NULL && i < old_len; ++i) {
-        if (entry_is(mcme_nbt_at(v.palette, i), name, states)) {
-            target = i;
-            break;
-        }
-    }
+       block is one, a new one at the end when it is not. */
+    size_t target = target_index(&v, old_len, name, states);
     if (target == old_len
             && old_len + 1u > ((size_t)1 << kBitsMax)) {
         mcme_set_error("java chunk: a palette past %zu entries will "
@@ -455,48 +520,12 @@ bool mcme_java_set_block(McmeArena *arena, McmeTag *root,
         }
     }
     if (target == old_len) {
-        McmeTag *pal = mcme_nbt_new(arena, MCME_TAG_List);
-        McmeTag *entry = mcme_nbt_new(arena, MCME_TAG_Compound);
-        McmeTag *nm = mcme_nbt_new(arena, MCME_TAG_String);
-        if (pal == NULL || entry == NULL || nm == NULL
-                || !mcme_nbt_list_alloc(arena, pal, MCME_TAG_Compound,
-                                        new_len)
-                || !mcme_nbt_compound_init(arena, entry, 2)
-                || !mcme_nbt_set_string(arena, nm, name, strlen(name))
-                || !mcme_nbt_compound_put(arena, entry, "Name", 4,
-                                          nm)) {
-            set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
-            return false;
-        }
-        if (states != NULL && states->compound.len > 0) {
-            if (!mcme_nbt_compound_put(arena, entry, "Properties",
-                                       10, (McmeTag *)states)) {
-                set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
-                return false;
-            }
-        }
-        if (v.palette == NULL) {
-            /* the implicit air becomes the explicit entry 0 the
-               format says it was */
-            McmeTag *air = mcme_nbt_new(arena, MCME_TAG_Compound);
-            McmeTag *anm = mcme_nbt_new(arena, MCME_TAG_String);
-            if (air == NULL || anm == NULL
-                    || !mcme_nbt_compound_init(arena, air, 1)
-                    || !mcme_nbt_set_string(arena, anm, kAir,
-                                            sizeof kAir - 1)
-                    || !mcme_nbt_compound_put(arena, air, "Name", 4,
-                                              anm)) {
-                set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
-                return false;
-            }
-            pal->list.items[0] = *air;
-        } else {
-            for (size_t i = 0; i < old_len; ++i) {
-                pal->list.items[i] = v.palette->list.items[i];
-            }
-        }
-        pal->list.items[target] = *entry;   /* target == old_len */
-        if (!mcme_nbt_compound_put(arena, bs, "palette", 7, pal)) {
+        McmeTag *entry = block_entry(arena, name, states);
+        McmeTag *pal = (entry != NULL)
+            ? grown_palette(arena, &v, old_len, new_len, entry) : NULL;
+        if (pal == NULL
+                || !mcme_nbt_compound_put(arena, bs, "palette", 7,
+                                          pal)) {
             set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
             return false;
         }
@@ -511,4 +540,371 @@ bool mcme_java_set_block(McmeArena *arena, McmeTag *root,
 
     if (changed != NULL) *changed = true;
     return true;
+}
+
+/* ========================================================================
+ * fill — the whole box, one repack per section
+ * ======================================================================== */
+
+/*
+ * One section of the fill: decode its 4096 entries once, point the
+ * box's positions at the target entry, repack once — the whole
+ * section for the cost one block's edit would pay. The chunk's own
+ * columns decide: a slot holds one position of THIS chunk, so a box
+ * reaching the same slot in another chunk does not reach it here.
+ */
+static bool fill_section(McmeArena *arena, McmeTag *root,
+                         int cx, int cz,
+                         int x1, int x2, int y1, int y2,
+                         int z1, int z2, int y_sec,
+                         const char *name, const McmeTag *states,
+                         bool *changed, McmeWriteRefusal *refusal)
+{
+    const McmeTag *found_c = NULL;
+    int found = find_section(root, y_sec, &found_c);
+    if (found < 0) {
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+        return false;
+    }
+    /* Air where the column has nothing is what it already holds:
+       no section is invented to hold it. */
+    if (found == 0 && spec_is_air(name, states)) return true;
+
+    McmeTag *section;
+    if (found == 1) {
+        section = (McmeTag *)found_c;
+    } else {
+        section = section_for_edit(arena, root, y_sec, refusal);
+        if (section == NULL) return false;
+    }
+
+    SectionPalette v;
+    if (!section_palette(section, &v)) {
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+        return false;
+    }
+    if (v.palette == NULL && spec_is_air(name, states)) return true;
+
+    size_t old_len = (v.palette != NULL) ? v.palette->list.len : 1u;
+    size_t target = target_index(&v, old_len, name, states);
+    if (target == old_len
+            && old_len + 1u > ((size_t)1 << kBitsMax)) {
+        mcme_set_error("java chunk: a palette past %zu entries will "
+                       "not pack", (size_t)1 << kBitsMax);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        return false;
+    }
+
+    size_t idx[kBlocksPerSection];
+    for (size_t p = 0; p < kBlocksPerSection; ++p) {
+        if (!palette_index(&v, p, &idx[p])) {
+            set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+            return false;
+        }
+    }
+
+    /* Point the box's positions at the target. Each slot holds one
+       world position of this chunk — its own column — so one test
+       per slot decides, and a box a million blocks long costs this
+       loop, not a million edits. The coordinates are held in 64
+       bits so a chunk far past the box cannot overflow them. */
+    bool any = false;
+    int wy1 = y_sec * 16;
+    for (size_t p = 0; p < kBlocksPerSection; ++p) {
+        int wy = wy1 + (int)(p >> 8);
+        if (wy < y1 || wy > y2) continue;
+        int64_t wx = (int64_t)cx * 16 + (int64_t)(p & 15);
+        if (wx < x1 || wx > x2) continue;
+        int64_t wz = (int64_t)cz * 16 + (int64_t)((p >> 4) & 15);
+        if (wz < z1 || wz > z2) continue;
+        if (idx[p] != target) {
+            idx[p] = target;
+            any = true;
+        }
+    }
+    if (!any) return true;   /* this section already holds the box */
+
+    /* Every position now one entry: the format's own shorthand for
+       a section that holds one block — a single-entry palette and
+       no data array, the stale one gone with the compound it was
+       written in. */
+    bool uniform = true;
+    size_t only = idx[0];
+    for (size_t p = 1; p < kBlocksPerSection; ++p) {
+        if (idx[p] != only) {
+            uniform = false;
+            break;
+        }
+    }
+    if (uniform) {
+        const McmeTag *entry;
+        if (v.palette != NULL && only < old_len) {
+            entry = mcme_nbt_at(v.palette, only);
+        } else {
+            entry = block_entry(arena, name, states);
+            if (entry == NULL) {
+                set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+                return false;
+            }
+        }
+        McmeTag *nbs = mcme_nbt_new(arena, MCME_TAG_Compound);
+        McmeTag *pal = mcme_nbt_new(arena, MCME_TAG_List);
+        if (nbs == NULL || pal == NULL
+                || !mcme_nbt_compound_init(arena, nbs, 1)
+                || !mcme_nbt_list_alloc(arena, pal, MCME_TAG_Compound, 1)
+                || !mcme_nbt_compound_put(arena, nbs, "palette", 7,
+                                          pal)) {
+            set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+        pal->list.items[0] = *entry;
+        if (!mcme_nbt_compound_put(arena, section, "block_states", 12,
+                                   nbs)) {
+            set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+        if (changed != NULL) *changed = true;
+        return true;
+    }
+
+    const McmeTag *bs_c = mcme_nbt_get(section, "block_states");
+    McmeTag *bs = (McmeTag *)bs_c;
+    if (bs == NULL) {
+        bs = mcme_nbt_new(arena, MCME_TAG_Compound);
+        if (bs == NULL || !mcme_nbt_compound_init(arena, bs, 2)
+                || !mcme_nbt_compound_put(arena, section,
+                                          "block_states", 12, bs)) {
+            set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+    }
+    size_t new_len = (target == old_len) ? old_len + 1u : old_len;
+    if (target == old_len) {
+        McmeTag *entry = block_entry(arena, name, states);
+        McmeTag *pal = (entry != NULL)
+            ? grown_palette(arena, &v, old_len, new_len, entry) : NULL;
+        if (pal == NULL
+                || !mcme_nbt_compound_put(arena, bs, "palette", 7,
+                                          pal)) {
+            set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+    }
+    int nb = palette_bits(new_len);
+    size_t per_long = 64u / (size_t)nb;
+    size_t nlongs = (kBlocksPerSection + per_long - 1u) / per_long;
+    int64_t *packed = mcme_arena_alloc(arena, nlongs * sizeof *packed);
+    if (packed == NULL) {
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        return false;
+    }
+    memset(packed, 0, nlongs * sizeof *packed);
+    for (size_t p = 0; p < kBlocksPerSection; ++p) {
+        size_t w = p / per_long;
+        size_t bit = (p % per_long) * (size_t)nb;
+        packed[w] |= (int64_t)((uint64_t)idx[p] << bit);
+    }
+    McmeTag *data = mcme_nbt_new(arena, MCME_TAG_Long_Array);
+    if (data == NULL
+            || !mcme_nbt_set_longs(arena, data, packed, nlongs)
+            || !mcme_nbt_compound_put(arena, bs, "data", 4, data)) {
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        return false;
+    }
+
+    if (changed != NULL) *changed = true;
+    return true;
+}
+
+bool mcme_java_fill_box(McmeArena *arena, McmeTag *root,
+                        int cx, int cz,
+                        const McmeBox *box,
+                        const char *name, const McmeTag *states,
+                        bool *changed,
+                        McmeWriteRefusal *refusal)
+{
+    set_refusal(refusal, MCME_WRITE_REFUSAL_NONE);
+    if (changed != NULL) *changed = false;
+    if (arena == NULL || root == NULL || box == NULL || name == NULL) {
+        mcme_set_error("java chunk: null argument");
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+    if (root->type != MCME_TAG_Compound) {
+        mcme_set_error("java chunk: the chunk is a %s, not a "
+                       "compound", mcme_tag_type_name(root->type));
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+        return false;
+    }
+    if (states != NULL && states->type != MCME_TAG_Compound) {
+        mcme_set_error("java chunk: states is a %s, not a compound",
+                       mcme_tag_type_name(states->type));
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+
+    /* Both corners are inside the box: normalize once, here, so
+       every section below sees one ordering. */
+    int x1 = box->x1 < box->x2 ? box->x1 : box->x2;
+    int x2 = box->x1 < box->x2 ? box->x2 : box->x1;
+    int y1 = box->y1 < box->y2 ? box->y1 : box->y2;
+    int y2 = box->y1 < box->y2 ? box->y2 : box->y1;
+    int z1 = box->z1 < box->z2 ? box->z1 : box->z2;
+    int z2 = box->z1 < box->z2 ? box->z2 : box->z1;
+    int ys1 = y1 >> 4, ys2 = y2 >> 4;
+    if (ys1 < -128 || ys2 > 127) {
+        mcme_set_error("java chunk: the box spans sections %d to %d, "
+                       "past the byte that keeps a section's Y",
+                       ys1, ys2);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        return false;
+    }
+
+    for (int64_t ys = ys1; ys <= ys2; ++ys) {
+        if (!fill_section(arena, root, cx, cz, x1, x2, y1, y2, z1, z2,
+                          (int)ys, name, states, changed, refusal)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Both halves of a fill over one region file. The check runs the
+ * same edit on each chunk and throws the tree away; the fill writes
+ * each chunk whose tree says something different. A region handle
+ * never survives its own write — open, read, close, then append —
+ * so no table is read stale after a chunk lands.
+ */
+static bool fill_chunks(const char *file,
+                        int cx1, int cx2, int cz1, int cz2,
+                        const McmeBox *box,
+                        const char *name, const McmeTag *states,
+                        uint32_t ts, bool apply,
+                        bool *changed, McmeWriteRefusal *refusal)
+{
+    set_refusal(refusal, MCME_WRITE_REFUSAL_NONE);
+    if (changed != NULL) *changed = false;
+    if (file == NULL || box == NULL || name == NULL) {
+        mcme_set_error("fill: null argument");
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+    if (states != NULL && states->type != MCME_TAG_Compound) {
+        mcme_set_error("fill: states is a %s, not a compound",
+                       mcme_tag_type_name(states->type));
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+    if (cx1 > cx2) { int t = cx1; cx1 = cx2; cx2 = t; }
+    if (cz1 > cz2) { int t = cz1; cz1 = cz2; cz2 = t; }
+
+    if (!mcme_fs_exists(file)) {
+        mcme_set_error("fill: chunk (%d, %d) is not stored in this "
+                       "world", cx1, cz1);
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_THERE);
+        return false;
+    }
+
+    for (int64_t c = cz1; c <= cz2; ++c) {
+        int cz = (int)c;
+        for (int64_t b = cx1; b <= cx2; ++b) {
+            int cx = (int)b;
+            McmeRegion reg;
+            if (!mcme_region_open(&reg, file)) {
+                char why[256];
+                snprintf(why, sizeof why, "%s", mcme_last_error());
+                mcme_set_error("fill: chunk (%d, %d) does not open: "
+                               "%s", cx, cz, why);
+                set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+                return false;
+            }
+            if (!mcme_region_chunk_present(&reg, cx, cz)) {
+                mcme_set_error("fill: chunk (%d, %d) is not stored in "
+                               "this world", cx, cz);
+                mcme_region_close(&reg);
+                set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_THERE);
+                return false;
+            }
+            McmeBuffer nbt;
+            mcme_buffer_init(&nbt);
+            bool ok = mcme_region_read_chunk(&reg, cx, cz, NULL, &nbt);
+            mcme_region_close(&reg);
+            if (!ok) {
+                char why[256];
+                snprintf(why, sizeof why, "%s", mcme_last_error());
+                mcme_set_error("fill: chunk (%d, %d) does not read: "
+                               "%s", cx, cz, why);
+                mcme_buffer_free(&nbt);
+                set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+                return false;
+            }
+            McmeArena *arena = mcme_arena_new();
+            if (arena == NULL) {
+                mcme_set_error("fill: out of memory");
+                mcme_buffer_free(&nbt);
+                set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+                return false;
+            }
+            McmeNbtDoc doc;
+            bool parsed = mcme_nbt_parse(&doc, arena, nbt.data, nbt.len,
+                                         false);
+            mcme_buffer_free(&nbt);
+            if (!parsed) {
+                char why[256];
+                snprintf(why, sizeof why, "%s", mcme_last_error());
+                mcme_set_error("fill: chunk (%d, %d) does not decode: "
+                               "%s", cx, cz, why);
+                mcme_arena_free(arena);
+                set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+                return false;
+            }
+            bool tree_changed = false;
+            if (!mcme_java_fill_box(arena, doc.root, cx, cz, box,
+                                    name, states, &tree_changed,
+                                    refusal)) {
+                char why[256];
+                snprintf(why, sizeof why, "%s", mcme_last_error());
+                mcme_set_error("fill: chunk (%d, %d): %s", cx, cz,
+                               why);
+                mcme_arena_free(arena);
+                return false;
+            }
+            if (apply && tree_changed) {
+                if (!mcme_region_set_chunk(file, cx, cz, doc.root,
+                                           arena, ts, refusal)) {
+                    char why[256];
+                    snprintf(why, sizeof why, "%s", mcme_last_error());
+                    mcme_set_error("fill: chunk (%d, %d): %s", cx, cz,
+                                   why);
+                    mcme_arena_free(arena);
+                    return false;
+                }
+                if (changed != NULL) *changed = true;
+            }
+            mcme_arena_free(arena);
+        }
+    }
+    return true;
+}
+
+bool mcme_java_fill_check(const char *file,
+                          int cx1, int cx2, int cz1, int cz2,
+                          const McmeBox *box,
+                          const char *name, const McmeTag *states,
+                          McmeWriteRefusal *refusal)
+{
+    return fill_chunks(file, cx1, cx2, cz1, cz2, box, name, states,
+                       0u, false, NULL, refusal);
+}
+
+bool mcme_java_fill(const char *file,
+                    int cx1, int cx2, int cz1, int cz2,
+                    const McmeBox *box,
+                    const char *name, const McmeTag *states,
+                    uint32_t ts, bool *changed,
+                    McmeWriteRefusal *refusal)
+{
+    return fill_chunks(file, cx1, cx2, cz1, cz2, box, name, states,
+                       ts, true, changed, refusal);
 }
