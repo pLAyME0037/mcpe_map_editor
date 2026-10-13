@@ -521,6 +521,60 @@ chunk the box touches that will not read or is not the format the edit
 needs (Java), `4` store error, `6` internal.
 Success prints nothing.
 
+### `mcme chunk prune`
+
+Deletes whole chunks — the box names the chunk columns, and the chunk goes
+as a unit.
+
+```
+mcme chunk prune <world> <x1> <y1> <z1> <x2> <y2> <z2>
+                                  [--dimension <name|number>]
+```
+
+```
+$ mcme --json chunk prune mybedrock 0 0 0 4095 0 4095
+{"chunks":169,"keys":1014,"region_files":0}
+```
+
+The corners are given in any order, like `chunk fill`, and the box's X/Z
+name the chunk columns it reaches — floor division by 16, the rule every
+chunk verb speaks. **Y is parsed and ignored**: a chunk is all of its Y, so
+the selection is a box of columns and a chunk the box touches is deleted
+whole. A column the world has never stored is nothing to delete: no chunk,
+no error, and the same box run twice is `0` chunks the second time with no
+write at all.
+
+Bedrock deletes every key the chunk owns — subchunks in both spellings, the
+chunk version record, the biome/heightmap record, block entities, pending
+ticks, every fixed-shape record addressed by the chunk's x/z and dimension —
+in batches of one log record each, under the LOCK the game takes, so a
+world the game has open refuses the whole prune before a key is
+tombstoned and no single append comes near the log's ceiling. Keys that
+are not fixed-shape chunk records (level metadata, actor records,
+portallists) are never touched. Tombstones do not shrink the store; `db
+compact` reclaims the space, the way it does after every write.
+
+Java zeroes the chunk's slot in its region file — the format's own
+"nothing here", the same bytes a slot the file never had carries — and the
+payload bytes it pointed at stay until `region compact` rewrites the file
+around what remains. Every region file the box touches is checked first,
+like fill: a file that will not read refuses the whole prune, exit 3, with
+nothing punched, and a chunk the file does not have is already gone. There
+is no transaction across region files — a file that fails part-way leaves
+the earlier ones already punched, the same honesty fill keeps. No LOCK:
+region files have none.
+
+`--json` prints the counts: `chunks` deleted, `keys` tombstoned (0 for
+Java), `region_files` written (0 for Bedrock). Human success prints
+nothing.
+
+Exit codes: `0` pruned (nothing to prune included), `1` usage (a bad
+coordinate, or a dimension number Java keeps no directory for), `2` not a
+world, not a Bedrock or Java world, a dimension the game has not made,
+`3` a region file the box touches that will not read (Java), `4` store
+error, including the LOCK held by the game (Bedrock), or a region file
+that will not write, `6` internal.
+
 ### `mcme chunk stats`
 
 What a box of a world is made of — the counts an agent plans an edit with,

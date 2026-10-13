@@ -9,6 +9,127 @@ Status vocabulary:
 
 ---
 
+## 2026-10-13 — Prune: `mcme chunk prune`, whole chunks deleted by a box of columns
+
+### Built
+
+- `mcme chunk prune <world> <x1> <y1> <z1> <x2> <y2> <z2>
+  [--dimension <name|number>]` deletes chunks — the unit the
+  game saves — with fill's box as the selector (D13): corners
+  in any order, X/Z floored to chunk columns by the rule every
+  chunk verb speaks, and **Y parsed and ignored**, because a
+  chunk is all of its Y and "delete most of a chunk" is not a
+  state any reader keeps. One probe speaks both worlds. Human
+  success is silent; `--json` reports `chunks`, `keys`
+  (Bedrock) and `region_files` (Java), the field the other
+  world does not have staying 0.
+- The Bedrock half is a scan: every key
+  `mcme_bedrock_key_parse` names for a reached column —
+  subchunks in both spellings, the version record, the
+  biome/heightmap record, block entities, pending ticks, every
+  fixed-shape record addressed by the chunk's x/z and
+  dimension — is tombstoned in batches of one log record each,
+  sliced so a world-scale prune stays under the log's ceiling
+  (D10), all under the exclusive flock the game takes, so a
+  world the game has open refuses before a key is touched.
+  Keys that are not chunk-shaped — actor records, level
+  metadata, portallists — are never touched: mcme deletes
+  what it can name and guesses no tag numbers. The chunk count
+  is distinct (x, z) among the deleted keys: six subchunk
+  records are one chunk, not six. An empty selection writes
+  nothing — the log does not grow for a box already pruned.
+- The Java half punches holes in two passes: every region
+  file the box reaches is opened and read first, so a file
+  that will not read refuses the whole prune with nothing
+  written (the check fill makes, at the same moment) and a
+  file the world does not have is a hole, not an error; then
+  each present slot is zeroed by the new
+  `mcme_region_remove_chunk()` — the location entry and the
+  timestamp, the same bytes a slot the file never had carries,
+  the format's own "nothing here". The entry goes before the
+  timestamp: a reader racing the write finds the hole, never
+  a stale stamp. The payload bytes stay in the file until
+  `region compact` rewrites it around the survivors, exactly
+  as Bedrock's tombstones stay until `db compact` — prune is
+  deletion, not shrink, and the compact verbs own reclaim
+  (D10/D11), one verb one truth.
+- `java_dimension_dir` left `main.c` and became
+  `mcme_java_dimension_dir()` in `world.c`/`world.h`: one
+  layout rule beside the probe that decides a world is Java's,
+  so fill, get, set and prune all speak the directory the same
+  way (0 → region/, 1 → DIM-1, 2 → DIM1, anything else
+  usage).
+- Exit codes run through the house refusal vocabulary: a junk
+  coordinate or a dimension number Java keeps no directory for
+  is 1, a path that is not a world or a dimension the game has
+  not made is 2, a region file that will not read is 3, a
+  store error — including the LOCK the game holds — is 4.
+
+### Cross-check
+
+- Selftest `test_prune`, both halves on fixture copies:
+  Bedrock — the fixture's eight keys, a reversed-corner box
+  tombstones the six of chunk (0,0) (report 1/6/0), the key
+  reads back as a tombstone, the live count drops to 2; the
+  same box again is 0/0/0; the column at (1,-2) goes next,
+  the nether key only with its own flag; refusals — a NULL
+  argument usage, a plain directory not-there, and a second
+  writable handle held against the store making the prune's
+  flock fail as store (flock is per descriptor, so the two
+  handles conflict even in one process). Java — the copy's
+  four slots asserted present first, a box at y 300 prunes
+  chunk (0,0) alone (1/0/1) with the survivors and
+  r.-1.-1.mca standing, `region compact` shrinks the file
+  (3 chunks, after < before) and the hole stays a hole, an
+  empty column is 0/0, a missing DIM-1 is not-there, a
+  dimension number of 7 is usage, and an 8-byte corrupt
+  region file refuses as not-readable with its bytes — and
+  the other file's — byte-for-byte unchanged.
+- `tools/ref_prune.py`, 13 checks: every pruned Bedrock key
+  raising KeyError in **amulet's own LevelDB binding** while
+  the neighbour and the nether key return bytes; `mcme chunks`
+  agreeing before (8 keys, 3 chunks) and after (0, 0); each
+  `--json` report exact and human success printing nothing;
+  the held LOCK (a python `fcntl` on the store's LOCK file)
+  answering 4 with no report; the exit codes 1/2/2; and for
+  Java the sector table walked with no mcme code — the slot
+  empty, the survivors' frames byte-identical after `region
+  compact`, r.-1.-1.mca byte-identical throughout, `chunk get`
+  answering 2 for the pruned position, java exits 1/2/1, and
+  the corrupt file answering 3 with both files' bytes
+  untouched.
+- Verified at commit: `./rebuild.sh test` PASS — 5 suites,
+  0 failures; `./rebuild.sh release` builds; ref tools 8
+  (java fill) + 8 (java blocks) + 12 (compact) + 9 (write)
+  + 17 (chunk) + 14 (inventory) + 25 (entity) + 19 (bedrock
+  write) + 28 (bedrock column) + 4 (convert) + 13 (prune);
+  align.py 0 misalignments; golden worlds untouched — every
+  fixture is copied before it is opened, because a LevelDB
+  open compacts what it touches.
+
+### Known gaps
+
+- Actor records are not chunk-shaped — they carry an actor id
+  where a subchunk key carries an index — so they survive the
+  prune; naming actor keys is the entity feature's work (D13).
+- Pruned space is reclaimed only when `db compact` or
+  `region compact` runs after it; until then a Bedrock store
+  only grows its log and a region file keeps its slack.
+- No transaction across Bedrock batches or across region
+  files: a failure part-way leaves whole batches and earlier
+  files landed, the same honesty fill keeps.
+- The Bedrock half scans the whole keyspace (O(entries))
+  rather than synthesising keys, because only the scan sees
+  every companion record a chunk owns.
+
+### Next
+
+- The convert report's two loudest drops — block entities
+  and the waterlogging layer — are still the next phase of
+  that feature; prune shipped first as asked.
+
+---
+
 ## 2026-10-13 — Convert: `mcme convert`, a Bedrock world rewritten as Java 1.20
 
 ### Built

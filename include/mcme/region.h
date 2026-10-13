@@ -165,6 +165,27 @@ bool mcme_region_set_chunk(const char *file, int cx, int cz,
                            const McmeTag *root, McmeArena *arena,
                            uint32_t timestamp, McmeWriteRefusal *refusal);
 
+/*
+ * Deletes one chunk: its slot's location entry and timestamp are
+ * zeroed — the same bytes a slot the file never had carries, and the
+ * format's own advertisement that nothing is stored here. The payload
+ * bytes the entry pointed at stay in the file until
+ * mcme_region_compact rewrites it around the survivors; nothing is
+ * read, decompressed or re-encoded (decisions.md#D13).
+ *
+ * The file's header is validated by opening it first, so a file that
+ * is not a region mcme reads refuses with nothing written. A chunk
+ * the file does not have is a success that writes nothing — already
+ * gone, the answer the read side gives.
+ *
+ * Returns false with mcme_last_error() saying what was refused, and
+ * `refusal` (when not NULL) which class: USAGE for a null argument;
+ * NOT_READABLE when the file exists but is not a region mcme reads;
+ * STORE for the file's own failures.
+ */
+bool mcme_region_remove_chunk(const char *file, int cx, int cz,
+                              McmeWriteRefusal *refusal);
+
 /* What one compaction did, when `out` is not NULL. */
 typedef struct {
     size_t before;    /* the file's size when compaction started */

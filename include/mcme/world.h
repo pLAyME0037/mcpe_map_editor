@@ -103,4 +103,13 @@ void mcme_world_info_free(McmeWorldInfo *info);
 bool mcme_level_dat_parse(McmeNbtDoc *doc, McmeArena *arena,
                           const char *path, McmeLevelDatFrame *frame);
 
+/*
+ * The directory a Java world keeps a dimension in: the overworld at the
+ * world's own root (*out_dir = NULL, the caller joins "region" itself),
+ * the nether in DIM-1, the end in DIM1 — the game's own layout, and all
+ * of it Java keeps: any other number is usage rather than a directory
+ * mcme would invent. The number is the one the CLI parses: 0, 1, 2.
+ */
+bool mcme_java_dimension_dir(int32_t dimension, const char **out_dir);
+
 #endif /* MCME_WORLD_H */

@@ -467,3 +467,21 @@ bool mcme_world_probe(McmeWorldInfo *out, const char *path)
 
     return true;
 }
+
+/* The Java directory a dimension is stored in: the overworld keeps its
+   chunks in plain region/, the nether in DIM-1, the end in DIM1 — the
+   game's own layout. Java stores nothing else, so any other number is
+   usage rather than a directory mcme would invent. The rule lives here
+   beside the probe that decides the world is Java's, so every verb —
+   fill, get, set, prune — speaks one layout. */
+bool mcme_java_dimension_dir(int32_t dimension, const char **out_dir)
+{
+    *out_dir = NULL;
+    if (dimension == 0) return true;
+    if (dimension == 1) { *out_dir = "DIM-1"; return true; }
+    if (dimension == 2) { *out_dir = "DIM1"; return true; }
+    mcme_set_error("region: Java keeps the nether in DIM-1 and "
+                   "the end in DIM1; there is no directory for "
+                   "dimension %d", (int)dimension);
+    return false;
+}

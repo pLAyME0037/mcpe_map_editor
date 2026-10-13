@@ -439,3 +439,60 @@ invisible, because nothing survives it.)
 **Cost accepted.** Converted worlds lose entities, block entities, ticks,
 waterlogging and non-overworld dimensions until later entries; every loss
 is a count in the convert report and a line in the dev-log's next-up.
+
+---
+
+## D13 — Prune deletes whole chunks by column; reclaim stays with the compact verbs
+
+`mcme chunk prune` deletes chunks — the unit the game saves — selected by
+fill's box. Four policies, decided once:
+
+**The box selects columns; Y is parsed and ignored.** Corners in any order,
+X/Z floored to chunk coordinates by the rule every chunk verb speaks. A
+chunk is all of its Y: "delete most of a chunk" is not a state any reader
+keeps, so a box's Y only ever names columns, and the contract says so out
+loud rather than pretending the box is three-dimensional.
+
+**Bedrock: every key the chunk owns, batches of one log record, under the LOCK.** A chunk's
+keys are the ones `mcme_bedrock_key_parse` names — subchunks in both
+spellings, the version record, biome/heightmap, block entities, pending
+ticks, every fixed-shape record addressed by the chunk's x/z and dimension —
+tombstoned in batches of one log record each, sliced so a world-scale
+prune stays under the log's ceiling (D10): every batch is whole or not
+at all, and a failure part-way leaves whole batches landed — the same
+honesty every multi-record write keeps. Keys that are not fixed-shape
+chunk records — level metadata, actor
+records, portallists — are never touched: mcme deletes what it can name,
+and the tag set it will not guess at stays unguessed. The write takes the
+exclusive flock the game takes.
+
+**Java: the slot is zeroed; the bytes stay.** A zero location entry is the
+format's own advertisement that nothing is stored here — the same bytes a
+chunk-less slot already has — so the punch writes the slot's entry and
+timestamp in place: no re-encode, no payload read. The payload bytes it
+pointed at stay in the file until `region compact` rewrites the file
+around the survivors, exactly as Bedrock's tombstones stay in the log
+until `db compact`. Every region file the box touches is checked first,
+like fill, so a file that will not read refuses the whole prune with
+nothing punched.
+
+**Reclaim is a separate verb.** Neither half shrinks anything by itself —
+`db compact` and `region compact` already exist, are tested, and are what
+the write verbs already point at. One verb, one truth.
+
+**Rejected.**
+- *Pruning by subchunk*: partial chunks are not a world state; the game
+  reads and saves the chunk whole.
+- *Radius or centre selection*: the box reuses fill's parser and
+  `McmeBox`; a radius is sugar a caller can compute.
+- *Deleting actor records with the chunk*: the actor tag is deliberately
+  not in the guessed-at set (`bedrock_keys.h`); actor keys are the entity
+  feature's to name, and a prune that guessed a tag number would be the
+  first mcme write that guessed.
+- *Compacting inside prune*: one verb, one truth — and a compaction
+  doubles the write of a delete-heavy run that may fail part-way.
+
+**Cost accepted.** Pruned space is not reclaimable until the paired
+compact verb runs; actor records of pruned chunks remain until the entity
+work; a Bedrock prune scans the store's whole keyspace (O(entries)) rather
+than synthesising keys, because only the scan sees every companion record.

@@ -26,6 +26,7 @@
 #include "mcme/java_chunk.h"
 #include "mcme/leveldb.h"
 #include "mcme/nbt.h"
+#include "mcme/prune.h"
 #include "mcme/region.h"
 #include "mcme/world.h"
 
@@ -114,6 +115,14 @@ static void print_usage(FILE *out)
         "                    write each. Java: one repack per\n"
         "                    section; a chunk not stored refuses\n"
         "                    the whole fill, nothing written.\n"
+        "  chunk prune <world> <x1> <y1> <z1> <x2> <y2> <z2>\n"
+        "                    Delete whole chunks — the box names\n"
+        "                    the chunk columns (Y is parsed and\n"
+        "                    ignored). Bedrock: every key the\n"
+        "                    chunk owns, one batch, LOCK taken.\n"
+        "                    Java: the slot zeroed, the payload\n"
+        "                    bytes left for region compact.\n"
+        "                    Silent on success; --json counts.\n"
         "  chunk stats <world> <x1> <y1> <z1> <x2> <y2> <z2>\n"
         "                    Count what a box is made of: 'count\n"
         "                    spec' lines, most frequent first.\n"
@@ -1149,22 +1158,6 @@ static void format_timestamp(uint32_t seconds, char *out, size_t cap)
     }
 }
 
-/* The Java directory a dimension is stored in: the overworld keeps its
-   chunks in plain region/, the nether in DIM-1, the end in DIM1 — the
-   game's own layout. Java stores nothing else, so any other number is
-   usage rather than a directory mcme would invent. */
-static bool java_dimension_dir(int32_t dimension, const char **out_dir)
-{
-    *out_dir = NULL;
-    if (dimension == 0) return true;
-    if (dimension == 1) { *out_dir = "DIM-1"; return true; }
-    if (dimension == 2) { *out_dir = "DIM1"; return true; }
-    mcme_set_error("region: Java keeps the nether in DIM-1 and "
-                   "the end in DIM1; there is no directory for "
-                   "dimension %d", (int)dimension);
-    return false;
-}
-
 /*
  * `mcme region <world> <rx> <rz>` inventories one Java region file
  * from the container's own tables: which slots are filled, each
@@ -1197,7 +1190,7 @@ static int cmd_region(int argc, char **argv)
     /* Java stores its three dimensions in directories, not in the
        key, and has no third spelling mcme could guess at. */
     const char *dim_dir = NULL;
-    if (!java_dimension_dir(dimension, &dim_dir)) {
+    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
 
@@ -1389,7 +1382,7 @@ static int cmd_region_chunk(int argc, char **argv)
     if (!parse_coord("region", argv[2], &cz)) return MCME_EXIT_USAGE;
 
     const char *dim_dir = NULL;
-    if (!java_dimension_dir(dimension, &dim_dir)) {
+    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
 
@@ -1465,7 +1458,7 @@ static int cmd_region_chunk_write(int argc, char **argv)
     const char *snbt = argv[3];
 
     const char *dim_dir = NULL;
-    if (!java_dimension_dir(dimension, &dim_dir)) {
+    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
 
@@ -1547,7 +1540,7 @@ static int cmd_region_compact(int argc, char **argv)
     if (!parse_coord("region", argv[2], &rz)) return MCME_EXIT_USAGE;
 
     const char *dim_dir = NULL;
-    if (!java_dimension_dir(dimension, &dim_dir)) {
+    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
 
@@ -1596,7 +1589,7 @@ static int java_chunk_doc(const McmeWorldInfo *info, int32_t dimension,
                           McmeNbtDoc *doc, char *file, size_t file_cap)
 {
     const char *dim_dir = NULL;
-    if (!java_dimension_dir(dimension, &dim_dir)) {
+    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
     int cx = (int)(x >> 4), cz = (int)(z >> 4);
@@ -1804,7 +1797,7 @@ static int java_fill(const McmeWorldInfo *info, int32_t dimension,
                      const McmeTag *states)
 {
     const char *dim_dir = NULL;
-    if (!java_dimension_dir(dimension, &dim_dir)) {
+    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
         return MCME_EXIT_USAGE;
     }
     int rc = java_fill_files(info, dim_dir, box, name, states, false);
@@ -2182,6 +2175,59 @@ static int cmd_chunk_fill(int argc, char **argv)
     mcme_arena_free(arena);
     mcme_world_info_free(&info);
     return rc;
+}
+
+/*
+ * `mcme chunk prune <world> <x1> <y1> <z1> <x2> <y2> <z2>` deletes
+ * whole chunks — the box names the chunk columns, decisions.md#D13 —
+ * whichever world half the probe names. Y is parsed and ignored; the
+ * library's contract says why (a chunk is all of its Y).
+ *
+ * Silent on success, like every write verb; `--json` prints the
+ * counts: chunks deleted, keys tombstoned (Bedrock), region files
+ * punched (Java).
+ */
+static int cmd_chunk_prune(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 7) {
+        mcme_set_error("chunk: usage: chunk prune <world> <x1> <y1> "
+                       "<z1> <x2> <y2> <z2> "
+                       "[--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    long c[6];
+    for (int i = 0; i < 6; ++i) {
+        if (!parse_coord("chunk", argv[1 + i], &c[i])) {
+            return MCME_EXIT_USAGE;
+        }
+    }
+
+    /* No box_y_range_fits: a prune never names a byte in Y, so any
+       Y a coordinate can hold is a Y the prune parses and ignores. */
+    McmeBox box = { (int32_t)c[0], (int32_t)c[1], (int32_t)c[2],
+                    (int32_t)c[3], (int32_t)c[4], (int32_t)c[5] };
+
+    McmePruneReport report;
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    if (!mcme_prune(path, &box, dimension, &report, &refusal)) {
+        char why[512];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk: %s", why);
+        return refusal_exit(refusal);
+    }
+
+    if (g_opts.json) {
+        printf("{\"chunks\":%lld,\"keys\":%lld,"
+               "\"region_files\":%lld}\n",
+               (long long)report.chunks, (long long)report.keys,
+               (long long)report.region_files);
+    }
+    return MCME_OK;
 }
 
 /*
@@ -3081,7 +3127,7 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "
-                           "(expected set, get, fill, stats, "
+                           "(expected set, get, fill, prune, stats, "
                            "height or entity)");
             return MCME_EXIT_USAGE;
         }
@@ -3093,6 +3139,9 @@ static int dispatch(int argc, char **argv)
         }
         if (strcmp(args[0], "fill") == 0) {
             return cmd_chunk_fill(rest - 1, args + 1);
+        }
+        if (strcmp(args[0], "prune") == 0) {
+            return cmd_chunk_prune(rest - 1, args + 1);
         }
         if (strcmp(args[0], "stats") == 0) {
             return cmd_chunk_stats(rest - 1, args + 1);
@@ -3113,8 +3162,8 @@ static int dispatch(int argc, char **argv)
             return cmd_chunk_entity(rest - 1, args + 1);
         }
         mcme_set_error("chunk: unknown subcommand '%s' "
-                       "(expected set, get, fill, stats, height "
-                       "or entity)", args[0]);
+                       "(expected set, get, fill, prune, stats, "
+                       "height or entity)", args[0]);
         return MCME_EXIT_USAGE;
     }
     if (strcmp(cmd, "db") == 0)      return cmd_db(rest, args);

@@ -8,6 +8,7 @@
 #include "mcme/convert.h"
 #include "mcme/leveldb.h"
 #include "mcme/nbt.h"
+#include "mcme/prune.h"
 #include "mcme/region.h"
 #include "mcme/translate.h"
 #include "mcme/world.h"
@@ -4363,6 +4364,218 @@ static void test_convert(void)
     rmdir(in);
 }
 
+/*
+ * `mcme chunk prune` against both fixtures: whole chunks, selected by
+ * a box of columns (decisions.md#D13). The Bedrock half tombstones
+ * every key the chunk owns under the LOCK; the Java half zeroes the
+ * slot and leaves the payload bytes for `region compact`.
+ */
+static void test_prune(void)
+{
+    printf("  prune (whole chunks by column, both worlds)\n");
+
+    McmeWriteRefusal refusal;
+    McmePruneReport rep;
+    McmeBox box;
+
+    /* --- Bedrock: the fixture's eight keys — a six-subchunk column
+       at (0,0), one key at (1,-2), one nether key at (0,0). --- */
+    char src[512];
+    snprintf(src, sizeof src, "%s/db", kChunksWorld);
+    if (!mcme_fs_exists(src)) {
+        printf("  SKIP prune bedrock (%s not found)\n", src);
+    } else {
+        char world[64], dbdir[512];
+        CHECK(fresh_store_dir(world, sizeof world));
+        snprintf(dbdir, sizeof dbdir, "%s/db", world);
+        CHECK(copy_store(src, dbdir));
+
+        /* Corners in either order: the box reaches one column. Six
+           keys are one chunk, not six. */
+        box = (McmeBox){ 15, 7, 15, 0, 0, 0 };
+        refusal = MCME_WRITE_REFUSAL_NONE;
+        CHECK(mcme_prune(world, &box, 0, &rep, &refusal));
+        CHECK(rep.chunks == 1 && rep.keys == 6 && rep.region_files == 0);
+
+        McmeLevelDb *db = NULL;
+        CHECK(mcme_leveldb_open(&db, dbdir));
+        if (db != NULL) {
+            /* the pruned chunk's key reads as a tombstone; the
+               neighbour and the other dimension still count */
+            uint8_t key[16];
+            size_t klen = 0;
+            bool deleted = false;
+            McmeBuffer val;
+            CHECK(mcme_bedrock_subchunk_key(0, 0, 0, 0, key,
+                                            sizeof key, &klen));
+            mcme_buffer_init(&val);
+            CHECK(mcme_leveldb_get(db, key, klen, &val, &deleted));
+            CHECK(deleted);
+            mcme_buffer_free(&val);
+            CHECK(mcme_leveldb_count(db) == 2);
+            mcme_leveldb_close(db);
+        }
+
+        /* the same box again: nothing to delete, nothing written */
+        refusal = MCME_WRITE_REFUSAL_NONE;
+        CHECK(mcme_prune(world, &box, 0, &rep, &refusal));
+        CHECK(rep.chunks == 0 && rep.keys == 0 && rep.region_files == 0);
+
+        /* Box reach is chunk columns: blocks 0..-32 floor to the
+           column at (1,-2), which the first box did not touch. */
+        box = (McmeBox){ 0, 0, 0, 31, 0, -32 };
+        CHECK(mcme_prune(world, &box, 0, &rep, &refusal));
+        CHECK(rep.chunks == 1 && rep.keys == 1);
+
+        /* the other dimension only goes with its own flag */
+        box = (McmeBox){ 0, 0, 0, 15, 0, 15 };
+        CHECK(mcme_prune(world, &box, 1, &rep, &refusal));
+        CHECK(rep.chunks == 1 && rep.keys == 1);
+
+        /* refusal vocabulary */
+        CHECK(!mcme_prune(NULL, &box, 0, &rep, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        CHECK(!mcme_prune(world, NULL, 0, &rep, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+        char empty[64];
+        CHECK(fresh_store_dir(empty, sizeof empty));
+        CHECK(!mcme_prune(empty, &box, 0, &rep, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+        rmdir(empty);
+        mcme_clear_error();
+
+        /* the LOCK the game holds refuses before a key is touched */
+        McmeLevelDb *hold = NULL;
+        CHECK(mcme_leveldb_open_rw(&hold, dbdir));
+        CHECK(!mcme_prune(world, &box, 0, &rep, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_STORE);
+        if (hold != NULL) mcme_leveldb_close(hold);
+        mcme_clear_error();
+
+        remove_store(dbdir);
+        rmdir(world);
+    }
+
+    /* --- Java: the slot is zeroed and the payload bytes stay until
+       region compact; the golden world ships four chunks in r.0.0
+       and one in r.-1.-1. --- */
+    if (!mcme_fs_exists(kWorldDir)) {
+        printf("  SKIP prune java (%s not found)\n", kWorldDir);
+        return;
+    }
+
+    char jw[64];
+    CHECK(fresh_store_dir(jw, sizeof jw));
+    char lvl_src[512], lvl_dst[600], reg_src[560], reg_dst[600];
+    char file00[640];
+    snprintf(lvl_src, sizeof lvl_src, "%s/level.dat", kWorldDir);
+    snprintf(lvl_dst, sizeof lvl_dst, "%s/level.dat", jw);
+    snprintf(reg_dst, sizeof reg_dst, "%s/region", jw);
+    snprintf(file00, sizeof file00, "%s/r.0.0.mca", reg_dst);
+    {
+        void *raw = NULL;
+        size_t raw_len = 0;
+        CHECK(mcme_fs_read(lvl_src, &raw, &raw_len));
+        CHECK(mcme_fs_write(lvl_dst, raw, raw_len));
+        free(raw);
+    }
+    CHECK(mcme_fs_mkdir_p(reg_dst));
+    snprintf(reg_src, sizeof reg_src, "%s/region/r.0.0.mca", kWorldDir);
+    {
+        void *raw = NULL;
+        size_t raw_len = 0;
+        CHECK(mcme_fs_read(reg_src, &raw, &raw_len));
+        CHECK(mcme_fs_write(file00, raw, raw_len));
+        free(raw);
+    }
+    char file_nether[640], file_nether_src[560];
+    snprintf(file_nether, sizeof file_nether, "%s/r.-1.-1.mca", reg_dst);
+    snprintf(file_nether_src, sizeof file_nether_src,
+             "%s/region/r.-1.-1.mca", kWorldDir);
+    {
+        void *raw = NULL;
+        size_t raw_len = 0;
+        CHECK(mcme_fs_read(file_nether_src, &raw, &raw_len));
+        CHECK(mcme_fs_write(file_nether, raw, raw_len));
+        free(raw);
+    }
+
+    /* the copy stands as the fixture says it should */
+    McmeRegion reg;
+    CHECK(mcme_region_open(&reg, file00));
+    CHECK(mcme_region_chunk_present(&reg, 0, 0));
+    CHECK(mcme_region_chunk_present(&reg, 1, 0));
+    CHECK(mcme_region_chunk_present(&reg, 0, 1));
+    CHECK(mcme_region_chunk_present(&reg, 31, 31));
+    mcme_region_close(&reg);
+
+    /* Y is parsed and ignored: the box at y 300 prunes the same
+       column a box at y 0 would. */
+    box = (McmeBox){ 0, 300, 0, 15, 301, 15 };
+    refusal = MCME_WRITE_REFUSAL_NONE;
+    CHECK(mcme_prune(jw, &box, 0, &rep, &refusal));
+    CHECK(rep.chunks == 1 && rep.keys == 0 && rep.region_files == 1);
+
+    CHECK(mcme_region_open(&reg, file00));
+    CHECK(!mcme_region_chunk_present(&reg, 0, 0));
+    CHECK(mcme_region_chunk_present(&reg, 1, 0));
+    CHECK(mcme_region_chunk_present(&reg, 0, 1));
+    mcme_region_close(&reg);
+    /* the other region file is not in the box's reach at all */
+    CHECK(mcme_region_open(&reg, file_nether));
+    CHECK(mcme_region_chunk_present(&reg, -1, -1));
+    mcme_region_close(&reg);
+
+    /* region compact reclaims the punched payload's bytes; the hole
+       stays a hole. */
+    McmeRegionCompact c;
+    refusal = MCME_WRITE_REFUSAL_NONE;
+    CHECK(mcme_region_compact(file00, &c, &refusal));
+    CHECK(c.chunks == 3 && c.after < c.before);
+    CHECK(mcme_region_open(&reg, file00));
+    CHECK(!mcme_region_chunk_present(&reg, 0, 0));
+    CHECK(mcme_region_chunk_present(&reg, 31, 31));
+    mcme_region_close(&reg);
+
+    /* a column no chunk stands in: nothing to delete, no files
+       written */
+    box = (McmeBox){ 32, 0, 32, 47, 0, 47 };   /* chunk (2, 2) */
+    CHECK(mcme_prune(jw, &box, 0, &rep, &refusal));
+    CHECK(rep.chunks == 0 && rep.region_files == 0);
+
+    /* the dimension the game has not made, and the number Java
+       keeps no directory for */
+    box = (McmeBox){ 0, 0, 0, 15, 0, 15 };
+    CHECK(!mcme_prune(jw, &box, 1, &rep, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+    CHECK(!mcme_prune(jw, &box, 7, &rep, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    mcme_clear_error();
+
+    /* a region file that will not read refuses the whole prune with
+       nothing punched: the copy becomes 8 bytes of garbage, and the
+       prune must leave those bytes exactly as they are. */
+    {
+        uint8_t garbage[8] = { 'G', 'A', 'R', 'B', 'A', 'G', 'E', '!' };
+        void *before = NULL, *after = NULL;
+        size_t before_len = 0, after_len = 0;
+        CHECK(mcme_fs_write(file00, garbage, sizeof garbage));
+        CHECK(mcme_fs_read(file00, &before, &before_len));
+        CHECK(!mcme_prune(jw, &box, 0, &rep, &refusal));
+        CHECK(refusal == MCME_WRITE_REFUSAL_NOT_READABLE);
+        CHECK(mcme_fs_read(file00, &after, &after_len));
+        CHECK(after_len == before_len
+              && memcmp(before, after, before_len) == 0);
+        free(before);
+        free(after);
+        mcme_clear_error();
+    }
+
+    remove_store(reg_dst);
+    remove(lvl_dst);
+    rmdir(jw);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -4379,6 +4592,7 @@ int mcme_test_world(void)
 
     test_translate();
     test_convert();
+    test_prune();
 
     if (!mcme_fs_exists(kWorldDir)) {
         printf("  SKIP golden world (%s not found; run tools/ref_worlds.py)\n",

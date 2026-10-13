@@ -541,6 +541,57 @@ bool mcme_region_set_chunk(const char *file, int cx, int cz,
     return true;
 }
 
+bool mcme_region_remove_chunk(const char *file, int cx, int cz,
+                              McmeWriteRefusal *refusal)
+{
+    set_refusal(refusal, MCME_WRITE_REFUSAL_NONE);
+    if (file == NULL) {
+        mcme_set_error("region: null argument");
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+
+    /* Open first: the header must parse before anything in it is
+       written, so a file that is not a region mcme reads refuses
+       with nothing touched. */
+    McmeRegion reg;
+    if (!mcme_region_open(&reg, file)) {
+        set_refusal(refusal, MCME_WRITE_REFUSAL_NOT_READABLE);
+        return false;               /* open said what the problem is */
+    }
+    bool present = mcme_region_chunk_present(&reg, cx, cz);
+    mcme_region_close(&reg);
+    if (!present) return true;      /* already gone: nothing to do */
+
+    /* Zero the entry first: a reader racing this write finds the
+       hole the moment the entry flips, never a stale timestamp
+       claiming a chunk the entry has already given up. */
+    FILE *fh = fopen(file, "r+b");
+    if (fh == NULL) {
+        mcme_set_error("region: cannot open '%s' for writing: %s",
+                       file, strerror(errno));
+        set_refusal(refusal, MCME_WRITE_REFUSAL_STORE);
+        return false;
+    }
+
+    size_t slot = slot_for(cx, cz);
+    uint8_t zeros[4] = {0};
+    bool ok = fseek(fh, (long)(slot * 4), SEEK_SET) == 0;
+    ok = ok && fwrite(zeros, 1, sizeof zeros, fh) == sizeof zeros;
+    ok = ok && fseek(fh, (long)(MCME_REGION_SECTOR + slot * 4),
+                     SEEK_SET) == 0;
+    ok = ok && fwrite(zeros, 1, sizeof zeros, fh) == sizeof zeros;
+    if (fclose(fh) != 0) ok = false;
+
+    if (!ok) {
+        mcme_set_error("region: cannot write '%s': %s", file,
+                       strerror(errno));
+        set_refusal(refusal, MCME_WRITE_REFUSAL_STORE);
+        return false;
+    }
+    return true;
+}
+
 bool mcme_region_compact(const char *file, McmeRegionCompact *out,
                          McmeWriteRefusal *refusal)
 {
