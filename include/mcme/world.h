@@ -30,6 +30,7 @@
 #define MCME_WORLD_H
 
 #include "mcme/core.h"
+#include "mcme/nbt.h"    /* McmeNbtDoc: what mcme_level_dat_parse fills */
 
 typedef enum {
     MCME_WORLD_UNKNOWN  = 0,
@@ -90,5 +91,16 @@ const char *mcme_level_dat_frame_name(McmeLevelDatFrame f);
  */
 bool mcme_world_probe(McmeWorldInfo *out, const char *path);
 void mcme_world_info_free(McmeWorldInfo *info);
+
+/*
+ * Reads `<path>` — one level.dat file, not a directory — in whatever
+ * frame it wears (raw gzip, the Bedrock 8-byte header plain or with a
+ * gzipped payload, bare NBT) and parses it into `doc` from `arena`.
+ * `*frame` says which wrapper was found, and is set even when the NBT
+ * does not parse. The parse copies into `arena`, so the file's bytes
+ * never outlive the call.
+ */
+bool mcme_level_dat_parse(McmeNbtDoc *doc, McmeArena *arena,
+                          const char *path, McmeLevelDatFrame *frame);
 
 #endif /* MCME_WORLD_H */

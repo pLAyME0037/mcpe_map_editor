@@ -394,3 +394,48 @@ if the edit's file numbers collide with what the next writer mints), and
 reads a store mcme compacted again on top of those writes. The C selftest
 pins the view-identity property, tombstone survival, repeated compaction,
 post-compaction writes, and the one-table-no-log shape, all through reopen.
+
+## D12 — Convert drops what it cannot carry, and says so; it never half-writes an output world
+
+`mcme convert` (Phase 4, bedrock→java/1.20 first) faces a world that holds
+far more than blocks: entity lists, block entities, tick lists, waterlogging
+layers, subchunks in payload versions this build does not decode, other
+dimensions, and a keyspace of bookkeeping. Three policies, decided once:
+
+**Report, do not fail.** Anything the conversion cannot carry is dropped,
+counted in the report, and the run succeeds. A world full of chests converts;
+the summary line says how many were left behind. Refusing instead would make
+convert useless on every real world until every subsystem exists, and the
+house has never shipped a converter that lies by silently dropping — the
+report is the honesty, and each count is a named next entry.
+
+**The block map follows the reference's own policy for unknowns.** Bedrock
+states the map does not know (a furnace's `facing_direction`, a torch's
+`torch_facing_direction`, farmland's `moisture`) take the Java block's default
+state — exactly what PyMCTranslate does with the same inputs, so `convert` and
+the Python reference agree block for block rather than mcme inventing a
+mapping the reference does not have. States both editions share pass through
+byte-for-byte; the rename cases (`pillar_axis`→`axis`, red sand) are in the
+map, and the map grows per world, pinned by the reference tool each time.
+
+**The output world is whole or absent.** `<out>` must not exist, so convert
+never mixes into a directory someone else made, and a failure part-way
+removes whatever it created before the error stands. A half-written world
+directory is worse than no directory: the next `mcme info` on it would
+report a world that lost chunks silently. (There is still no transaction
+across region files *during* the run — but the run's failure is never
+invisible, because nothing survives it.)
+
+**Rejected.**
+- *Opt-in `--drop` flag with strict default*: makes the common case
+  (convert my world) refuse on the first chest, for a safety that the
+  report already provides — the loss is named and counted, never silent.
+- *Carrying block entities in this entry*: each entity type's Bedrock→Java
+  NBT mapping is its own project; the report counts them until then.
+- *Failing on unreadable subchunk payloads*: the pre-palette payloads are
+  a known gap, not corruption; refusing would refuse whole era-spanning
+  worlds for one missing decoder.
+
+**Cost accepted.** Converted worlds lose entities, block entities, ticks,
+waterlogging and non-overworld dimensions until later entries; every loss
+is a count in the convert report and a line in the dev-log's next-up.

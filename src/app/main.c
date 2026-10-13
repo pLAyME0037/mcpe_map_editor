@@ -21,6 +21,7 @@
 #include "mcme/bedrock_write.h"
 #include "mcme/cli.h"
 #include "mcme/compress.h"
+#include "mcme/convert.h"
 #include "mcme/core.h"
 #include "mcme/java_chunk.h"
 #include "mcme/leveldb.h"
@@ -150,9 +151,14 @@ static void print_usage(FILE *out)
         "                    --le            read little-endian (Bedrock)\n"
         "                    --path <dotted> print only that subtree\n"
         "                    --indent <n>    pretty-print\n"
-        "\n"
-        "RESERVED (parse, then exit 5 = not implemented)\n"
-        "  convert <in> <out> --to <p>/<v> Convert between world formats\n"
+        "  convert <in> <out> --to <p>/<v>\n"
+        "                    Convert a Bedrock world to a Java 1.20\n"
+        "                    world: region files, level.dat with the\n"
+        "                    seed carried over, blocks through the\n"
+        "                    map. <out> must not exist. Entities,\n"
+        "                    block entities and water layers are\n"
+        "                    dropped and reported, not failed. Other\n"
+        "                    targets exit 5 (not implemented yet).\n"
         "\n"
         "EXIT CODES\n"
         "  0 ok   1 usage   2 not found   3 bad format\n"
@@ -2803,20 +2809,163 @@ static int cmd_db(int argc, char **argv)
 }
 
 /* ========================================================================
- * Reserved commands
+ * convert — a whole world into another format
  * ======================================================================== */
 
-static int cmd_not_implemented(const char *name, const char *phase)
+/* The verdict on a --to target: what this build converts is accepted,
+   anything else well-formed is the reserved answer, exit 5, so the
+   surface stays testable while the pairs arrive one at a time. */
+static int convert_target(const char *to)
 {
-    if (g_opts.json) {
-        printf("{\"error\":\"not implemented\",\"command\":\"%s\",\"planned_phase\":\"%s\"}\n",
-               name, phase);
-    } else {
-        fprintf(stderr, "mcme: '%s' is not implemented yet (planned for %s).\n"
-                        "      See wiki/dev-log.md for status.\n",
-                name, phase);
+    const char *slash = strchr(to, '/');
+    if (slash == NULL || slash == to || slash[1] == '\0'
+            || strchr(slash + 1, '/') != NULL) {
+        mcme_set_error("convert: --to wants <platform>/<version>, "
+                       "e.g. java/1.20 (got '%s')", to);
+        return MCME_EXIT_USAGE;
     }
+    if ((size_t)(slash - to) == 4 && strncmp(to, "java", 4) == 0
+            && strcmp(slash + 1, "1.20") == 0) {
+        return MCME_OK;
+    }
+    mcme_set_error("convert: %.*s/%s converts in a later entry; only "
+                   "a Bedrock world to java/1.20 converts today",
+                   (int)(slash - to), to, slash + 1);
     return MCME_EXIT_NOT_IMPLEMENTED;
+}
+
+/* The drop counts, one line, singular or plural as they stand — only
+   printed when there is something to say. */
+static void print_convert_drops(const McmeConvertReport *r)
+{
+    const struct { size_t n; const char *one; const char *many; } d[] = {
+        { r->legacy_subchunks, "subchunk mcme cannot read",
+                               "subchunks mcme cannot read" },
+        { r->water_layers,     "water layer",    "water layers" },
+        { r->block_entities,   "block entity",   "block entities" },
+        { r->entities,         "entity list",    "entity lists" },
+        { r->chunk_data,       "other chunk key", "other chunk keys" },
+        { r->other,            "other key",      "other keys" },
+    };
+    bool any = false;
+    for (size_t i = 0; i < sizeof d / sizeof d[0]; ++i) {
+        if (d[i].n == 0) continue;
+        printf("%s%zu %s", any ? ", " : "dropped: ", d[i].n,
+               d[i].n == 1 ? d[i].one : d[i].many);
+        any = true;
+    }
+    if (any) putchar('\n');
+}
+
+static int cmd_convert(int argc, char **argv)
+{
+    const char *to = NULL;
+    const char *pos[2];
+    int npos = 0;
+    for (int i = 0; i < argc; ++i) {
+        if (strcmp(argv[i], "--to") == 0) {
+            if (i + 1 >= argc) {
+                mcme_set_error("convert: --to needs "
+                               "<platform>/<version> (e.g. java/1.20)");
+                return MCME_EXIT_USAGE;
+            }
+            if (to != NULL) {
+                mcme_set_error("convert: --to given twice");
+                return MCME_EXIT_USAGE;
+            }
+            to = argv[i + 1];
+            ++i;
+            continue;
+        }
+        if (npos >= 2) {
+            mcme_set_error("convert: unexpected extra argument '%s'",
+                           argv[i]);
+            return MCME_EXIT_USAGE;
+        }
+        pos[npos++] = argv[i];
+    }
+    if (npos != 2) {
+        mcme_set_error("convert: usage: convert <in> <out> --to "
+                       "<platform>/<version>");
+        return MCME_EXIT_USAGE;
+    }
+    if (to == NULL) {
+        mcme_set_error("convert: missing --to <platform>/<version>");
+        return MCME_EXIT_USAGE;
+    }
+    int rc = convert_target(to);
+    if (rc != MCME_OK) return rc;
+
+    const char *in = pos[0];
+    const char *out = pos[1];
+    size_t inlen = strlen(in);
+    if (strncmp(out, in, inlen) == 0 && out[inlen] == '/') {
+        mcme_set_error("convert: '%s' is inside '%s'; an output "
+                       "world is written outside its input", out, in);
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, in)) {
+        return mcme_fs_exists(in) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind == MCME_WORLD_UNKNOWN) {
+        mcme_set_error("convert: '%s' is not a Bedrock or Java world",
+                       in);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK) {
+        mcme_set_error("convert: '%s' is a %s world; only Bedrock "
+                       "input converts today", in,
+                       mcme_world_kind_name(info.kind));
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_IMPLEMENTED;
+    }
+    mcme_world_info_free(&info);   /* the library re-probes; this was
+                                      the CLI's verdict on the pair */
+
+    McmeConvertReport rep;
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    if (!mcme_convert_bedrock_java(in, out, &rep, &refusal)) {
+        char why[512];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("convert: %s", why);
+        return refusal_exit(refusal);
+    }
+
+    if (g_opts.json) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON *skipped = cJSON_CreateObject();
+        if (root == NULL || skipped == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(skipped);
+            return MCME_EXIT_INTERNAL;
+        }
+        cJSON_AddStringToObject(root, "from", "bedrock");
+        cJSON_AddStringToObject(root, "to", "java/1.20");
+        cJSON_AddNumberToObject(root, "chunks", (double)rep.chunks);
+        cJSON_AddNumberToObject(root, "subchunks", (double)rep.subchunks);
+        cJSON_AddNumberToObject(root, "blocks", (double)rep.blocks);
+        cJSON_AddNumberToObject(skipped, "block_entities",
+                                (double)rep.block_entities);
+        cJSON_AddNumberToObject(skipped, "chunk_data",
+                                (double)rep.chunk_data);
+        cJSON_AddNumberToObject(skipped, "entities",
+                                (double)rep.entities);
+        cJSON_AddNumberToObject(skipped, "legacy_subchunks",
+                                (double)rep.legacy_subchunks);
+        cJSON_AddNumberToObject(skipped, "other", (double)rep.other);
+        cJSON_AddNumberToObject(skipped, "water_layers",
+                                (double)rep.water_layers);
+        cJSON_AddItemToObject(root, "skipped", skipped);
+        print_json(root);
+    } else {
+        printf("converted %zu chunks (%zu subchunks, %zu blocks) to "
+               "java/1.20\n", rep.chunks, rep.subchunks, rep.blocks);
+        print_convert_drops(&rep);
+    }
+    return MCME_OK;
 }
 
 /* ========================================================================
@@ -2911,7 +3060,7 @@ static int dispatch(int argc, char **argv)
         mcme_set_error("nbt: unknown subcommand '%s' (expected dump)", args[0]);
         return MCME_EXIT_USAGE;
     }
-    if (strcmp(cmd, "convert") == 0) return cmd_not_implemented("convert", "Phase 4");
+    if (strcmp(cmd, "convert") == 0) return cmd_convert(rest, args);
     if (strcmp(cmd, "chunks") == 0)  return cmd_chunks(rest, args);
     if (strcmp(cmd, "region") == 0) {
         /* `chunk` and `compact` are matched before the path, like

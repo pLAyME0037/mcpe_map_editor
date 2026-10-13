@@ -5,9 +5,11 @@
 #include "mcme/core.h"
 #include "mcme/java_chunk.h"
 #include "mcme/compress.h"
+#include "mcme/convert.h"
 #include "mcme/leveldb.h"
 #include "mcme/nbt.h"
 #include "mcme/region.h"
+#include "mcme/translate.h"
 #include "mcme/world.h"
 
 #include <dirent.h>
@@ -4058,6 +4060,309 @@ static void test_bedrock_entity_write(void)
     rmdir(tmp);
 }
 
+/* ========================================================================
+ * Translate — the Bedrock to Java block map
+ * ======================================================================== */
+
+/* The translation of one palette entry, as SNBT both ways. `want`
+   NULL means the map must refuse the entry (legacy, or nameless). */
+static void check_translate(McmeArena *arena, const char *in,
+                            const char *want)
+{
+    McmeTag *entry = NULL;
+    if (!mcme_nbt_parse_snbt(arena, in, strlen(in), &entry)) {
+        CHECK_MSG(false, "translate input does not parse: %s", in);
+        return;
+    }
+    McmeTag *out = mcme_translate_block(arena, entry);
+    if (want == NULL) {
+        CHECK_MSG(out == NULL, "translate should refuse '%s' (got '%s')",
+                  in, out != NULL ? "an entry" : "nothing");
+        if (out != NULL) mcme_clear_error();
+        return;
+    }
+    if (out == NULL) {
+        CHECK_MSG(false, "translate of '%s' failed: %s", in,
+                  mcme_last_error());
+        return;
+    }
+    McmeBuffer got;
+    mcme_buffer_init(&got);
+    CHECK(mcme_nbt_write_snbt(out, &got, 0));
+    CHECK_MSG(got.len == strlen(want)
+              && memcmp(got.data, want, got.len) == 0,
+              "translate of %s = '%.*s', want '%s'", in, (int)got.len,
+              got.data != NULL ? (const char *)got.data : "", want);
+    mcme_buffer_free(&got);
+}
+
+static void test_translate(void)
+{
+    printf("  translate (bedrock -> java block map)\n");
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) return;
+
+    /* Both editions spell it the same: through, value tag untouched. */
+    check_translate(arena,
+        "{name:\"minecraft:stone\",states:{},version:1}",
+        "{Name: \"minecraft:stone\"}");
+    check_translate(arena,
+        "{name:\"minecraft:grass_block\","
+        "states:{snowy:\"false\"},version:1}",
+        "{Name: \"minecraft:grass_block\", "
+        "Properties: {snowy: \"false\"}}");
+
+    /* The axis rename every log, wood, stem and hyphae spells. */
+    check_translate(arena,
+        "{name:\"minecraft:oak_log\",states:{pillar_axis:\"x\"},version:1}",
+        "{Name: \"minecraft:oak_log\", Properties: {axis: \"x\"}}");
+    check_translate(arena,
+        "{name:\"minecraft:birch_log\",states:{pillar_axis:\"y\"},version:1}",
+        "{Name: \"minecraft:birch_log\", Properties: {axis: \"y\"}}");
+    /* Java's mushroom stem takes no properties at all, so its
+       pillar_axis is an unknown state like any other. */
+    check_translate(arena,
+        "{name:\"minecraft:mushroom_stem\","
+        "states:{pillar_axis:\"z\"},version:1}",
+        "{Name: \"minecraft:mushroom_stem\"}");
+
+    /* A kept state with a byte value keeps the byte; a dropped one
+       takes the Java default. */
+    check_translate(arena,
+        "{name:\"minecraft:furnace\","
+        "states:{facing_direction:2,lit:0b},version:1}",
+        "{Name: \"minecraft:furnace\", Properties: {lit: 0b}}");
+
+    /* Red sand is a name, not a state, on the Java side. */
+    check_translate(arena,
+        "{name:\"minecraft:sand\",states:{sand_type:\"red\"},version:1}",
+        "{Name: \"minecraft:red_sand\"}");
+    check_translate(arena,
+        "{name:\"minecraft:sand\",states:{},version:1}",
+        "{Name: \"minecraft:sand\"}");
+
+    /* The reference answers every Bedrock wire the same — four side
+       connections and power 0 — and so does the map. */
+    check_translate(arena,
+        "{name:\"minecraft:redstone_wire\","
+        "states:{north:\"side\",south:\"side\",powered:1b},version:1}",
+        "{Name: \"minecraft:redstone_wire\", "
+        "Properties: {east: \"side\", north: \"side\", power: \"0\", "
+        "south: \"side\", west: \"side\"}}");
+
+    /* States the map does not know take the Java default — the
+       reference's own answer — and a legacy entry has no Java
+       spelling at all. */
+    check_translate(arena,
+        "{name:\"minecraft:torch\","
+        "states:{torch_facing_direction:1},version:1}",
+        "{Name: \"minecraft:torch\"}");
+    check_translate(arena,
+        "{name:\"minecraft:farmland\",states:{moisture:7},version:1}",
+        "{Name: \"minecraft:farmland\"}");
+    check_translate(arena,
+        "{name:\"minecraft:air\",states:{},version:1}",
+        "{Name: \"minecraft:air\"}");
+    check_translate(arena, "{name:\"minecraft:log\",val:4}", NULL);
+    check_translate(arena, "{states:{},version:1}", NULL);
+    check_translate(arena, "\"minecraft:stone\"", NULL);
+
+    mcme_clear_error();
+    mcme_arena_free(arena);
+}
+
+/* ========================================================================
+ * Convert — a Bedrock world, rewritten as Java
+ * ======================================================================== */
+
+/* The output chunk's tree, read back through the region layer. */
+static McmeTag *convert_chunk_root(McmeArena *arena, const char *out,
+                                   int cx, int cz, McmeNbtDoc *doc)
+{
+    char file[512];
+    snprintf(file, sizeof file, "%s/region/r.%d.%d.mca", out,
+             cx >> 5, cz >> 5);
+    McmeRegion reg;
+    if (!mcme_region_open(&reg, file)) return NULL;
+    McmeBuffer nbt;
+    mcme_buffer_init(&nbt);
+    bool ok = mcme_region_chunk_present(&reg, cx, cz)
+        && mcme_region_read_chunk(&reg, cx, cz, NULL, &nbt);
+    mcme_region_close(&reg);
+    if (!ok) {
+        mcme_buffer_free(&nbt);
+        return NULL;
+    }
+    bool parsed = mcme_nbt_parse(doc, arena, nbt.data, nbt.len, false);
+    mcme_buffer_free(&nbt);
+    return parsed ? doc->root : NULL;
+}
+
+static void test_convert(void)
+{
+    printf("  convert (bedrock -> java/1.20)\n");
+    char src[512];
+    snprintf(src, sizeof src, "%s/db", kChunksWorld);
+    const char *lvl_src = "tests/golden/worlds/bedrock/level.dat";
+    if (!mcme_fs_exists(src) || !mcme_fs_exists(lvl_src)) {
+        printf("  SKIP convert (%s or %s not found)\n", src, lvl_src);
+        return;
+    }
+
+    /* The fixture chunks world ships without a level.dat, so the
+       fixture world's own level.dat is carried onto the copy: both
+       are fixtures, both copied, neither written. */
+    char in[64], out[96], dbdir[512], lvl[512];
+    CHECK(fresh_store_dir(in, sizeof in));
+    snprintf(dbdir, sizeof dbdir, "%s/db", in);
+    CHECK(copy_store(src, dbdir));
+    void *raw = NULL;
+    size_t raw_len = 0;
+    CHECK(mcme_fs_read(lvl_src, &raw, &raw_len));
+    snprintf(lvl, sizeof lvl, "%s/level.dat", in);
+    CHECK(mcme_fs_write(lvl, raw, raw_len));
+    free(raw);
+    snprintf(out, sizeof out, "%s_java", in);
+    CHECK(!mcme_fs_exists(out));
+
+    /* The fixture's own shape, counted: two overworld chunks; the v1
+       legacy subchunk and the water layer dropped; the nether key
+       among the others. */
+    McmeConvertReport rep;
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    if (!mcme_convert_bedrock_java(in, out, &rep, &refusal)) {
+        CHECK_MSG(false, "convert failed: %s", mcme_last_error());
+        remove_store(dbdir);
+        remove(lvl);
+        rmdir(in);
+        return;
+    }
+    CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+    CHECK(rep.chunks == 2);
+    CHECK(rep.subchunks == 7);
+    CHECK(rep.blocks == 24576);
+    CHECK(rep.legacy_subchunks == 1);
+    CHECK(rep.water_layers == 1);
+    CHECK(rep.other == 1);
+    CHECK(rep.block_entities == 0);
+    CHECK(rep.entities == 0);
+    CHECK(rep.chunk_data == 0);
+
+    /* The output is a whole world: the scaffold, and the probe's
+       verdict on it. */
+    char file[512];
+    snprintf(file, sizeof file, "%s/region/r.0.0.mca", out);
+    CHECK(mcme_fs_exists(file));
+    snprintf(file, sizeof file, "%s/region/r.0.-1.mca", out);
+    CHECK(mcme_fs_exists(file));
+    snprintf(file, sizeof file, "%s/level.dat", out);
+    CHECK(mcme_fs_exists(file));
+    McmeWorldInfo info;
+    CHECK(mcme_world_probe(&info, out));
+    CHECK(info.kind == MCME_WORLD_JAVA);
+    CHECK(info.data_version == 3463);
+    CHECK(info.chunks == 2);
+    mcme_world_info_free(&info);
+
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena != NULL) {
+        /* The level.dat carries the name and the seed across. */
+        McmeLevelDatFrame frame;
+        char out_lvl[512];
+        snprintf(out_lvl, sizeof out_lvl, "%s/level.dat", out);
+        McmeNbtDoc lvldoc, indoc;
+        CHECK(mcme_level_dat_parse(&lvldoc, arena, out_lvl, &frame));
+        CHECK(frame == MCME_LEVELDAT_GZIP);
+        CHECK(mcme_level_dat_parse(&indoc, arena, lvl, &frame));
+        const McmeTag *data = mcme_nbt_get(lvldoc.root, "Data");
+        CHECK(data != NULL);
+        CHECK(mcme_nbt_int_or(mcme_nbt_get(data, "DataVersion"), 0)
+              == 3463);
+        const McmeTag *scope = mcme_nbt_get(indoc.root, "Data");
+        if (scope == NULL || scope->type != MCME_TAG_Compound) {
+            scope = indoc.root;
+        }
+        const McmeTag *wgs = mcme_nbt_get(data, "WorldGenSettings");
+        CHECK(wgs != NULL);
+        /* The fixture carries no RandomSeed; both sides then read
+           0, and a missing seed on either side fails the pair. */
+        CHECK(mcme_nbt_long_or(mcme_nbt_get(wgs, "seed"), -1)
+              == mcme_nbt_long_or(mcme_nbt_get(scope, "RandomSeed"),
+                                  0));
+        const McmeTag *name_in = mcme_nbt_get(scope, "LevelName");
+        const McmeTag *name_out = mcme_nbt_get(data, "LevelName");
+        CHECK(name_in != NULL && name_out != NULL
+              && name_in->type == MCME_TAG_String
+              && name_out->type == MCME_TAG_String
+              && name_in->string.len == name_out->string.len
+              && memcmp(name_in->string.data, name_out->string.data,
+                        name_in->string.len) == 0);
+        /* The spawn travels under the Java field names the probe
+           reads; the fixture records none, so the documented
+           defaults stand. */
+        CHECK(mcme_nbt_int_or(mcme_nbt_get(data, "SpawnX"), -1)
+              == mcme_nbt_int_or(mcme_nbt_get(scope, "SpawnX"), 0));
+        CHECK(mcme_nbt_int_or(mcme_nbt_get(data, "SpawnY"), -1)
+              == mcme_nbt_int_or(mcme_nbt_get(scope, "SpawnY"), 64));
+        CHECK(mcme_nbt_int_or(mcme_nbt_get(data, "SpawnZ"), -1)
+              == mcme_nbt_int_or(mcme_nbt_get(scope, "SpawnZ"), 0));
+
+        /* The blocks, through the map, section by section. */
+        McmeNbtDoc chunk;
+        McmeTag *root = convert_chunk_root(arena, out, 0, 0, &chunk);
+        CHECK(root != NULL);
+        if (root != NULL) {
+            check_java_block(root, 0, 64, 0, "minecraft:stone");
+            check_java_block(root, 0, 66, 0,
+                "minecraft:grass_block{snowy: \"false\"}");
+            check_java_block(root, 0, 67, 0,
+                "minecraft:oak_log{axis: \"x\"}");
+            check_java_block(root, 0, -60, 0,
+                "minecraft:furnace{lit: 0b}");
+            check_java_block(root, 0, -50, 0, "minecraft:red_sand");
+            check_java_block(root, 0, 0, 0,
+                "minecraft:redstone_wire{east: \"side\", "
+                "north: \"side\", power: \"0\", south: \"side\", "
+                "west: \"side\"}");
+            check_java_block(root, 0, 10, 0, "minecraft:water");
+            /* The v1 legacy subchunk's blocks: air, counted. */
+            check_java_block(root, 0, 34, 0, "minecraft:air");
+        }
+        McmeNbtDoc chunk2;
+        McmeTag *root2 = convert_chunk_root(arena, out, 1, -2, &chunk2);
+        CHECK(root2 != NULL);
+        if (root2 != NULL) {
+            check_java_block(root2, 16, 0, -17, "mcme:fixture_211");
+        }
+        mcme_arena_free(arena);
+    }
+
+    /* An output that exists is refused, whole; a path that is not a
+       world is refused before anything is created. */
+    CHECK(!mcme_convert_bedrock_java(in, out, &rep, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+    char nowhere[96];
+    snprintf(nowhere, sizeof nowhere, "%s_missing", in);
+    char nowhere_out[128];
+    snprintf(nowhere_out, sizeof nowhere_out, "%s_missing", out);
+    CHECK(!mcme_convert_bedrock_java(nowhere, nowhere_out, &rep,
+                                     &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
+    mcme_clear_error();
+
+    char region_dir[512];
+    snprintf(region_dir, sizeof region_dir, "%s/region", out);
+    remove_store(region_dir);
+    snprintf(file, sizeof file, "%s/level.dat", out);
+    remove(file);
+    rmdir(out);
+    remove_store(dbdir);
+    remove(lvl);
+    rmdir(in);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -4071,6 +4376,9 @@ int mcme_test_world(void)
     test_bedrock_column();
     test_bedrock_entity();
     test_bedrock_entity_write();
+
+    test_translate();
+    test_convert();
 
     if (!mcme_fs_exists(kWorldDir)) {
         printf("  SKIP golden world (%s not found; run tools/ref_worlds.py)\n",

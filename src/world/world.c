@@ -131,10 +131,22 @@ static bool get_long(const McmeTag *c, const char *name, int64_t *out)
  * be understood is reported as MCME_LEVELDAT_NONE with the error left in
  * mcme_last_error for the caller to log — the world may still be usable.
  */
-static bool read_level_dat(McmeWorldInfo *info, const char *dir)
+/*
+ * Reads `<path>` in whatever frame it wears and parses it into `doc`
+ * from `arena` — the framing rules, extracted so every reader of a
+ * level.dat agrees on them (the frames are named on McmeLevelDatFrame).
+ * `*frame` says which wrapper was found, and is set even when the NBT
+ * itself does not parse, because a caller reporting a mis-detected
+ * world wants the wrapper either way.
+ */
+bool mcme_level_dat_parse(McmeNbtDoc *doc, McmeArena *arena,
+                          const char *path, McmeLevelDatFrame *frame)
 {
-    char path[4096];
-    if (join2(path, sizeof path, dir, "level.dat") == NULL) return false;
+    if (doc == NULL || arena == NULL || path == NULL || frame == NULL) {
+        mcme_set_error("level.dat: null argument");
+        return false;
+    }
+    *frame = MCME_LEVELDAT_NONE;
 
     void *raw = NULL;
     size_t raw_len = 0;
@@ -150,13 +162,13 @@ static bool read_level_dat(McmeWorldInfo *info, const char *dir)
 
     if (raw_len >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
         /* No header, gzip straight away. Only Java does this. */
-        info->frame = MCME_LEVELDAT_GZIP;
+        *frame = MCME_LEVELDAT_GZIP;
         little_endian = false;
     } else if (raw_len >= 8) {
         /* Bedrock: [storage version, 4 LE][payload length, 4 LE]. The length
            field is advisory and is often wrong in the wild, so it is not
            trusted — the remaining bytes are simply the payload. */
-        info->frame = MCME_LEVELDAT_HEADER_PLAIN;
+        *frame = MCME_LEVELDAT_HEADER_PLAIN;
         body = bytes + 8;
         body_len = raw_len - 8;
         little_endian = true;
@@ -164,7 +176,7 @@ static bool read_level_dat(McmeWorldInfo *info, const char *dir)
     } else {
         /* Too short for either container. Treat the whole thing as NBT and let
            the parser say what is wrong with it. */
-        info->frame = MCME_LEVELDAT_BARE_NBT;
+        *frame = MCME_LEVELDAT_BARE_NBT;
         body = bytes;
         body_len = raw_len;
         little_endian = false;
@@ -173,7 +185,7 @@ static bool read_level_dat(McmeWorldInfo *info, const char *dir)
     McmeBuffer inflated;
     mcme_buffer_init(&inflated);
 
-    if (info->frame == MCME_LEVELDAT_GZIP) {
+    if (*frame == MCME_LEVELDAT_GZIP) {
         if (!mcme_decompress(MCME_COMPRESS_GZIP, bytes, raw_len, &inflated,
                              MCME_DECOMPRESS_MAX)) {
             free(raw);
@@ -190,20 +202,27 @@ static bool read_level_dat(McmeWorldInfo *info, const char *dir)
             free(raw);
             return false;
         }
-        info->frame = MCME_LEVELDAT_HEADER_GZIP;
+        *frame = MCME_LEVELDAT_HEADER_GZIP;
         body = inflated.data;
         body_len = inflated.len;
     }
 
+    bool parsed = mcme_nbt_parse(doc, arena, body, body_len, little_endian);
+    mcme_buffer_free(&inflated);
+    free(raw);
+    return parsed;
+}
+
+static bool read_level_dat(McmeWorldInfo *info, const char *dir)
+{
+    char path[4096];
+    if (join2(path, sizeof path, dir, "level.dat") == NULL) return false;
+
     McmeArena *arena = mcme_arena_new();
-    if (arena == NULL) {
-        mcme_buffer_free(&inflated);
-        free(raw);
-        return false;
-    }
+    if (arena == NULL) return false;
 
     McmeNbtDoc doc;
-    bool parsed = mcme_nbt_parse(&doc, arena, body, body_len, little_endian);
+    bool parsed = mcme_level_dat_parse(&doc, arena, path, &info->frame);
     if (parsed) {
         /* Java nests everything under a `Data` compound; Bedrock normally does
            too, but a freshly generated Bedrock level.dat (and amulet's own
@@ -274,8 +293,6 @@ static bool read_level_dat(McmeWorldInfo *info, const char *dir)
     }
 
     mcme_arena_free(arena);
-    mcme_buffer_free(&inflated);
-    free(raw);
     return parsed;
 }
 

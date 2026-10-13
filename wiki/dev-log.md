@@ -9,6 +9,141 @@ Status vocabulary:
 
 ---
 
+## 2026-10-13 — Convert: `mcme convert`, a Bedrock world rewritten as Java 1.20
+
+### Built
+
+- `mcme convert <in> <out> --to java/1.20` runs end to end: a
+  Bedrock world becomes a Java world — level.dat, region files,
+  and every block the store holds carried through the translate
+  map. One pair converts today. `--to` naming another pair is
+  not-implemented, `--to` naming no edition is usage, a Java
+  input is not-implemented, and `<out>` must not exist: convert
+  writes a new world and never mixes into an old one, and any
+  failure after the first byte removes the output whole (D12).
+- The run scans the store's keys, groups them by chunk, and
+  builds each chunk in its own arena: subchunk palettes decode,
+  the map answers per entry, and `make_section` writes a Java
+  section — the store's index order remapped to the position
+  order the Java packing uses, the palette deduplicated through
+  SNBT keys and seeded with air, the data packed at the
+  format's own widths (4 bits as the floor, the palette's need
+  above it, floor(64 / bits) entries to a long, none spanning)
+  — the reader `java_chunk.c` already spoke. Each finished
+  chunk goes back through `mcme_region_set_chunk`, the append
+  path the region verbs made.
+- `src/translate/translate.c` is the map. An entry without a
+  `version` has no Java spelling and is refused to air,
+  counted as `legacy_subchunks`; `sand` with `sand_type:red`
+  is a name on the Java side; `pillar_axis` becomes `axis`
+  for the log, wood, stem and hyphae names that spell it that
+  way; redstone wire answers every input alike — four side
+  connections and power 0 — the way the reference answers it;
+  `grass_block.snowy` and `furnace.lit` are carried and
+  everything else takes the Java default, which is the
+  reference's own answer for the same input with empty states.
+- The level.dat framing moved out of `read_level_dat` into a
+  public `mcme_level_dat_parse()` (`world.c`/`world.h`) —
+  gzip, 8-byte header plus plain NBT, header plus gzip, bare
+  NBT — so convert reads the input's Bedrock framing and
+  writes the output's gzip big-endian one through the same
+  door. The Java level.dat is built as a 1.20 world records
+  it: `WorldGenSettings` carrying the seed, the name, the
+  spawn under `SpawnX`/`SpawnY`/`SpawnZ` — the names the
+  probe reads — the game type, and the difficulty, each from
+  the input's scope, root or `Data`, the two places Bedrock
+  keeps them.
+- The report is the promise: `McmeConvertReport` and the
+  `--json` shape count the chunks, subchunks and blocks
+  written and every drop — block entities, entities, the
+  store's chunk-state keys, the legacy subchunks, the
+  waterlogged layers, the keys outside the overworld. A drop
+  is counted, never a failure: a world full of chests
+  converts, and the report says what it left behind.
+- Two of the write path's bugs were found before the commit
+  by reading the output the way the reference would: four
+  NBT key lengths wrong (`block_states` truncated to
+  `block_state`, `biomes`, `block_entities` and
+  `WorldGenSettings` written with a trailing NUL — every put
+  takes an explicit length, so a wrong number is a wrong
+  key), and the spawn written as `spawnX` where `world.c`
+  reads `SpawnX`, invisible to every Java reader.
+
+### Cross-check
+
+- Selftest `test_translate`: the map, SNBT in and SNBT out —
+  every rule one case, and the refusals (a legacy entry, a
+  nameless entry, an entry that is not a compound) answered
+  as refusals.
+- Selftest `test_convert`: the library against a fixture
+  fabricated in a temporary directory — the bedrock-chunks
+  store copied, the bedrock fixture's level.dat carried
+  onto it, neither golden touched: the report's counts
+  exact (2 chunks, 7 subchunks, 24576 blocks, 1 legacy, 1
+  water layer, 1 other), the output probing as java at
+  DataVersion 3463 with both region files, the blocks read
+  back through the region layer — `grass_block` with its
+  `snowy`, `oak_log` with `axis:x`, `furnace` with `lit`
+  and its facing gone, `red_sand`, the wire, `water`, the
+  legacy subchunk's air, the fixture block keeping its name
+  and losing its states — the level.dat carrying LevelName,
+  the seed, the spawn and DataVersion, and the refusal
+  classes (an output that exists is usage, a path that is
+  not a world is not-there, the pair checks in order so the
+  first refusal stands).
+- `tools/ref_convert.py`, 4 checks: the `--json` report
+  exact; **every one of the 24576 positions — every block of
+  every stored subchunk — read back from the output region
+  files with no mcme code (ref_java_fill's own sector walk
+  and palette unpacking) and compared against PyMCTranslate's
+  own bedrock(1, 20, 80) → universal → java(1, 20, 0)
+  answers**, under the documented normalizations: booleans
+  compare true/1 and false/0 alike, a property only the
+  reference has equals mcme's absence when it is the Java
+  default (computed by translating the same block with empty
+  states) or zero, and a block neither edition knows keeps
+  its name and loses its states where the reference passes
+  them through; level.dat parity (LevelName, the seed under
+  `WorldGenSettings`, the spawn under `SpawnX`/`Y`/`Z`,
+  DataVersion 3463); and the exit codes — `--to banana` 1,
+  `--to java/1.21` 5, an output that exists 1 with nothing
+  written, a missing world 2, a Java input 5.
+- Verified at commit: `./rebuild.sh test` PASS — 5 suites,
+  0 failures; `./rebuild.sh release` builds; ref tools 8
+  (java fill) + 8 (java blocks) + 12 (compact) + 9 (write)
+  + 17 (chunk) + 14 (inventory) + 25 (entity) + 19 (bedrock
+  write) + 28 (bedrock column) + 4 (convert); align.py 0
+  misalignments; golden worlds untouched — the store is
+  copied before it is opened, because a LevelDB open
+  compacts what it touches.
+
+### Known gaps
+
+- Entities and block entities are counted, not carried: the
+  input's chests arrive empty and the report says so
+  (`block_entities`, `entities`).
+- Ticks — block and fluid — are not carried; a converted
+  world starts quiet.
+- The waterlogged layer is dropped and counted
+  (`water_layers`): a logged block keeps the block, loses
+  the water above it.
+- Biomes are written as plains for every section; the
+  column's biome data is not read yet.
+- `Heightmaps` are omitted from the written chunks.
+- Legacy v1 palettes become air, counted as
+  `legacy_subchunks` — a version 1 entry has no states to
+  translate (D12).
+- The overworld only: keys carrying another dimension are
+  counted as `other` and dropped.
+
+### Next
+
+- Block entities and the waterlogged layer are the two
+  drops the report counts loudest; carrying them is the
+  next phase of the same feature.
+
+---
+
 ## 2026-10-13 — Java fill: `chunk fill` for both worlds
 
 ### Built
