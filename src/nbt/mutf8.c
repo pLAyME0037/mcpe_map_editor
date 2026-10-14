@@ -3,24 +3,38 @@
 #include <string.h>
 
 /*
- * Modified UTF-8 codec.
+ * Modified UTF-8 codec — with standard UTF-8's spellings accepted
+ * beside it, because the two editions write their strings
+ * differently and one decoder reads both files:
  *
- * The two deviations from standard UTF-8 are documented in mutf8.h and are
- * exactly what a naive port gets wrong, so they are called out again here:
+ *   Java (modified UTF-8):
+ *     U+0000            -> C0 80        (never a bare 00)
+ *     U+10000 and above -> a UTF-16 surrogate pair, each half
+ *                          written as three bytes, SIX total where
+ *                          standard UTF-8 would use four.
  *
- *   U+0000            -> C0 80        (never a bare 00)
- *   U+10000 and above -> a UTF-16 surrogate pair, each half written as a
- *                        three-byte sequence, so SIX bytes total where
- *                        standard UTF-8 would use four.
+ *   Bedrock (standard UTF-8): U+10000 and above is a real
+ *     four-byte sequence — an emoji in an item's name arrives that
+ *     way, and a decoder that rejected it lost the whole record
+ *     that held it (measured: three records in one real world,
+ *     621 documents behind them).
  *
- * Consequence: a four-byte sequence starting with 0xF0..0xF7 is INVALID in
- * modified UTF-8. That is the fastest way to tell the two encodings apart, and
- * it is why mcme_mutf8_decode rejects such lead bytes outright.
+ * Decode therefore accepts each encoding's own spellings and
+ * rejects only what neither allows: overlong forms, continuation
+ * bytes standing as leads, code points past U+10FFFF. A record's
+ * strings decode or the record is refused — the same
+ * all-or-nothing the record read has always had, now applied to
+ * text the game actually wrote.
  *
- * On decode, a valid surrogate pair is combined into one code point and
- * emitted as four-byte UTF-8. A LONE surrogate is preserved as a three-byte
- * sequence rather than replaced with U+FFFD, so that reading a file and
- * writing it back reproduces the original bytes even if the file was odd.
+ * On decode, a valid surrogate pair is combined into one code point
+ * and emitted as four-byte UTF-8. A LONE surrogate is preserved as
+ * a three-byte sequence rather than replaced with U+FFFD, so that
+ * reading a file and writing it back reproduces the original bytes
+ * even if the file was odd. Code points decoded from a four-byte
+ * standard-UTF-8 sequence are written back in modified UTF-8's
+ * surrogate spelling when encoded — Java's reader wants that; the
+ * record-splice paths keep every document they do not rewrite as
+ * the bytes it arrived as.
  */
 
 /* ------------------------------------------------------------------
@@ -287,9 +301,49 @@ bool mcme_mutf8_decode(const char *mutf8, size_t mutf8_len, McmeBuffer *out)
             continue;
         }
 
-        /* A four-byte-or-longer lead byte is not valid modified UTF-8. This is
-           the clearest signal that a file was written as standard UTF-8. */
-        mcme_set_error("mutf8: byte 0x%02X is not valid modified UTF-8 at byte %zu",
+        /* Standard UTF-8's four-byte sequence: the game's spelling
+           for a code point above the BMP, an emoji in an item name
+           for instance. Accepted beside modified UTF-8's surrogate
+           pair — one decoder, both editions' writers. */
+        if ((b0 & 0xF8) == 0xF0) {
+            if (end - p < 4) {
+                mcme_set_error("mutf8: truncated four-byte sequence at byte %zu",
+                               (size_t)(p - start));
+                return false;
+            }
+            uint8_t b1 = p[1], b2 = p[2], b3 = p[3];
+            if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80
+                    || (b3 & 0xC0) != 0x80) {
+                mcme_set_error("mutf8: bad continuation at byte %zu",
+                               (size_t)(p - start));
+                return false;
+            }
+            uint32_t cp = ((uint32_t)(b0 & 0x07) << 18)
+                        | ((uint32_t)(b1 & 0x3F) << 12)
+                        | ((uint32_t)(b2 & 0x3F) << 6)
+                        |  (uint32_t)(b3 & 0x3F);
+            if (cp < 0x10000) {
+                mcme_set_error("mutf8: overlong encoding at byte %zu",
+                               (size_t)(p - start));
+                return false;
+            }
+            if (cp > 0x10FFFF) {
+                mcme_set_error("mutf8: code point past U+10FFFF at byte %zu",
+                               (size_t)(p - start));
+                return false;
+            }
+            uint8_t buf[4];
+            if (!mcme_buffer_append(out, buf, utf8_encode_one(cp, buf))) {
+                return false;
+            }
+            p += 4;
+            continue;
+        }
+
+        /* Nor these: neither modified UTF-8 nor standard UTF-8 can
+           spell a byte this way. */
+        mcme_set_error("mutf8: byte 0x%02X is neither UTF-8 nor modified "
+                       "UTF-8 at byte %zu",
                        b0, (size_t)(p - start));
         return false;
     }
@@ -361,7 +415,22 @@ size_t mcme_mutf8_decoded_len(const char *mutf8, size_t mutf8_len)
             p += 3;
             continue;
         }
-        return 0;   /* four-byte lead: not modified UTF-8 */
+        if ((b0 & 0xF8) == 0xF0) {
+            /* standard UTF-8's four-byte sequence (see decode) */
+            if (end - p < 4) return 0;
+            uint8_t b1 = p[1], b2 = p[2], b3 = p[3];
+            if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80
+                    || (b3 & 0xC0) != 0x80) return 0;
+            uint32_t cp = ((uint32_t)(b0 & 0x07) << 18)
+                        | ((uint32_t)(b1 & 0x3F) << 12)
+                        | ((uint32_t)(b2 & 0x3F) << 6)
+                        |  (uint32_t)(b3 & 0x3F);
+            if (cp < 0x10000 || cp > 0x10FFFF) return 0;
+            total += 4;
+            p += 4;
+            continue;
+        }
+        return 0;   /* neither encoding spells a byte this way */
     }
     return total;
 }
@@ -397,7 +466,22 @@ bool mcme_mutf8_valid(const char *mutf8, size_t len)
             continue;
         }
 
-        return false;   /* four-byte lead: not modified UTF-8 */
+        if ((b0 & 0xF8) == 0xF0) {
+            /* standard UTF-8's four-byte sequence (see decode) */
+            if (end - p < 4) return false;
+            uint8_t b1 = p[1], b2 = p[2], b3 = p[3];
+            if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80
+                    || (b3 & 0xC0) != 0x80) return false;
+            uint32_t cp = ((uint32_t)(b0 & 0x07) << 18)
+                        | ((uint32_t)(b1 & 0x3F) << 12)
+                        | ((uint32_t)(b2 & 0x3F) << 6)
+                        |  (uint32_t)(b3 & 0x3F);
+            if (cp < 0x10000 || cp > 0x10FFFF) return false;
+            p += 4;
+            continue;
+        }
+
+        return false;   /* neither encoding spells a byte this way */
     }
     return true;
 }

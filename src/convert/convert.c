@@ -21,6 +21,7 @@
 
 #include "mcme/convert.h"
 #include "mcme/bedrock_chunk.h"
+#include "mcme/bedrock_entity.h"
 #include "mcme/bedrock_keys.h"
 #include "mcme/compress.h"
 #include "mcme/leveldb.h"
@@ -115,7 +116,12 @@ typedef struct {
 } SubRef;
 
 typedef struct {
+    int32_t cx, cz;
+} BeRef;                     /* a chunk's block-entity record       */
+
+typedef struct {
     SubRef            *subs;   /* stb array */
+    BeRef             *bes;    /* stb array */
     McmeConvertReport *rep;
 } Scan;
 
@@ -131,12 +137,23 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
         s->rep->other++;
         return true;
     }
-    if (k.tag == MCME_BEDROCK_TAG_BLOCK_ENTITY) {
-        s->rep->block_entities++;
+    if (k.dimension != 0) {
+        /* Every key of another dimension is `other` — block-entity
+           records included. One rule for every tag: the convert walks
+           the overworld, and a nether key is a nether key. */
+        s->rep->other++;
         return true;
     }
-    if (k.dimension != 0) {
-        s->rep->other++;
+    if (k.tag == MCME_BEDROCK_TAG_BLOCK_ENTITY) {
+        /* Collected, not counted here. A record whose chunk converts
+           is carried or dropped document by document where the chunk
+           is written; a record whose chunk holds no subchunks is
+           counted after the chunk loop. Counting a record twice, or
+           never, would both be lies. */
+        BeRef b;
+        b.cx = k.x;
+        b.cz = k.z;
+        arrpush(s->bes, b);
         return true;
     }
     if (k.tag == MCME_BEDROCK_TAG_ENTITIES) {
@@ -177,6 +194,15 @@ static int sub_cmp(const void *a, const void *b)
     return 0;
 }
 
+static int be_cmp(const void *a, const void *b)
+{
+    const BeRef *x = (const BeRef *)a;
+    const BeRef *y = (const BeRef *)b;
+    if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
+    if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
+    return 0;
+}
+
 /* ========================================================================
  * One section: layer zero through the map, packed the Java way
  * ======================================================================== */
@@ -189,10 +215,157 @@ typedef struct {
     McmeTag *entry;
 } Slot;
 
-/* The Java section for one Bedrock layer. *out stays NULL when every
+/* ========================================================================
+ * Waterlogging: Bedrock's second layer becomes Java's property
+ *
+ * Bedrock keeps waterlogged water beside block zero as a second layer
+ * of the subchunk; Java spells the same fact `waterlogged: "true"` on
+ * the block itself. Carrying it therefore needs two answers: is this
+ * Java block one that has the property at all, and is the layer cell
+ * water (a layer cell of anything else must not become water — a lie
+ * the reference would catch).
+ *
+ * The set of property-bearing blocks is the reference's own:
+ * PyMCTranslate's is_waterloggable over java/1.20 answers for all
+ * 1003 blocks — 310 yes, 693 no — and ref_convert pins this table to
+ * that answer position by position. The table is names, never a
+ * pattern over names: every suffix family below was enumerated
+ * against the reference until the two sets matched name for name.
+ * ======================================================================== */
+
+static const char * const kWaterlogExact[] = {
+    "minecraft:amethyst_cluster",
+    "minecraft:calibrated_sculk_sensor",
+    "minecraft:candle",
+    "minecraft:chain",
+    "minecraft:chest",
+    "minecraft:conduit",
+    "minecraft:campfire",
+    "minecraft:decorated_pot",
+    "minecraft:glow_lichen",
+    "minecraft:hanging_roots",
+    "minecraft:iron_bars",
+    "minecraft:ladder",
+    "minecraft:lantern",
+    "minecraft:light",
+    "minecraft:lightning_rod",
+    "minecraft:mangrove_propagule",
+    "minecraft:mangrove_roots",
+    "minecraft:pointed_dripstone",
+    "minecraft:rail",
+    "minecraft:scaffolding",
+    "minecraft:sculk_sensor",
+    "minecraft:sculk_shrieker",
+    "minecraft:sculk_vein",
+    "minecraft:sea_pickle",
+    "minecraft:soul_campfire",
+    "minecraft:soul_lantern",
+};
+
+static const char * const kWaterlogSuffixes[] = {
+    "_bud", "_candle", "_chest", "_coral", "_coral_fan",
+    "_coral_wall_fan", "_dripleaf", "_dripleaf_stem", "_fence",
+    "_leaves", "_pane", "_rail", "_sign", "_slab", "_stairs",
+    "_trapdoor", "_wall",
+};
+
+static bool ends_with(const char *s, size_t len, const char *suffix)
+{
+    size_t n = strlen(suffix);
+    return len >= n && memcmp(s + len - n, suffix, n) == 0;
+}
+
+/* Whether the Java entry `name` carries the `waterlogged` property. */
+static bool waterloggable(const char *name, size_t len)
+{
+    for (size_t i = 0; i < sizeof kWaterlogExact / sizeof kWaterlogExact[0];
+         ++i) {
+        if (strlen(kWaterlogExact[i]) == len
+                && memcmp(name, kWaterlogExact[i], len) == 0) {
+            return true;
+        }
+    }
+    for (size_t i = 0;
+         i < sizeof kWaterlogSuffixes / sizeof kWaterlogSuffixes[0]; ++i) {
+        if (ends_with(name, len, kWaterlogSuffixes[i])) return true;
+    }
+    return false;
+}
+
+/* The waterlogged twin of a palette slot: the same Java entry with
+   `waterlogged: "true"` — properties the entry already carries are
+   copied, because the second layer says nothing about them, and the
+   slot's source-SNBT key is dropped: only source entries dedup, and
+   this one is derived. */
+static bool make_waterlogged_variant(McmeArena *arena, const Slot *base,
+                                     Slot *out)
+{
+    out->snbt = NULL;
+    out->entry = mcme_nbt_new(arena, MCME_TAG_Compound);
+    const McmeTag *bname = mcme_nbt_get(base->entry, "Name");
+    const McmeTag *bprops = mcme_nbt_get(base->entry, "Properties");
+    if (out->entry == NULL || bname == NULL
+            || !mcme_nbt_compound_init(arena, out->entry, 2)
+            || !mcme_nbt_compound_put(arena, out->entry, "Name", 4,
+                                      (McmeTag *)bname)) {
+        return false;
+    }
+
+    McmeTag *props = mcme_nbt_new(arena, MCME_TAG_Compound);
+    if (props == NULL || !mcme_nbt_compound_init(arena, props, 4)) {
+        return false;
+    }
+    if (bprops != NULL && bprops->type == MCME_TAG_Compound) {
+        for (size_t i = 0; i < bprops->compound.len; ++i) {
+            if (!mcme_nbt_compound_put(arena, props,
+                                       bprops->compound.entries[i].name.data,
+                                       bprops->compound.entries[i].name.len,
+                                       bprops->compound.entries[i].value)) {
+                return false;
+            }
+        }
+    }
+
+    McmeTag *wl = mcme_nbt_new(arena, MCME_TAG_String);
+    if (wl == NULL
+            || !mcme_nbt_set_string(arena, wl, "true", 4)
+            || !mcme_nbt_compound_put(arena, props, "waterlogged", 11, wl)
+            || !mcme_nbt_compound_put(arena, out->entry, "Properties", 10,
+                                      props)) {
+        return false;
+    }
+    return true;
+}
+
+/* What a second-layer palette entry is: air (nothing there), water
+   (the waterlogging layer proper), or something mcme must not
+   translate into a property it only resembles. */
+enum { kExtraAir = 0, kExtraWater = 1, kExtraOther = 2 };
+
+static uint8_t extra_cell_kind(const McmeBedrockLayer *extra, size_t idx)
+{
+    const McmeTag *src = extra->palette[idx].root;
+    const McmeTag *nm = src != NULL ? mcme_nbt_get(src, "name") : NULL;
+    if (nm == NULL || nm->type != MCME_TAG_String) return kExtraOther;
+    if (nm->string.len == sizeof kAir - 1
+            && memcmp(nm->string.data, kAir, sizeof kAir - 1) == 0) {
+        return kExtraAir;
+    }
+    if (nm->string.len == 15
+            && memcmp(nm->string.data, "minecraft:water", 15) == 0) {
+        return kExtraWater;
+    }
+    return kExtraOther;
+}
+
+/* The Java section for one Bedrock layer. `extra`, when not NULL, is
+   the subchunk's second layer — the waterlogging half, folded into
+   the Java blocks' `waterlogged` property where the block has one and
+   counted dropped where it does not. *out stays NULL when every
    position is air after the map — nothing to write, not a fault. */
 static bool make_section(McmeArena *arena, int8_t cy,
                          const McmeBedrockLayer *layer,
+                         const McmeBedrockLayer *extra,
                          McmeConvertReport *rep, McmeTag **out)
 {
     *out = NULL;
@@ -266,7 +439,17 @@ static bool make_section(McmeArena *arena, int8_t cy,
     }
     if (dropped) rep->legacy_subchunks++;
 
-    /* Every position, Bedrock's XZY to Java's X-then-Z-then-Y. */
+    /* Every position, Bedrock's XZY to Java's X-then-Z-then-Y. The
+       second layer is folded in per position: water where the Java
+       block takes the property, a counted drop where it does not. */
+    uint8_t *extra_kind = NULL;
+    size_t *wl_of = NULL;    /* base slot -> waterlogged variant */
+    if (extra != NULL) {
+        for (size_t i = 0; i < extra->palette_len; ++i) {
+            arrpush(extra_kind, extra_cell_kind(extra, i));
+        }
+    }
+
     size_t jidx[kBlocksPerSection];
     bool all_air = true;
     size_t blocks = 0;
@@ -278,6 +461,43 @@ static bool make_section(McmeArena *arena, int8_t cy,
                 size_t jpos = (size_t)xi + (size_t)zi * 16
                     + (size_t)yi * 256;
                 size_t slot = slot_of[layer->indices[bpos]];
+                if (extra != NULL) {
+                    uint8_t kind = extra_kind[extra->indices[bpos]];
+                    if (kind != kExtraAir) {
+                        const McmeTag *nm = mcme_nbt_get(
+                            slots[slot].entry, "Name");
+                        bool carried = kind == kExtraWater
+                            && nm != NULL && nm->type == MCME_TAG_String
+                            && waterloggable(nm->string.data,
+                                             nm->string.len);
+                        if (carried) {
+                            while ((size_t)arrlen(wl_of) <= slot) {
+                                arrpush(wl_of, (size_t)-1);
+                            }
+                            if (wl_of[slot] == (size_t)-1) {
+                                Slot v;
+                                if (!make_waterlogged_variant(arena,
+                                                              &slots[slot],
+                                                              &v)) {
+                                    arrfree(slots);
+                                    arrfree(extra_kind);
+                                    arrfree(wl_of);
+                                    return false;
+                                }
+                                arrpush(slots, v);
+                                wl_of[slot] = arrlen(slots) - 1;
+                            }
+                            slot = wl_of[slot];
+                        } else {
+                            /* Water beside a block with no such
+                               property, or a layer cell that is not
+                               water: dropped and counted — turning it
+                               into a property the block does not have
+                               would be an edit no reader agrees on. */
+                            rep->water_positions++;
+                        }
+                    }
+                }
                 jidx[jpos] = slot;
                 if (slot != 0) {
                     all_air = false;
@@ -286,6 +506,8 @@ static bool make_section(McmeArena *arena, int8_t cy,
             }
         }
     }
+    arrfree(extra_kind);
+    arrfree(wl_of);
     rep->blocks += blocks;
     if (all_air) {
         arrfree(slots);
@@ -371,8 +593,359 @@ static bool make_section(McmeArena *arena, int8_t cy,
  * One chunk: every subchunk, one region-file write
  * ======================================================================== */
 
+/* ========================================================================
+ * Block entities: the families whose Java spelling is known
+ *
+ * A document is carried when two things hold: its id is one Java
+ * spells exactly as Bedrock does — so the mapping is identity and
+ * there is no name mcme could invent — and its own x/y/z name a
+ * block, because a Java chunk's block_entities list places entries by
+ * those coordinates. Everything else drops and is counted (D12).
+ *
+ * The game writes its savegame ids short ("Chest"); the frozen golden
+ * fixture and mcme's own writes spell them "minecraft:chest". Both
+ * spellings carry; the answer is always Java's namespaced id.
+ *
+ * What travels inside a carried document: id, x, y, z; Items (below);
+ * a nonempty CustomName; Lock; the smelter timers as Java's ints.
+ * What does not: fields with no Java spelling to carry to —
+ * keepPacked, the pair coordinates double chests record, anything
+ * else the game adds. A document the world has not filled yet — one
+ * with a LootTable — drops entirely (see carry_block_entity). The
+ * report counts whole documents and whole stacks, never individual
+ * fields.
+ * ======================================================================== */
+
+/*
+ * The containers the carry maps, under the game's own savegame ids —
+ * "Chest", "BlastFurnace" — and Java's namespaced id beside each.
+ *
+ * The game writes the short form into its records (measured: every
+ * one of the ten, thousands of documents, in a real 2026 world); the
+ * frozen golden fixture and mcme's own writes spell the id
+ * "minecraft:chest". Both spellings carry; the answer is always
+ * Java's.
+ */
+static const struct {
+    const char *game;    /* the savegame id, as the game spells it */
+    const char *java;    /* Java's namespaced id, the output       */
+} kCarriedBlockEntities[] = {
+    {"Chest",        "minecraft:chest"},
+    {"TrappedChest", "minecraft:trapped_chest"},
+    {"EnderChest",   "minecraft:ender_chest"},
+    {"Barrel",       "minecraft:barrel"},
+    {"Hopper",       "minecraft:hopper"},
+    {"Furnace",      "minecraft:furnace"},
+    {"BlastFurnace", "minecraft:blast_furnace"},
+    {"Smoker",       "minecraft:smoker"},
+    {"Dispenser",    "minecraft:dispenser"},
+    {"Dropper",      "minecraft:dropper"},
+};
+
+/* Java's id for this document's, or NULL: the id names no container
+   the mapping knows. The namespaced spelling is the short one with
+   the prefix stripped, compared without case — "minecraft:chest" and
+   "Chest" are the same container in two writers' hands. */
+static const char *carried_java_id(const char *id, size_t len)
+{
+    static const char kNs[] = "minecraft:";
+    if (len > sizeof kNs - 1
+            && memcmp(id, kNs, sizeof kNs - 1) == 0) {
+        id += sizeof kNs - 1;
+        len -= sizeof kNs - 1;
+    }
+    for (size_t i = 0;
+         i < sizeof kCarriedBlockEntities
+             / sizeof kCarriedBlockEntities[0];
+         ++i) {
+        const char *game = kCarriedBlockEntities[i].game;
+        if (strlen(game) != len) continue;
+        bool same = true;
+        for (size_t j = 0; j < len; ++j) {
+            char a = id[j], b = game[j];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) { same = false; break; }
+        }
+        if (same) return kCarriedBlockEntities[i].java;
+    }
+    return NULL;
+}
+
+/* The verdict for one document: carried into the list, dropped and
+   counted, or an allocation failure — which fails the run, because a
+   conversion that cannot finish its arithmetic is not a conversion
+   that guesses. */
+typedef enum { BE_CARRY, BE_DROP, BE_FAIL } BeVerdict;
+
+/* The integer at `key`, from the numeric types a store actually
+   holds. False for a field that is absent or spelled another way —
+   the caller then treats it as absent, never as zero. */
+static bool int_at(const McmeTag *root, const char *key, int32_t *out)
+{
+    const McmeTag *t = mcme_nbt_get(root, key);
+    if (t == NULL) return false;
+    switch (t->type) {
+    case MCME_TAG_Byte:  *out = t->as_byte;  return true;
+    case MCME_TAG_Short: *out = t->as_short; return true;
+    case MCME_TAG_Int:   *out = t->as_int;   return true;
+    default: return false;
+    }
+}
+
+/*
+ * A stack's `tag` holding exactly {Damage: 0} is the game's
+ * undamaged marker: no damage, nothing else — the Java answer is no
+ * tag at all, so the stack carries and the marker stays behind.
+ */
+static bool tag_is_undamaged_marker(const McmeTag *tag)
+{
+    return tag != NULL && tag->type == MCME_TAG_Compound
+        && tag->compound.len == 1
+        && tag->compound.entries[0].name.len == 6
+        && memcmp(tag->compound.entries[0].name.data, "Damage", 6) == 0
+        && tag->compound.entries[0].value != NULL
+        && tag->compound.entries[0].value->type == MCME_TAG_Int
+        && tag->compound.entries[0].value->as_int == 0;
+}
+
+/* A block item's `Block` compound is the game's own record of the
+   block the item is — name, states, version, nothing item-specific
+   (measured: all of them, in a real world, hold exactly these
+   three). The item's id already says the same thing in Java's
+   spelling, so the stack carries and the compound stays behind. Any
+   other content — a shulker box's stored contents, for instance —
+   is data mcme cannot translate, and the stack drops. */
+static bool block_is_identity(const McmeTag *b)
+{
+    if (b == NULL || b->type != MCME_TAG_Compound
+            || b->compound.len != 3) {
+        return false;
+    }
+    bool name = false, states = false, version = false;
+    for (size_t i = 0; i < b->compound.len; ++i) {
+        const McmeStr *k = &b->compound.entries[i].name;
+        const McmeTag *v = b->compound.entries[i].value;
+        if (k->len == 4 && memcmp(k->data, "name", 4) == 0) {
+            name = v != NULL && v->type == MCME_TAG_String;
+        } else if (k->len == 6
+                && memcmp(k->data, "states", 6) == 0) {
+            states = v != NULL && v->type == MCME_TAG_Compound;
+        } else if (k->len == 7
+                && memcmp(k->data, "version", 7) == 0) {
+            version = v != NULL && v->type == MCME_TAG_Int;
+        } else {
+            return false;
+        }
+    }
+    return name && states && version;
+}
+
+/*
+ * One item stack: the game's spelling is Slot, Name, Count, Damage —
+ * Name is the item id, Count the amount, Damage the metadata short
+ * (the wiki's item format, and every stack in a real world). The
+ * frozen golden fixture spells the same data id/count/damage, so
+ * that spelling carries too. Out: Slot, id, Count under Java's
+ * names, a nonzero damage as Java's tag.Damage.
+ *
+ * Three fields the game puts on stacks hold no item data Java
+ * needs: WasPickedUp's pickup bookkeeping, the block identity a
+ * block item repeats, and the {Damage: 0} undamaged marker. They
+ * drop with the stack's answer intact. Every other field — an
+ * enchantment list, a display name, stored contents — is item data
+ * mcme cannot translate, and a stack mcme cannot translate is not a
+ * stack mcme half-writes: the stack drops and the caller counts
+ * it. */
+static McmeTag *carry_stack(McmeArena *arena, const McmeTag *src,
+                            bool *dropped)
+{
+    *dropped = false;
+    if (src == NULL || src->type != MCME_TAG_Compound) {
+        *dropped = true;
+        return NULL;
+    }
+    const McmeTag *id = mcme_nbt_get(src, "Name");
+    if (id == NULL || id->type != MCME_TAG_String) {
+        id = mcme_nbt_get(src, "id");
+    }
+    int32_t slot = 0, count = 0;
+    if (id == NULL || id->type != MCME_TAG_String
+            || !int_at(src, "Slot", &slot)
+            || !(int_at(src, "Count", &count)
+                || int_at(src, "count", &count))) {
+        *dropped = true;
+        return NULL;
+    }
+    for (size_t i = 0; i < src->compound.len; ++i) {
+        const char *k = src->compound.entries[i].name.data;
+        size_t kl = src->compound.entries[i].name.len;
+        const McmeTag *v = src->compound.entries[i].value;
+        if ((kl == 4 && memcmp(k, "Slot", 4) == 0)
+                || (kl == 4 && memcmp(k, "Name", 4) == 0)
+                || (kl == 2 && memcmp(k, "id", 2) == 0)
+                || (kl == 5 && memcmp(k, "Count", 5) == 0)
+                || (kl == 5 && memcmp(k, "count", 5) == 0)
+                || (kl == 6 && memcmp(k, "Damage", 6) == 0)
+                || (kl == 6 && memcmp(k, "damage", 6) == 0)) {
+            continue;
+        }
+        if ((kl == 11 && memcmp(k, "WasPickedUp", 11) == 0)
+                || (kl == 5 && memcmp(k, "Block", 5) == 0
+                    && block_is_identity(v))
+                || (kl == 3 && memcmp(k, "tag", 3) == 0
+                    && tag_is_undamaged_marker(v))) {
+            continue;
+        }
+        *dropped = true;
+        return NULL;
+    }
+
+    McmeTag *out = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *jt = mcme_nbt_new(arena, MCME_TAG_Byte);
+    McmeTag *jc = mcme_nbt_new(arena, MCME_TAG_Byte);
+    if (out == NULL || jt == NULL || jc == NULL
+            || !mcme_nbt_compound_init(arena, out, 4)
+            || !mcme_nbt_set_byte(jt, (int8_t)slot)
+            || !mcme_nbt_set_byte(jc, (int8_t)count)
+            || !mcme_nbt_compound_put(arena, out, "Slot", 4, jt)
+            || !mcme_nbt_compound_put(arena, out, "id", 2,
+                                      (McmeTag *)id)
+            || !mcme_nbt_compound_put(arena, out, "Count", 5, jc)) {
+        return NULL;   /* *dropped stays false: the caller fails */
+    }
+
+    int32_t damage = 0;
+    if ((int_at(src, "Damage", &damage)
+            || int_at(src, "damage", &damage)) && damage != 0) {
+        McmeTag *tag = mcme_nbt_new(arena, MCME_TAG_Compound);
+        McmeTag *dmg = mcme_nbt_new(arena, MCME_TAG_Int);
+        if (tag == NULL || dmg == NULL
+                || !mcme_nbt_compound_init(arena, tag, 1)
+                || !mcme_nbt_set_int(dmg, damage)
+                || !mcme_nbt_compound_put(arena, tag, "Damage", 6, dmg)
+                || !mcme_nbt_compound_put(arena, out, "tag", 3, tag)) {
+            return NULL;
+        }
+    }
+    return out;
+}
+
+/* The Java block_entities entry for one Bedrock document, or the
+   verdict that it does not become one. */
+static BeVerdict carry_block_entity(McmeArena *arena,
+                                    const McmeTag *src,
+                                    McmeConvertReport *rep,
+                                    McmeTag **out)
+{
+    *out = NULL;
+    if (src == NULL || src->type != MCME_TAG_Compound) return BE_DROP;
+
+    /* Coordinates first, the way the per-position reader reads them:
+       a document no block address is not a block entity a Java list
+       can hold, whatever its id says. */
+    const McmeTag *id = mcme_nbt_get(src, "id");
+    int32_t x = 0, y = 0, z = 0;
+    if (id == NULL || id->type != MCME_TAG_String
+            || !int_at(src, "x", &x) || !int_at(src, "y", &y)
+            || !int_at(src, "z", &z)) {
+        return BE_DROP;
+    }
+    const char *java_id =
+        carried_java_id(id->string.data, id->string.len);
+    if (java_id == NULL) return BE_DROP;
+
+    /* A container the world has not filled yet. The loot table IS
+       the items — mcme has no map from Bedrock's loot paths to
+       Java's — so carrying the document would deliver an empty
+       container where a full one belonged. The document drops and
+       the count says so. */
+    if (mcme_nbt_get(src, "LootTable") != NULL) return BE_DROP;
+
+    McmeTag *jid = mcme_nbt_new(arena, MCME_TAG_String);
+    McmeTag *j = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *jx = mcme_nbt_new(arena, MCME_TAG_Int);
+    McmeTag *jy = mcme_nbt_new(arena, MCME_TAG_Int);
+    McmeTag *jz = mcme_nbt_new(arena, MCME_TAG_Int);
+    if (jid == NULL || j == NULL || jx == NULL || jy == NULL
+            || jz == NULL
+            || !mcme_nbt_compound_init(arena, j, 6)
+            || !mcme_nbt_set_string(arena, jid, java_id,
+                                    strlen(java_id))
+            || !mcme_nbt_set_int(jx, x) || !mcme_nbt_set_int(jy, y)
+            || !mcme_nbt_set_int(jz, z)
+            || !mcme_nbt_compound_put(arena, j, "id", 2, jid)
+            || !mcme_nbt_compound_put(arena, j, "x", 1, jx)
+            || !mcme_nbt_compound_put(arena, j, "y", 1, jy)
+            || !mcme_nbt_compound_put(arena, j, "z", 1, jz)) {
+        return BE_FAIL;
+    }
+
+    const McmeTag *items = mcme_nbt_get(src, "Items");
+    if (items != NULL && items->type == MCME_TAG_List) {
+        McmeTag **stacks = NULL;
+        for (size_t i = 0; i < items->list.len; ++i) {
+            bool dropped = false;
+            McmeTag *s = carry_stack(arena, &items->list.items[i],
+                                     &dropped);
+            if (s == NULL && !dropped) {
+                arrfree(stacks);
+                return BE_FAIL;
+            }
+            if (s != NULL) arrpush(stacks, s);
+            else rep->items++;
+        }
+        McmeTag *jl = mcme_nbt_new(arena, MCME_TAG_List);
+        bool jl_ok = jl != NULL
+            && mcme_nbt_list_alloc(arena, jl, MCME_TAG_Compound,
+                                   (size_t)arrlen(stacks));
+        for (size_t i = 0; jl_ok && i < (size_t)arrlen(stacks); ++i) {
+            jl->list.items[i] = *stacks[i];
+        }
+        arrfree(stacks);
+        if (!jl_ok
+                || !mcme_nbt_compound_put(arena, j, "Items", 5, jl)) {
+            return BE_FAIL;
+        }
+    }
+
+    const McmeTag *cn = mcme_nbt_get(src, "CustomName");
+    if (cn != NULL && cn->type == MCME_TAG_String
+            && cn->string.len > 0
+            && !mcme_nbt_compound_put(arena, j, "CustomName", 10,
+                                      (McmeTag *)cn)) {
+        return BE_FAIL;
+    }
+    const McmeTag *lock = mcme_nbt_get(src, "Lock");
+    if (lock != NULL && lock->type == MCME_TAG_String
+            && !mcme_nbt_compound_put(arena, j, "Lock", 4,
+                                      (McmeTag *)lock)) {
+        return BE_FAIL;
+    }
+
+    /* The smelter timers, under Java's names as Java's ints. */
+    static const char * const kTimers[] = {
+        "BurnTime", "CookTime", "CookTimeTotal"
+    };
+    for (size_t i = 0; i < sizeof kTimers / sizeof kTimers[0]; ++i) {
+        int32_t v = 0;
+        if (int_at(src, kTimers[i], &v)
+                && !put_int(arena, j, kTimers[i], v)) {
+            return BE_FAIL;
+        }
+    }
+
+    *out = j;
+    return BE_CARRY;
+}
+
+/* ========================================================================
+ * One chunk: every subchunk, one region-file write
+ * ======================================================================== */
+
 static bool convert_chunk(McmeLevelDb *db, const char *out,
                           const SubRef *subs, size_t n,
+                          const BeRef *bes, size_t nb,
                           McmeConvertReport *rep,
                           McmeWriteRefusal *refusal)
 {
@@ -394,6 +967,9 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
     }
 
     McmeTag **built = NULL;
+    McmeTag **carried = NULL;    /* the block_entities entries */
+    int32_t cx = subs[0].cx;
+    int32_t cz = subs[0].cz;
     for (size_t i = 0; i < n; ++i) {
         McmeBuffer val;
         mcme_buffer_init(&val);
@@ -427,10 +1003,10 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         mcme_buffer_free(&val);
         rep->subchunks++;
         if (sc.layer_count == 0) continue;   /* the all-air marker */
-        if (sc.layer_count > 1) rep->water_layers++;
         McmeTag *sec = NULL;
-        if (!make_section(arena, subs[i].cy, &sc.layers[0], rep,
-                          &sec)) {
+        if (!make_section(arena, subs[i].cy, &sc.layers[0],
+                          sc.layer_count > 1 ? &sc.layers[1] : NULL,
+                          rep, &sec)) {
             mcme_set_error("out of memory building the "
                            "section at (%d, %d, %d)", subs[i].cx,
                            (int)subs[i].cy, subs[i].cz);
@@ -455,8 +1031,54 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         sections->list.items[i] = *built[i];
     }
 
-    int32_t cx = subs[0].cx;
-    int32_t cz = subs[0].cz;
+    /* The chunk's block-entity record: every document either carried
+       with its fields mapped, or counted (D15). The whole record must
+       decode — a record that will not is counted once, never
+       half-read. */
+    if (nb > 0) {
+        McmeNbtDoc *bdocs = NULL;
+        size_t ndocs = 0;
+        McmeEntityStatus st = mcme_bedrock_chunk_block_entities(
+            db, cx, cz, 0, arena, &bdocs, &ndocs);
+        if (st == MCME_ENTITY_NOT_READABLE) {
+            mcme_clear_error();
+            rep->block_entities++;    /* the record counts once */
+        } else if (st == MCME_ENTITY_STORE) {
+            refuse(refusal, MCME_WRITE_REFUSAL_STORE);
+            arrfree(built);
+            arrfree(carried);
+            mcme_arena_free(arena);
+            return false;
+        } else if (st != MCME_ENTITY_OK && st != MCME_ENTITY_ABSENT) {
+            refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            arrfree(built);
+            arrfree(carried);
+            mcme_arena_free(arena);
+            return false;
+        } else {
+            for (size_t i = 0; i < ndocs; ++i) {
+                McmeTag *j = NULL;
+                BeVerdict v = carry_block_entity(arena, bdocs[i].root,
+                                                 rep, &j);
+                if (v == BE_FAIL) {
+                    mcme_set_error("out of memory carrying the block "
+                                   "entity at chunk (%d, %d)", cx, cz);
+                    refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+                    arrfree(built);
+                    arrfree(carried);
+                    mcme_arena_free(arena);
+                    return false;
+                }
+                if (v == BE_CARRY) {
+                    arrpush(carried, j);
+                    rep->block_entities_carried++;
+                } else {
+                    rep->block_entities++;
+                }
+            }
+        }
+    }
+
     bool ok = put_int(arena, root, "DataVersion", kJavaDataVersion)
         && put_string(arena, root, "Status", "minecraft:full")
         && put_int(arena, root, "xPos", cx)
@@ -465,9 +1087,20 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         && put_long(arena, root, "LastUpdate", 0)
         && put_long(arena, root, "InhabitedTime", 0)
         && mcme_nbt_compound_put(arena, root, "sections", 8, sections);
+    /* The list itself: the documents the map carried, in the
+       record's own order. An empty list is what the reference writes
+       when a chunk holds none. */
     McmeTag *entities = mcme_nbt_new(arena, MCME_TAG_List);
-    ok = ok && entities != NULL
-        && mcme_nbt_list_alloc(arena, entities, MCME_TAG_Byte, 0)
+    size_t nbe = (size_t)arrlen(carried);
+    bool bel_ok = entities != NULL
+        && (nbe > 0
+            ? mcme_nbt_list_alloc(arena, entities, MCME_TAG_Compound,
+                                  nbe)
+            : mcme_nbt_list_alloc(arena, entities, MCME_TAG_Byte, 0));
+    for (size_t i = 0; bel_ok && i < nbe; ++i) {
+        entities->list.items[i] = *carried[i];
+    }
+    ok = ok && bel_ok
         && mcme_nbt_compound_put(arena, root, "block_entities", 14,
                                  entities);
     if (!ok) {
@@ -475,6 +1108,7 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
                        "(%d, %d)", cx, cz);
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         arrfree(built);
+        arrfree(carried);
         mcme_arena_free(arena);
         return false;
     }
@@ -487,6 +1121,7 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
                        "does not fit", cx, cz);
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         arrfree(built);
+        arrfree(carried);
         mcme_arena_free(arena);
         return false;
     }
@@ -494,8 +1129,41 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
                                          refusal);
     if (written) rep->chunks++;
     arrfree(built);
+    arrfree(carried);
     mcme_arena_free(arena);
     return written;
+}
+
+/* Records whose chunk holds no subchunks: no Java chunk is written
+   for that chunk, so every document counts as dropped. The read is
+   the same whole-record read the carried path uses — the count is
+   documents, and an unreadable record counts once. */
+static bool count_unconverted_records(McmeLevelDb *db,
+                                      const BeRef *bes, size_t n,
+                                      McmeArena *arena,
+                                      McmeConvertReport *rep,
+                                      McmeWriteRefusal *refusal)
+{
+    for (size_t i = 0; i < n; ++i) {
+        McmeNbtDoc *docs = NULL;
+        size_t nd = 0;
+        McmeEntityStatus st = mcme_bedrock_chunk_block_entities(
+            db, bes[i].cx, bes[i].cz, 0, arena, &docs, &nd);
+        if (st == MCME_ENTITY_OK) {
+            rep->block_entities += nd;
+        } else if (st == MCME_ENTITY_NOT_READABLE) {
+            mcme_clear_error();
+            rep->block_entities += 1;
+        } else if (st != MCME_ENTITY_ABSENT) {
+            /* A store that fails mid-walk is not a count mcme can
+               finish — the run fails, the output is removed. */
+            refuse(refusal, st == MCME_ENTITY_STORE
+                   ? MCME_WRITE_REFUSAL_STORE
+                   : MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+    }
+    return true;
 }
 
 /* ========================================================================
@@ -758,24 +1426,63 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
 
     Scan scan;
     scan.subs = NULL;
+    scan.bes = NULL;
     scan.rep = report;
     mcme_leveldb_iterate(db, scan_key, &scan);
     size_t nsubs = (size_t)arrlen(scan.subs);
-    qsort(scan.subs, nsubs, sizeof (SubRef), sub_cmp);
+    size_t nbes = (size_t)arrlen(scan.bes);
+    if (nsubs > 1) qsort(scan.subs, nsubs, sizeof (SubRef), sub_cmp);
+    if (nbes > 1) qsort(scan.bes, nbes, sizeof (BeRef), be_cmp);
 
+    /* Both lists are ordered by chunk, so one walk pairs records with
+       the chunks that convert. A record whose chunk never appears has
+       no Java chunk to live in; its documents are counted, not
+       carried — a drop the report names like any other. */
     bool ok = true;
-    size_t i = 0;
+    McmeArena *be_arena = mcme_arena_new();
+    if (be_arena == NULL) {
+        mcme_set_error("out of memory");
+        refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        ok = false;
+    }
+    size_t i = 0, bi = 0;
     while (ok && i < nsubs) {
         size_t j = i;
         while (j < nsubs && scan.subs[j].cx == scan.subs[i].cx
                && scan.subs[j].cz == scan.subs[i].cz) {
             ++j;
         }
-        ok = convert_chunk(db, out, scan.subs + i, j - i, report, refusal);
+        int32_t cx = scan.subs[i].cx;
+        int32_t cz = scan.subs[i].cz;
+        while (ok && bi < nbes
+               && (scan.bes[bi].cx < cx
+                   || (scan.bes[bi].cx == cx && scan.bes[bi].cz < cz))) {
+            ok = count_unconverted_records(db, scan.bes + bi, 1,
+                                           be_arena, report, refusal);
+            ++bi;
+        }
+        size_t bj = bi;
+        while (bj < nbes && scan.bes[bj].cx == cx
+               && scan.bes[bj].cz == cz) {
+            ++bj;
+        }
+        if (ok) {
+            ok = convert_chunk(db, out, scan.subs + i, j - i,
+                               scan.bes + bi, bj - bi, report,
+                               refusal);
+        }
+        bi = bj;
         i = j;
     }
+    while (ok && bi < nbes) {
+        ok = count_unconverted_records(db, scan.bes + bi, 1,
+                                       be_arena, report, refusal);
+        ++bi;
+    }
+    mcme_arena_free(be_arena);
 
     arrfree(scan.subs);
+    arrfree(scan.bes);
     mcme_leveldb_close(db);
     mcme_world_info_free(&info);
     if (!ok) rm_rf(out);

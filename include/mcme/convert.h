@@ -18,13 +18,24 @@
 #include "mcme/bedrock_write.h"   /* McmeWriteRefusal: the shared why */
 #include "mcme/core.h"
 
-/* What one conversion did and what it left behind. Every field is a
-   count; zero is the honest "nothing of this kind was in the way". */
+/* What one conversion did and what it left behind. Every dropped
+   count is a named gap (D12); the carried counts exist so "zero
+   dropped" can be told apart from "the input had none". */
 typedef struct {
     size_t chunks;            /* overworld chunks written                */
     size_t subchunks;         /* payloads read and decoded                */
     size_t blocks;            /* non-air positions the output holds       */
-    size_t block_entities;    /* block-entity keys, not carried           */
+    size_t block_entities_carried;
+                              /* block-entity documents written to the
+                                 output's block_entities list             */
+    size_t block_entities;    /* block-entity documents not carried: an
+                                 id with no Java spelling mcme trusts, a
+                                 document with no coordinates, or a
+                                 record that will not decode (counted
+                                 once — half a record is not a count)     */
+    size_t items;             /* item stacks not carried: a stack whose
+                                 fields the mapping cannot translate —
+                                 no half-translated item leaves           */
     size_t chunk_data;        /* chunk keys that are not subchunks:
                                  biome records, chunk versions, entity
                                  lists — counted, not carried             */
@@ -34,8 +45,10 @@ typedef struct {
                                  legacy (pre-1.9) entries                 */
     size_t other;             /* keys that are neither: level metadata,
                                  other dimensions, anything unparseable   */
-    size_t water_layers;      /* second layers dropped — the waterlogging
-                                 layer Bedrock keeps beside block zero    */
+    size_t water_positions;   /* second-layer positions not carried —
+                                 water beside a block the Java half has
+                                 no waterlogged property for, or a layer
+                                 cell that is not water at all           */
 } McmeConvertReport;
 
 /*

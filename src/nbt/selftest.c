@@ -308,9 +308,30 @@ static void test_mutf8(void)
         mcme_buffer_free(&dec);
     }
 
-    /* A four-byte sequence is standard UTF-8 and therefore NOT modified
-       UTF-8 — that is the fastest way to tell the two encodings apart. */
-    CHECK(!mcme_mutf8_valid("\xF0\x9F\x98\x80", 4));
+    /* A four-byte sequence is standard UTF-8 — the game's own
+       spelling for an emoji in a string — accepted beside modified
+       UTF-8's spellings: both editions' writers, one decoder. The
+       same bytes come back out, code point for code point. This is
+       the form a real world's item names arrive in; rejecting it
+       lost every document in the record that held one. */
+    CHECK(mcme_mutf8_valid("\xF0\x9F\x98\x80", 4));
+    mcme_buffer_init(&dec);
+    CHECK(mcme_mutf8_decode("\xF0\x9F\x98\x80", 4, &dec));
+    CHECK(dec.len == 4
+          && memcmp(dec.data, "\xF0\x9F\x98\x80", 4) == 0);
+    CHECK(mcme_mutf8_decoded_len("\xF0\x9F\x98\x80", 4) == 4);
+    mcme_buffer_free(&dec);
+    /* What neither encoding can spell stays rejected: an overlong
+       four-byte form, a code point past U+10FFFF, a lead byte
+       beyond F7. */
+    CHECK(!mcme_mutf8_valid("\xF0\x80\x80\x80", 4));
+    CHECK(!mcme_mutf8_valid("\xF4\x90\x80\x80", 4));
+    CHECK(!mcme_mutf8_valid("\xF8\x88\x80\x80\x80", 5));
+    CHECK(mcme_mutf8_decoded_len("\xF0\x80\x80\x80", 4) == 0);
+    mcme_buffer_init(&dec);
+    CHECK(!mcme_mutf8_decode("\xF0\x90\x80", 3, &dec));   /* truncated */
+    CHECK(!mcme_mutf8_decode("\xF4\x90\x80\x80", 4, &dec));
+    mcme_buffer_free(&dec);
     /* A lone surrogate is preserved rather than replaced, so odd files still
        round trip byte-for-byte. */
     CHECK(mcme_mutf8_valid("\xED\xA0\xBD", 3));

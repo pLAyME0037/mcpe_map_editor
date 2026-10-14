@@ -544,3 +544,93 @@ every payload, once per compact.
 **Reverses if:** a real workflow needs mcme's compacted output opened by
 stock google/leveldb, or the per-block deflate cost shows up in editing
 loops rather than the rare compact.
+
+---
+
+## D15 — Convert carries waterlogging and the ten container types, as two writers spell them
+
+Before D15, `mcme convert` moved blocks and left behind everything that
+lives in them: layer-one water was counted and dropped, and every
+block-entity document was counted and dropped — the pre-D15 run over one
+real world counted 23,102 documents and carried none, so the Java world
+arrived with no containers at all. D15 carries the two loudest drops (the
+Next D14 pointed at), under rules read off the world rather than the wiki.
+
+**Waterlogging.** A block with `minecraft:water` on layer 1 over a block
+on layer 0 becomes Java's `waterlogged: "true"`, and only where the Java
+name actually has that property — the translate map answers, nothing is
+guessed. Layer-one water that is not waterlogging anything counts as
+`water_positions` and never fails (1,416,949 positions in one real
+world; the fixture pins 3,280).
+
+**Block entities.** A document carries iff three things hold: the id is
+one of ten container types (chest, trapped chest, ender chest, barrel,
+hopper, furnace, blast furnace, smoker, dispenser, dropper), x/y/z are
+integers, and the world has already filled it. A `LootTable` is a
+container whose contents are a path mcme does not read (4,006 of 7,749
+container-id documents in one real world): carrying it would write an
+empty chest where the world would grant items — the half-answer the
+mapping refuses. What carries: Java's id, the block's coordinates, the
+stacks under the rule below, a nonempty `CustomName`, `Lock`, the
+smelter timers as ints. What stays behind: `keepPacked`, the pair
+coordinates double chests record, and anything else the game adds. The
+report counts whole documents and whole stacks, never a field.
+
+**Three spellings in, one out.** The game writes its savegame ids short
+(`Chest`, `BlastFurnace` — a shape shared by all 43 distinct document
+ids measured in one real world) while the frozen golden fixture was
+hand-authored `minecraft:chest`; neither spelling alone survives both
+inputs, so both carry and the answer is always Java's namespaced id.
+Stacks are the same bargain: `Name`/`Count`/`Damage` as the game writes
+them and `id`/`count`/`damage` as the fixture holds them are the same
+stack out under Java's `Slot`/`Count`.
+
+**The stack rule.** A stack needs Slot plus Name-or-id plus Count-or-
+count; nonzero Damage becomes Java's `tag{Damage:int}`. What the game
+writes *beside* a stack's identity is bookkeeping that drops without
+dropping the stack: `WasPickedUp`'s byte, the `Block` compound a block
+item repeats about itself (measured: all 5,455 in one real world are
+exactly name/states/version), a `tag` holding exactly `{Damage: 0}` —
+the undamaged marker. Any other field beside a stack is item data mcme
+has no map for (enchants, display names, brew state, nested `Items`):
+the stack drops out of the list entirely and `skipped.items` counts it
+(711 stacks in one real world). No field travels on hope.
+
+**The record's strings decode both editions' UTF-8.** Finding the
+spellings above in a real world turned up a third one, in the decoder
+underneath the record walk: it accepted only modified UTF-8, so one
+emoji in one item name refused the whole record — measured, three
+records, 621 documents behind `display.Name = "🦴"`, 480 of them
+carryable containers. Bedrock's C++ writer emits standard UTF-8
+four-byte sequences above the BMP; Java's writer emits modified UTF-8
+surrogate pairs. `mcme_mutf8_decode` now accepts each encoding's own
+spellings and rejects only what neither can write: overlong forms,
+continuation bytes standing as leads, code points past U+10FFFF.
+
+**Rejected.**
+- *Carrying every id mcme can name* — signs, frames, spawners,
+  shulkers, lecterns, the rest of the 43: Java spells each type
+  differently and a partial map writes wrong worlds. The ten are
+  the ones whose fields map today; the rest count, never fail.
+- *Keeping the unknown stack fields*: carrying them verbatim would
+  hand the reference's translation job back to a table mcme does
+  not have, and dropping them silently would lie about what
+  arrived. The stack drops whole and is counted.
+- *Carrying loot chests empty*: see above — the count is honest,
+  the empty chest would not be.
+- *Tolerant strings (U+FFFD) for the binary blobs 16 records hold
+  in a string field*: a decoder that invents text is worse than
+  one that says it cannot read. Those records refuse and count.
+
+**Cost accepted.** One seam in the count unit: an unreadable record
+counts once, not per document — 16 records holding 102 documents in
+one real world, 45 of them containers, invisible behind the unit.
+Documents in chunks mcme writes no Java chunk for count rather than
+carry (231 in one world). And D15 is the read path: `put` still
+requires a namespaced id while the game writes short ones — whether
+the game loads mcme's spelling is untested.
+
+**Reverses if:** a world's id census outgrows the ten (measure the
+ids again, extend the table), or the dropped-stack count grows past
+the point where its fields deserve mappings one at a time (measure
+what those stacks hold first).

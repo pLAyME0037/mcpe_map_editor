@@ -2,6 +2,8 @@
 
 #include "mcme/bedrock_keys.h"
 
+#include "stb_ds.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -50,33 +52,35 @@ typedef struct {
     McmeNbtDoc doc;     /* the document, when found            */
 } McmeEntityHit;
 
+/* One document of a record, wherever it sits: the walk's answer. */
+typedef struct {
+    size_t     at;      /* where the document starts          */
+    size_t     len;     /* how many bytes it occupies          */
+    McmeNbtDoc doc;
+} McmeEntityDoc;
+
 /*
- * Walks a record, finding the document at this block.
+ * Walks a record's documents, all of them.
  *
  * The record is one NBT document per entity concatenated with no
  * framing — the next starts where the last finished, the same shape
  * as a block palette — so the walk is parse-prefix until the buffer
  * is empty.
  *
- * Every document must decode, not just the ones before the answer:
- * half a record is not something mcme answers for, and it is not
- * something the write half rewrites either, so a read that stopped
- * early would disagree with a write that splices.
+ * Every document must decode, not just the ones a caller cares
+ * about: half a record is not something mcme answers for, and it is
+ * not something the write half rewrites either, so a read that
+ * stopped early would disagree with a write that splices.
  *
  * Returns false with mcme_last_error() naming the chunk when any
- * part will not read. `hit` says where the match is; `found` stays
- * false when the record decodes but holds nothing at that block.
+ * part will not read. `*out` receives the documents as an stb array
+ * the caller frees, empty when the walk fails.
  */
-static bool record_scan(const uint8_t *data, size_t len,
-                        int32_t x, int32_t y, int32_t z,
+static bool record_walk(const uint8_t *data, size_t len,
                         int32_t cx, int32_t cz, McmeArena *arena,
-                        McmeEntityHit *hit)
+                        McmeEntityDoc **out)
 {
-    hit->found = false;
-    hit->at = 0;
-    hit->len = 0;
-    memset(&hit->doc, 0, sizeof hit->doc);
-
+    *out = NULL;
     size_t at = 0;
     while (at < len) {
         McmeNbtDoc doc;
@@ -91,17 +95,55 @@ static bool record_scan(const uint8_t *data, size_t len,
             mcme_set_error("block entity: the record of chunk (%d, "
                            "%d) does not decode: %s", (int)cx, (int)cz,
                            why);
+            arrfree(*out);
+            *out = NULL;
             return false;
         }
-        if (!hit->found && at_position(doc.root, x, y, z)) {
-            hit->found = true;
-            hit->at = at;
-            hit->len = consumed;
-            hit->doc = doc;
-        }
+        McmeEntityDoc d;
+        d.at = at;
+        d.len = consumed;
+        d.doc = doc;
+        arrpush(*out, d);
         at += consumed;
     }
     return true;
+}
+
+/*
+ * Walks a record, finding the document at this block.
+ *
+ * `hit` says where the match is; `found` stays false when the record
+ * decodes but holds nothing at that block.
+ */
+static bool record_scan(const uint8_t *data, size_t len,
+                        int32_t x, int32_t y, int32_t z,
+                        int32_t cx, int32_t cz, McmeArena *arena,
+                        McmeEntityHit *hit)
+{
+    hit->found = false;
+    /* An absent document's `at` is where it would sit: the record's
+       end. The splice reads `at` as the insertion point, so a put of
+       a new block entity appends to the record's other documents
+       instead of replacing all of them. */
+    hit->at = len;
+    hit->len = 0;
+    memset(&hit->doc, 0, sizeof hit->doc);
+
+    McmeEntityDoc *docs = NULL;
+    bool ok = record_walk(data, len, cx, cz, arena, &docs);
+    if (ok) {
+        for (size_t i = 0; i < (size_t)arrlen(docs); ++i) {
+            if (at_position(docs[i].doc.root, x, y, z)) {
+                hit->found = true;
+                hit->at = docs[i].at;
+                hit->len = docs[i].len;
+                hit->doc = docs[i].doc;
+                break;
+            }
+        }
+    }
+    arrfree(docs);
+    return ok;
 }
 
 McmeEntityStatus mcme_bedrock_block_entity(McmeLevelDb *db,
@@ -151,6 +193,67 @@ McmeEntityStatus mcme_bedrock_block_entity(McmeLevelDb *db,
         status = MCME_ENTITY_OK;
     }
 
+    mcme_buffer_free(&payload);
+    return status;
+}
+
+McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
+                                                   int32_t cx,
+                                                   int32_t cz,
+                                                   int32_t dimension,
+                                                   McmeArena *arena,
+                                                   McmeNbtDoc **docs,
+                                                   size_t *count)
+{
+    if (db == NULL || arena == NULL || docs == NULL || count == NULL) {
+        mcme_set_error("block entity: null argument");
+        return MCME_ENTITY_USAGE;
+    }
+    *docs = NULL;
+    *count = 0;
+
+    uint8_t key[14];
+    size_t key_len = 0;
+    if (!record_key(cx, cz, dimension, key, sizeof key, &key_len)) {
+        return MCME_ENTITY_USAGE;
+    }
+
+    if (!mcme_leveldb_has(db, key, key_len)) {
+        return MCME_ENTITY_ABSENT;
+    }
+
+    McmeBuffer payload;
+    mcme_buffer_init(&payload);
+    bool deleted = false;
+    if (!mcme_leveldb_get(db, key, key_len, &payload, &deleted)) {
+        mcme_buffer_free(&payload);
+        return MCME_ENTITY_STORE;   /* the store's own error stands */
+    }
+    if (deleted) {
+        mcme_buffer_free(&payload);
+        return MCME_ENTITY_ABSENT;  /* removed, so nothing is there */
+    }
+
+    McmeEntityDoc *walked = NULL;
+    McmeEntityStatus status = MCME_ENTITY_OK;
+    if (!record_walk(payload.data, payload.len, cx, cz, arena,
+                     &walked)) {
+        status = MCME_ENTITY_NOT_READABLE;
+    } else {
+        size_t n = (size_t)arrlen(walked);
+        McmeNbtDoc *out = n > 0
+            ? (McmeNbtDoc *)mcme_arena_alloc(arena,
+                                             n * sizeof *out)
+            : NULL;
+        if (n > 0 && out == NULL) {
+            status = MCME_ENTITY_INTERNAL;
+        } else {
+            for (size_t i = 0; i < n; ++i) out[i] = walked[i].doc;
+            *docs = out;
+            *count = n;
+        }
+    }
+    arrfree(walked);
     mcme_buffer_free(&payload);
     return status;
 }

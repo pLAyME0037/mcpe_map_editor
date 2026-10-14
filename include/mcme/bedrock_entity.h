@@ -73,6 +73,34 @@ McmeEntityStatus mcme_bedrock_block_entity(McmeLevelDb *db,
                                            McmeNbtDoc *out);
 
 /*
+ * Every document of the block-entity record of chunk (`cx`, `cz`)
+ * in `dimension` — the whole-record read conversion needs, where
+ * the documents' own coordinates are the data rather than a search
+ * key.
+ *
+ * On MCME_ENTITY_OK, `*docs` receives `*count` documents in the
+ * order the record stores them, allocated in `arena` (the documents
+ * themselves root there too); both are zeroed first, so a caller
+ * can reuse one pair of variables across records. MCME_ENTITY_ABSENT
+ * means the store has no record — and nothing is read for a record
+ * the game deleted.
+ *
+ * The same rule as the per-position read, kept whole: every
+ * document must decode or the call answers MCME_ENTITY_NOT_READABLE
+ * for the record. This function adds no coordinate filter — a
+ * document with no x/y/z is returned and the caller decides what
+ * that means, the way mcme_bedrock_block_entity returns only what
+ * it can address but never rewrites half a record.
+ */
+McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
+                                                   int32_t cx,
+                                                   int32_t cz,
+                                                   int32_t dimension,
+                                                   McmeArena *arena,
+                                                   McmeNbtDoc **docs,
+                                                   size_t *count);
+
+/*
  * Stores `entity` as the block entity of block (`x`, `y`, `z`) —
  * the edit half of this module.
  *

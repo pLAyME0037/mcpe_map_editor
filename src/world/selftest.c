@@ -4228,7 +4228,9 @@ static void test_convert(void)
     CHECK(!mcme_fs_exists(out));
 
     /* The fixture's own shape, counted: two overworld chunks; the v1
-       legacy subchunk and the water layer dropped; the nether key
+       legacy subchunk dropped; the second layer's water over stone,
+       dirt and grass — none of them blocks Java gives a waterlogged
+       property — counted position by position (3280); the nether key
        among the others. */
     McmeConvertReport rep;
     McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
@@ -4244,9 +4246,11 @@ static void test_convert(void)
     CHECK(rep.subchunks == 7);
     CHECK(rep.blocks == 24576);
     CHECK(rep.legacy_subchunks == 1);
-    CHECK(rep.water_layers == 1);
+    CHECK(rep.water_positions == 3280);
     CHECK(rep.other == 1);
     CHECK(rep.block_entities == 0);
+    CHECK(rep.block_entities_carried == 0);
+    CHECK(rep.items == 0);
     CHECK(rep.entities == 0);
     CHECK(rep.chunk_data == 0);
 
@@ -4362,6 +4366,448 @@ static void test_convert(void)
     remove_store(dbdir);
     remove(lvl);
     rmdir(in);
+}
+
+/* A palette document for a payload this test builds: the block's name
+   and its states, in the shape the translator reads. */
+static McmeNbtDoc palette_doc(McmeArena *arena, const char *snbt)
+{
+    McmeNbtDoc doc;
+    doc.arena = arena;
+    doc.root = NULL;
+    doc.root_name.data = (char *)"";
+    doc.root_name.len = 0;
+    doc.little_endian = true;
+    McmeTag *tag = NULL;
+    if (mcme_nbt_parse_snbt(arena, snbt, strlen(snbt), &tag)) {
+        doc.root = tag;
+    }
+    return doc;
+}
+
+/* Every key of a store, bounded: a test's fixture hold is six keys,
+   and a bounded answer is a test's own business. */
+typedef struct {
+    uint8_t keys[64][16];
+    size_t  lens[64];
+    size_t  n;
+} KeyBag;
+
+static bool take_key(void *ud, const McmeLevelEntry *e)
+{
+    KeyBag *b = (KeyBag *)ud;
+    if (e->key_len <= 16 && b->n < 64) {
+        memcpy(b->keys[b->n], e->key, e->key_len);
+        b->lens[b->n] = e->key_len;
+        b->n++;
+    }
+    return true;
+}
+
+/*
+ * Convert against a world this test builds itself: one subchunk with
+ * the waterlogging layer over blocks Java can and cannot waterlog,
+ * one record holding the documents the map carries and the ones it
+ * drops (decisions.md#D15). The input is written through mcme's own
+ * writers — encode, put, the block-entity splice — so what convert
+ * answers is pinned against the model.
+ */
+static void test_convert_carry(void)
+{
+    printf("  convert carry (waterlogging, block entities)\n");
+    const char *lvl_src = "tests/golden/worlds/bedrock/level.dat";
+    char esrc[512];
+    snprintf(esrc, sizeof esrc, "%s/db", kEntitiesWorld);
+    if (!mcme_fs_exists(lvl_src) || !mcme_fs_exists(esrc)) {
+        printf("  SKIP convert carry (%s or %s not found)\n",
+               lvl_src, esrc);
+        return;
+    }
+
+    char in[64], out[96], dbdir[512], lvl[512];
+    CHECK(fresh_store_dir(in, sizeof in));
+    snprintf(dbdir, sizeof dbdir, "%s/db", in);
+    /* A store to write into: mcme never creates one from nothing —
+       CURRENT and a MANIFEST are the store's own bootstrap — so the
+       smallest golden's db is copied in and emptied, every key
+       tombstoned. What remains is a valid store holding nothing,
+       which is what this world starts as. */
+    CHECK(copy_store(esrc, dbdir));
+    void *raw = NULL;
+    size_t raw_len = 0;
+    CHECK(mcme_fs_read(lvl_src, &raw, &raw_len));
+    snprintf(lvl, sizeof lvl, "%s/level.dat", in);
+    CHECK(mcme_fs_write(lvl, raw, raw_len));
+    free(raw);
+
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) return;
+
+    /* The subchunk: layer zero holds a stair, a stone block and a
+       second stair the layer does not reach; layer one holds water
+       over the stair (carried as the property) and over the stone
+       (dropped and counted — stone has no such property). */
+    uint16_t idx0[4096], idx1[4096];
+    for (size_t i = 0; i < 4096; ++i) {
+        idx0[i] = 2;    /* air */
+        idx1[i] = 1;    /* air */
+    }
+    idx0[0] = 0;        /* the waterlogged stair, (0,0,0) */
+    idx0[256] = 1;      /* the watered stone,     (1,0,0) */
+    idx0[512] = 0;      /* the dry stair,         (2,0,0) */
+    idx1[0] = 0;        /* water over the stair */
+    idx1[256] = 0;      /* water over the stone */
+
+    McmeNbtDoc pal0[3];
+    /* A palette entry the map accepts needs its `version`: without it
+       the entry is the pre-1.9 legacy spelling (decisions.md#D12) and
+       has no Java answer. */
+    pal0[0] = palette_doc(arena, "{name: \"minecraft:oak_stairs\", "
+                                  "states: {}, version: 1L}");
+    pal0[1] = palette_doc(arena, "{name: \"minecraft:stone\", "
+                                  "states: {}, version: 1L}");
+    pal0[2] = palette_doc(arena, "{name: \"minecraft:air\", "
+                                  "states: {}, version: 1L}");
+    McmeNbtDoc pal1[2];
+    pal1[0] = palette_doc(arena, "{name: \"minecraft:water\", "
+                                  "states: {}, version: 1L}");
+    pal1[1] = palette_doc(arena, "{name: \"minecraft:air\", "
+                                  "states: {}, version: 1L}");
+    CHECK(pal0[0].root != NULL && pal0[1].root != NULL
+          && pal0[2].root != NULL && pal1[0].root != NULL
+          && pal1[1].root != NULL);
+
+    McmeBedrockLayer layers[2];
+    memset(layers, 0, sizeof layers);
+    layers[0].bits = 2;
+    layers[0].indices = idx0;
+    layers[0].palette_len = 3;
+    layers[0].palette = pal0;
+    layers[1].bits = 1;
+    layers[1].indices = idx1;
+    layers[1].palette_len = 2;
+    layers[1].palette = pal1;
+    McmeBedrockSubchunk sc;
+    memset(&sc, 0, sizeof sc);
+    sc.version = 8;
+    sc.layer_count = 2;
+    sc.layers = layers;
+
+    McmeBuffer payload;
+    mcme_buffer_init(&payload);
+    CHECK(mcme_bedrock_subchunk_encode(&sc, &payload));
+    uint8_t key[16];
+    size_t klen = 0;
+    CHECK(mcme_bedrock_key_build(key, sizeof key, &klen, 3, 0, 0,
+                                 0x2f, true, 0));
+    KeyBag bag;
+    memset(&bag, 0, sizeof bag);
+    McmeLevelDb *db = NULL;
+    CHECK(mcme_leveldb_open_rw(&db, dbdir));
+    if (db != NULL) {
+        mcme_leveldb_iterate(db, take_key, &bag);
+        for (size_t i = 0; i < bag.n; ++i) {
+            CHECK(mcme_leveldb_delete(db, bag.keys[i], bag.lens[i]));
+        }
+        CHECK(mcme_leveldb_put(db, key, klen, payload.data,
+                               payload.len));
+        mcme_leveldb_close(db);
+    }
+    mcme_buffer_free(&payload);
+
+    /* The record, in two spellings of Bedrock's own. The five docs
+       put through the write API carry mcme's namespaced ids; the
+       three appended below are the game's bytes — short savegame
+       ids, Name/Count stacks — and must carry the same answer.
+       Carried: both chests, the furnace, the short-id chest, the
+       short-id trapped chest. Dropped and counted: the sign, the
+       frame (no coordinates), the not-yet-filled loot chest. One
+       stack inside the first chest carries an enchantment list, so
+       that stack drops and the count says so — no half-translated
+       item leaves. */
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+    struct {
+        const char *snbt;
+        int32_t x, y, z;
+    } docs[] = {
+        /* The game's stack spelling, with the bookkeeping the game
+           adds beside it: the pickup byte, the block identity a
+           block item repeats, the undamaged marker — those three
+           drop with the stack's answer intact, so three of the four
+           stacks carry. */
+        { "{id: \"minecraft:chest\", CustomName: \"\", Items: "
+          "[{Slot: 0b, Name: \"minecraft:diamond\", Count: 3b, "
+          "Damage: 0s, WasPickedUp: 0b}, "
+          "{Slot: 1b, Name: \"minecraft:stone\", Count: 64b, "
+          "Damage: 0s, WasPickedUp: 0b, Block: {name: "
+          "\"minecraft:stone\", states: {}, version: 1}}, "
+          "{Slot: 2b, Name: \"minecraft:wooden_pickaxe\", Count: 1b, "
+          "Damage: 0s, WasPickedUp: 0b, tag: {Damage: 0}}, "
+          "{Slot: 3b, Name: \"minecraft:diamond_sword\", Count: 1b, "
+          "Damage: 0s, WasPickedUp: 0b, tag: {ench: [{id: 16s, "
+          "lvl: 3s}]}}]}",
+          53, 10, 2 },
+        /* the frozen fixture's spelling of the same data still
+           carries: id/count/damage is Bedrock read through another
+           writer's hand */
+        { "{id: \"minecraft:chest\", Items: "
+          "[{Slot: 0b, id: \"minecraft:coal\", count: 5b, "
+          "damage: 0s}]}",
+          54, 10, 2 },
+        { "{id: \"minecraft:sign\", Text: \"mcme fixture\"}",
+          57, 10, 5 },
+        { "{id: \"minecraft:glowitemframe\", "
+          "item: \"minecraft:stick\"}",
+          58, 10, 6 },
+        { "{id: \"minecraft:furnace\", BurnTime: 100s, "
+          "CookTime: 40s, Items: [{Slot: 0b, id: \"minecraft:coal\", "
+          "count: 5b, damage: 0s}]}",
+          56, 10, 4 },
+    };
+    for (size_t i = 0; i < sizeof docs / sizeof docs[0]; ++i) {
+        McmeTag *entity = NULL;
+        CHECK(mcme_nbt_parse_snbt(arena, docs[i].snbt,
+                                  strlen(docs[i].snbt), &entity));
+        CHECK(entity != NULL);
+        CHECK(mcme_bedrock_put_block_entity(dbdir, docs[i].x,
+                                            docs[i].y, docs[i].z, 0,
+                                            entity, arena, &refusal));
+    }
+    CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+
+    /* The game's own spelling, appended to the same record as the
+       bytes the game would write: short savegame ids. The first
+       document's CustomName is an emoji — a four-byte standard
+       UTF-8 sequence, the very thing a decoder that allowed only
+       modified UTF-8's spellings would refuse, losing the whole
+       record (measured, a real world: three records, 621
+       documents between them). The loot chest — contents not yet
+       generated —
+       must NOT carry: an empty container where a full one belonged
+       is exactly what the mapping refuses to write. */
+    static const char * const real_docs[] = {
+        "{id: \"Chest\", x: 60, y: 10, z: 7, "
+        "CustomName: \"\xF0\x9F\xA6\xB4\", Items: "
+        "[{Slot: 0b, Name: \"minecraft:emerald\", Count: 2b, "
+        "Damage: 0s, WasPickedUp: 0b}]}",
+        "{id: \"Chest\", x: 61, y: 10, z: 7, "
+        "LootTable: \"loot_tables/chests/simple_dungeon.json\", "
+        "LootTableSeed: 5}",
+        "{id: \"TrappedChest\", x: 62, y: 10, z: 7, Items: "
+        "[{Slot: 0b, Name: \"minecraft:gold_ingot\", Count: 7b, "
+        "Damage: 0s, WasPickedUp: 0b}]}",
+    };
+    McmeBuffer record;
+    mcme_buffer_init(&record);
+    McmeLevelDb *rdb = NULL;
+    CHECK(mcme_leveldb_open_rw(&rdb, dbdir));
+    if (rdb != NULL) {
+        uint8_t rkey[16];
+        size_t rklen = 0;
+        CHECK(mcme_bedrock_key_build(rkey, sizeof rkey, &rklen, 3, 0,
+                                     0, MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                                     false, 0));
+        bool deleted = false;
+        bool have = mcme_leveldb_get(rdb, rkey, rklen, &record,
+                                     &deleted);
+        CHECK(have);   /* the five puts above built the record */
+        for (size_t i = 0; i < sizeof real_docs / sizeof real_docs[0];
+             ++i) {
+            McmeTag *entity = NULL;
+            CHECK(mcme_nbt_parse_snbt(arena, real_docs[i],
+                                      strlen(real_docs[i]), &entity));
+            CHECK(entity != NULL);
+            McmeNbtDoc doc;
+            doc.arena = arena;
+            doc.root = entity;
+            doc.root_name.data = (char *)"";
+            doc.root_name.len = 0;
+            doc.little_endian = true;
+            McmeBuffer encoded;
+            mcme_buffer_init(&encoded);
+            CHECK(mcme_nbt_write_binary(&doc, &encoded));
+            CHECK(mcme_buffer_append(&record, encoded.data,
+                                     encoded.len));
+            mcme_buffer_free(&encoded);
+        }
+        CHECK(mcme_leveldb_put(rdb, rkey, rklen, record.data,
+                               record.len));
+        mcme_leveldb_close(rdb);
+    }
+    mcme_buffer_free(&record);
+
+    snprintf(out, sizeof out, "%s_java", in);
+    McmeConvertReport rep;
+    refusal = MCME_WRITE_REFUSAL_NONE;
+    db = NULL;
+    if (!mcme_convert_bedrock_java(in, out, &rep, &refusal)) {
+        CHECK_MSG(false, "convert carry failed: %s",
+                  mcme_last_error());
+        mcme_arena_free(arena);
+        remove_store(dbdir);
+        remove(lvl);
+        rmdir(in);
+        return;
+    }
+    CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+    CHECK(rep.chunks == 1);
+    CHECK(rep.subchunks == 1);
+    CHECK(rep.blocks == 4096);
+    CHECK(rep.block_entities_carried == 5);
+    CHECK(rep.block_entities == 3);   /* sign, frame, loot chest */
+    CHECK(rep.items == 1);            /* the enchanted stack */
+    CHECK(rep.water_positions == 1);  /* the water over the stone */
+    CHECK(rep.legacy_subchunks == 0);
+    CHECK(rep.entities == 0);
+    CHECK(rep.chunk_data == 0);
+    CHECK(rep.other == 0);
+
+    /* The output says what the carry said: the stair takes the
+       property, the stone does not, the dry stair stays dry. */
+    McmeArena *out_arena = mcme_arena_new();
+    CHECK(out_arena != NULL);
+    if (out_arena != NULL) {
+        McmeNbtDoc chunk;
+        McmeTag *root = convert_chunk_root(out_arena, out, 3, 0,
+                                           &chunk);
+        CHECK(root != NULL);
+        if (root != NULL) {
+            check_java_block(root, 48, 0, 0,
+                "minecraft:oak_stairs{waterlogged: \"true\"}");
+            check_java_block(root, 49, 0, 0, "minecraft:stone");
+            check_java_block(root, 50, 0, 0, "minecraft:oak_stairs");
+
+            /* The list holds the carried documents in the record's
+               order, with the fields the mapping carries: both
+               spellings of Bedrock's id out under Java's. */
+            const McmeTag *bel = mcme_nbt_path(root,
+                                               "block_entities");
+            CHECK_MSG(bel != NULL && bel->type == MCME_TAG_List
+                      && bel->list.len == 5,
+                      "block_entities holds %zu entries, want 5",
+                      (bel != NULL && bel->type == MCME_TAG_List)
+                          ? bel->list.len : (size_t)0);
+            const McmeTag *chest = mcme_nbt_path(root,
+                                                 "block_entities.0");
+            CHECK(chest != NULL);
+            const McmeTag *f = mcme_nbt_path(root,
+                                             "block_entities.0.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:chest") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.0.x"), -1) == 53);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.0.y"), -1) == 10);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.0.z"), -1) == 2);
+            /* the empty CustomName has nothing to say: dropped */
+            CHECK(chest != NULL
+                  && mcme_nbt_get(chest, "CustomName") == NULL);
+            const McmeTag *items = mcme_nbt_path(root,
+                                                 "block_entities.0.Items");
+            CHECK(items != NULL && items->type == MCME_TAG_List
+                  && items->list.len == 3);
+            f = mcme_nbt_path(root, "block_entities.0.Items.0.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:diamond") == 0);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.0.Items.0.Slot"), -1) == 0);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.0.Items.0.Count"), -1) == 3);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.0.Items.1.Count"), -1) == 64);
+            /* damage 0 carries no tag */
+            const McmeTag *st0 = mcme_nbt_path(root,
+                                               "block_entities.0.Items.0");
+            CHECK(st0 != NULL && mcme_nbt_get(st0, "tag") == NULL);
+            /* the block identity compound the block item repeated
+               stays behind: Java's item id already says it */
+            const McmeTag *st1 = mcme_nbt_path(root,
+                                               "block_entities.0.Items.1");
+            CHECK(st1 != NULL && mcme_nbt_get(st1, "Block") == NULL);
+            /* the undamaged marker drops the same way */
+            const McmeTag *st2 = mcme_nbt_path(root,
+                                               "block_entities.0.Items.2");
+            CHECK(st2 != NULL && mcme_nbt_get(st2, "tag") == NULL);
+            f = mcme_nbt_path(root, "block_entities.0.Items.2.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:wooden_pickaxe") == 0);
+
+            /* the enchanted stack is gone; the clean one stands */
+            items = mcme_nbt_path(root, "block_entities.1.Items");
+            CHECK(items != NULL && items->type == MCME_TAG_List
+                  && items->list.len == 1);
+            f = mcme_nbt_path(root, "block_entities.1.Items.0.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:coal") == 0);
+
+            /* the furnace's timers, as Java's ints */
+            f = mcme_nbt_path(root, "block_entities.2.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:furnace") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.2.BurnTime"), -1) == 100);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.2.CookTime"), -1) == 40);
+
+            /* the game's short id, out under Java's namespaced
+               answer: "Chest" and "minecraft:chest" are the same
+               container in two writers' hands */
+            f = mcme_nbt_path(root, "block_entities.3.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:chest") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.3.x"), -1) == 60);
+            /* its emoji CustomName — standard UTF-8 in, the same
+               text out: a record of four-byte strings decodes */
+            f = mcme_nbt_path(root,
+                              "block_entities.3.CustomName");
+            CHECK_MSG(f != NULL && f->type == MCME_TAG_String
+                      && f->string.len == 4
+                      && memcmp(f->string.data,
+                                "\xF0\x9F\xA6\xB4", 4) == 0,
+                      "the emoji CustomName did not survive the "
+                      "record read");
+            items = mcme_nbt_path(root, "block_entities.3.Items");
+            CHECK(items != NULL && items->type == MCME_TAG_List
+                  && items->list.len == 1);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.3.Items.0.Count"), -1) == 2);
+            f = mcme_nbt_path(root, "block_entities.3.Items.0.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:emerald") == 0);
+
+            /* TrappedChest, the game's spelling, out as Java's
+               trapped_chest — the loot chest between them dropped */
+            f = mcme_nbt_path(root, "block_entities.4.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:trapped_chest") == 0);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.4.Items.0.Count"), -1) == 7);
+        }
+        mcme_arena_free(out_arena);
+    }
+
+    char region_dir[512];
+    snprintf(region_dir, sizeof region_dir, "%s/region", out);
+    remove_store(region_dir);
+    char file[512];
+    snprintf(file, sizeof file, "%s/level.dat", out);
+    remove(file);
+    rmdir(out);
+    remove_store(dbdir);
+    remove(lvl);
+    rmdir(in);
+    mcme_arena_free(arena);
 }
 
 /*
@@ -4592,6 +5038,7 @@ int mcme_test_world(void)
 
     test_translate();
     test_convert();
+    test_convert_carry();
     test_prune();
 
     if (!mcme_fs_exists(kWorldDir)) {

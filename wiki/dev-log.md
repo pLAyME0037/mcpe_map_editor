@@ -9,6 +9,109 @@ Status vocabulary:
 
 ---
 
+## 2026-10-14 — Convert carries waterlogging and containers, in both spellings Bedrock writes
+
+### Built
+
+- `convert` gained the two drops D14 named as Next. Layer-one
+  `minecraft:water` over a block becomes Java's
+  `waterlogged: "true"`, but only where the Java block actually
+  has that property (the translate map answers); layer-one water
+  that waterlogs nothing (over water, over air) counts as
+  `water_positions` and never fails — 1,416,949 positions in the
+  real world, the fixture pinning 3,280.
+- A block-entity document carries when three things hold: the id
+  is one of ten container types, x/y/z are integers, and the
+  world has filled it (no `LootTable` — a container written empty
+  where the world would grant items is the half-answer mcme
+  refuses to write). Carried: Java's id, coordinates, the stacks,
+  nonempty `CustomName`, `Lock`, smelter timers as ints. Every
+  other field stays behind and is counted, never guessed.
+- The record read is whole-record (`record_walk`), shared by
+  `put` and the convert walk: a record either decodes document by
+  document or counts once — half a record is not something mcme
+  answers for, and the write splicer must agree with the reader.
+  `put` gained the missing insertion point while at it: an absent
+  document now sits at the record's end, so putting a *new* block
+  entity appends instead of replacing the record's others.
+- Three spellings had to meet because two writers authored the
+  inputs: ids (`Chest` from the game, `minecraft:chest` from the
+  frozen fixture) and stacks (`Name`/`Count`/`Damage` vs
+  `id`/`count`/`damage`) are accepted in either spelling and one
+  answer leaves — Java's id, Java's `Count`. The goldens were
+  never regenerated; both spellings passing is the point.
+- The stack rule reads the bookkeeping the game writes beside a
+  stack's identity as noise it can drop without dropping the
+  stack: `WasPickedUp`, the `Block` compound a block item repeats
+  about itself (measured: all 5,455 in the real world are
+  exactly name/states/version), `tag{Damage: 0}` the undamaged
+  marker. Any other field is item data with no Java spelling —
+  the stack drops whole and `skipped.items` counts it.
+- The record walk's decoder accepted only modified UTF-8, so one
+  emoji in one item name refused the record that held it: three
+  records, 621 documents, 480 of them carryable containers
+  (measured in the real world). `mcme_mutf8_decode`/`valid`/
+  `decoded_len` now accept standard UTF-8's four-byte sequences
+  beside modified UTF-8's surrogate pairs — one decoder, both
+  editions' writers — and still reject what neither spells
+  (overlong, bad continuation, past U+10FFFF).
+- The report grows `block_entities_carried` (top level) and
+  `skipped.items`; another dimension's keys hit `other` first —
+  one rule for every tag, the convert walks the overworld.
+  `test_convert_carry` covers both id spellings end to end (docs
+  through `put` plus records appended as the game's own bytes),
+  the emoji CustomName round trip, the loot drop, and the stack
+  allow-list; `tools/ref_convert.py` mirrors every rule in
+  Python (6 checks).
+
+### Cross-check
+
+- 5 suites PASS under ASan; battery 11/11 rc=0; goldens
+  untouched (`git status tests/` empty); release selftest PASS.
+- Real world (the LP world's store snapshotted while the game
+  was closed; the game held the world during the run, so the
+  snapshot was converted): `--json convert` to java/1.20, 1m33s.
+  35,553 chunks, 329,641 subchunks, 1,350,209,536 blocks;
+  `block_entities_carried` 0 → 3,467;
+  `skipped.block_entities` 23,102 → 20,253; `skipped.items`
+  0 → 711; `water_positions` 1,416,949; `other` 886,629;
+  `legacy` 0.
+- The numbers close end to end. 23,806 overworld documents =
+  3,467 carried + 20,253 counted + 86 (the documents inside the
+  16 records whose strings are binary blobs — counted once per
+  record, by design). The container census: 7,749 documents with
+  the ten ids − 4,006 with a `LootTable` = 3,743 eligible =
+  3,467 carried + 231 in chunks mcme writes no Java chunk for +
+  45 behind those 16 records. Scanning the output `.mca` files
+  finds exactly 3,467 block_entities — the report counts what
+  the world holds.
+
+### Known gaps
+
+- The write half still wants a namespaced id (`put` takes
+  `minecraft:chest`); the game writes `Chest`, and whether the
+  game reads back mcme's spelling is untested. D15 is the read
+  path.
+- 16 records (102 documents) hold binary bytes in a string
+  field (`EntityStorageKeyComponent.StorageKey`) — neither
+  encoding can spell them, so they refuse and count; 45 of the
+  documents behind them are containers. Reading them would mean
+  inventing text, which D15 declines.
+- 711 stacks dropped for fields with no Java spelling (enchants,
+  display names, brew state, nested `Items`); each widening is a
+  measurement first, a mapping second.
+- Converted output on this world: 228 MB of regions, same
+  conversion as the pre-D15 run but with 3,467 containers and
+  their stacks standing in it.
+
+### Next
+
+- The write side meets the game's spelling: `put` accepting
+  short savegame ids, and a real load test of what the game
+  does with namespaced ones.
+
+---
+
 ## 2026-10-13 — Compaction writes the game's own blocks (bare DEFLATE)
 
 ### Built

@@ -2887,8 +2887,10 @@ static void print_convert_drops(const McmeConvertReport *r)
     const struct { size_t n; const char *one; const char *many; } d[] = {
         { r->legacy_subchunks, "subchunk mcme cannot read",
                                "subchunks mcme cannot read" },
-        { r->water_layers,     "water layer",    "water layers" },
+        { r->water_positions,  "water position",
+                               "water positions" },
         { r->block_entities,   "block entity",   "block entities" },
+        { r->items,            "item stack",     "item stacks" },
         { r->entities,         "entity list",    "entity lists" },
         { r->chunk_data,       "other chunk key", "other chunk keys" },
         { r->other,            "other key",      "other keys" },
@@ -2993,22 +2995,31 @@ static int cmd_convert(int argc, char **argv)
         cJSON_AddNumberToObject(root, "chunks", (double)rep.chunks);
         cJSON_AddNumberToObject(root, "subchunks", (double)rep.subchunks);
         cJSON_AddNumberToObject(root, "blocks", (double)rep.blocks);
+        cJSON_AddNumberToObject(root, "block_entities_carried",
+                                (double)rep.block_entities_carried);
         cJSON_AddNumberToObject(skipped, "block_entities",
                                 (double)rep.block_entities);
         cJSON_AddNumberToObject(skipped, "chunk_data",
                                 (double)rep.chunk_data);
         cJSON_AddNumberToObject(skipped, "entities",
                                 (double)rep.entities);
+        cJSON_AddNumberToObject(skipped, "items",
+                                (double)rep.items);
         cJSON_AddNumberToObject(skipped, "legacy_subchunks",
                                 (double)rep.legacy_subchunks);
         cJSON_AddNumberToObject(skipped, "other", (double)rep.other);
-        cJSON_AddNumberToObject(skipped, "water_layers",
-                                (double)rep.water_layers);
+        cJSON_AddNumberToObject(skipped, "water_positions",
+                                (double)rep.water_positions);
         cJSON_AddItemToObject(root, "skipped", skipped);
         print_json(root);
     } else {
         printf("converted %zu chunks (%zu subchunks, %zu blocks) to "
-               "java/1.20\n", rep.chunks, rep.subchunks, rep.blocks);
+               "java/1.20", rep.chunks, rep.subchunks, rep.blocks);
+        if (rep.block_entities_carried > 0) {
+            printf(" — %zu block entities carried",
+                   rep.block_entities_carried);
+        }
+        putchar('\n');
         print_convert_drops(&rep);
     }
     return MCME_OK;

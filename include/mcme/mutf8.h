@@ -45,8 +45,17 @@
 bool mcme_mutf8_encode(const char *utf8, size_t utf8_len, McmeBuffer *out);
 
 /*
- * Appends the standard-UTF-8 decoding of the modified-UTF-8 input `mutf8`
- * (length `mutf8_len`) to `out`.
+ * Appends the standard-UTF-8 decoding of the string `mutf8` (length
+ * `mutf8_len`) to `out`.
+ *
+ * The input may be written either way — modified UTF-8, which Java's writer
+ * emits, or standard UTF-8, which Bedrock's C++ writer emits for code points
+ * above the BMP (an emoji in an item name arrives as a real four-byte
+ * sequence). One decoder reads both editions' files; only what neither
+ * encoding can spell — overlong forms, continuation bytes standing as leads,
+ * code points past U+10FFFF — is rejected. Rejecting the four-byte spelling
+ * cost whole records: measured, three records in one real world, 621
+ * documents behind them.
  *
  * Valid surrogate pairs are combined into a single code point and emitted as
  * four-byte UTF-8. A LONE surrogate is preserved as a three-byte sequence

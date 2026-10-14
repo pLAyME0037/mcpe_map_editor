@@ -20,15 +20,29 @@ What is compared:
              neither edition knows keeps its name and loses its
              states, where PyMCTranslate passes the states
              through untouched. The v1 legacy subchunk writes no
-             section and reads back air; the waterlogged layer is
-             dropped and counted. Booleans compare true/1 and
+             section and reads back air; the second layer carries
+             as the Java `waterlogged` property only where the
+             reference gives the block that property
+             (decisions.md#D15) — the fixture's water stands over
+             grass, dirt and stone, none of them waterloggable, so
+             every water position drops and is counted. Booleans
+             compare true/1 and
              false/0 alike — the two editions spell them
              differently over the same NBT meaning.
 
   REPORT   — the JSON counts, exact: two chunks, seven subchunks,
-             24576 blocks, and the three skips the fixture
-             carries (the legacy subchunk, the nether key, the
-             water layer).
+             24576 blocks, no documents carried, and the skips
+             the fixture carries (the legacy subchunk, the nether
+             key, the 3280 water positions).
+
+  ENTITIES — a second world, the block-entity fixture: the
+             report's document counts, and the output's
+             block_entities list against the fixture's own
+             records read back from the COPIED store — id and
+             coordinates, the stacks under Slot/id/Count, the
+             smelter timers as ints — with the sign, the
+             coordinate-less item frame and the nether's chest
+             among the documents that do not arrive.
 
   LEVEL    — level.dat: LevelName carried, DataVersion 3463, the
              seed under WorldGenSettings, the spawn under the
@@ -67,6 +81,7 @@ from ref_java_fill import walk_chunk, section_for
 from ref_bedrock_column import chunk_key, decode_payload
 
 FIXTURE_CHUNKS = "tests/golden/worlds/bedrock-chunks"
+FIXTURE_ENTITIES = "tests/golden/worlds/bedrock-entities"
 FIXTURE_LEVEL = "tests/golden/worlds/bedrock/level.dat"
 FIXTURE_JAVA = "tests/golden/worlds/java"
 AIR = "minecraft:air"
@@ -81,15 +96,67 @@ WANT_REPORT = {
     "chunks": 2,
     "subchunks": 7,
     "blocks": 24576,
+    "block_entities_carried": 0,
     "skipped": {
         "block_entities": 0,
         "chunk_data": 0,
         "entities": 0,
+        "items": 0,
         "legacy_subchunks": 1,
         "other": 1,
-        "water_layers": 1,
+        "water_positions": 3280,
     },
 }
+
+# The entities fixture's report, as far as this check names it: the
+# whole-document counts D15 added, and the ones that must stay zero
+# (decisions.md#D15).
+WANT_ENTITIES_REPORT = {
+    "chunks": 2,
+    "subchunks": 2,
+    "blocks": 8192,
+    "block_entities_carried": 2,
+    "skipped": {
+        "block_entities": 2,
+        "chunk_data": 0,
+        "entities": 0,
+        "items": 0,
+        "legacy_subchunks": 0,
+        "other": 2,
+        "water_positions": 0,
+    },
+}
+
+# The ids the carry maps — under the game's own savegame spelling
+# ("Chest", "BlastFurnace"; every document in a real world uses it)
+# and the namespaced spelling the frozen fixture holds
+# ("minecraft:chest"). Java's answer is the namespaced id beside
+# each; every other document drops and counts (decisions.md#D15).
+CARRY_IDS = {
+    "chest": "minecraft:chest",
+    "trappedchest": "minecraft:trapped_chest",
+    "enderchest": "minecraft:ender_chest",
+    "barrel": "minecraft:barrel",
+    "hopper": "minecraft:hopper",
+    "furnace": "minecraft:furnace",
+    "blastfurnace": "minecraft:blast_furnace",
+    "smoker": "minecraft:smoker",
+    "dispenser": "minecraft:dispenser",
+    "dropper": "minecraft:dropper",
+}
+
+
+def java_id(doc_id):
+    """Java's id for this document's, or None. The namespaced
+    spelling is the short one with the prefix stripped, compared
+    without case: "minecraft:chest" and "Chest" are the same
+    container in two writers' hands."""
+    if not isinstance(doc_id, str):
+        return None
+    short = doc_id
+    if short.startswith("minecraft:"):
+        short = short[len("minecraft:"):]
+    return CARRY_IDS.get(short.lower())
 
 
 def _log(msg: str) -> None:
@@ -134,6 +201,7 @@ class Reference:
         self._java = tm.get_version("java", (1, 20, 0))
         self._cache: dict = {}
         self._defaults: dict = {}
+        self._waterlog: dict = {}
 
     def _translate(self, name: str, states: dict):
         ns, base = name.split(":", 1)
@@ -170,6 +238,14 @@ class Reference:
                 self._cache[key] = (out_name, canon(props),
                                     self._defaults[dkey])
         return self._cache[key]
+
+    def waterloggable(self, name: str) -> bool:
+        """Whether the Java block carries the `waterlogged` property:
+        the reference's own set over java/1.20 (decisions.md#D15)."""
+        if name not in self._waterlog:
+            self._waterlog[name] = bool(
+                self._java.is_waterloggable(name))
+        return self._waterlog[name]
 
 
 def canon(props: dict) -> dict:
@@ -247,9 +323,10 @@ def entry_of(entry):
 
 def load_input(world: str):
     """The fixture's stored subchunks, read from the COPIED store:
-    (cx, cz, cy) -> (kind, layer) where kind is 'ok' or 'legacy'
-    and layer is (blocks, palette) for the first layer only — the
-    waterlogged second layer is what the report counts and drops."""
+    (cx, cz, cy) -> (kind, layers) where kind is 'ok' or 'legacy'
+    and layers is the subchunk's full list of (blocks, palette)
+    pairs — the second layer is the waterlogging half D15 folds
+    into the Java property."""
     from amulet.libs.leveldb import LevelDB
     from amulet.level.formats.leveldb_world.interface.chunk.leveldb_8 import (
         LevelDB8Interface,
@@ -269,10 +346,150 @@ def load_input(world: str):
                 if version == 1:
                     subs[(cx, cz, cy)] = ("legacy", None)
                 else:
-                    subs[(cx, cz, cy)] = ("ok", layers[0])
+                    subs[(cx, cz, cy)] = ("ok", layers)
     finally:
         db.close()
     return subs
+
+
+def plain(v):
+    """The value as plain Python: NBT tags unboxed all the way
+    down, so two documents from two editions compare as data."""
+    if hasattr(v, "tag") and not hasattr(v, "py_data"):
+        v = v.tag        # a NamedTag is the document, not the tag
+    v = py(v)
+    if isinstance(v, dict):
+        return {k: plain(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [plain(x) for x in v]
+    return v
+
+
+def _subset(got, want) -> bool:
+    """Every field of `want` present and equal in `got`, nested
+    dicts included: this check names the counts it pins and lets
+    the report grow fields it does not."""
+    for k, v in want.items():
+        if k not in got:
+            return False
+        if isinstance(v, dict):
+            if not isinstance(got[k], dict) or not _subset(got[k], v):
+                return False
+        elif got[k] != v:
+            return False
+    return True
+
+
+def load_entity_docs(world: str):
+    """The store's block-entity records, read from the COPIED
+    store: (dimension, cx, cz) -> the documents in record order.
+    A record key is x, then z, then the dimension when it is not
+    0, then the tag byte."""
+    from amulet.libs.leveldb import LevelDB
+    from amulet.level.formats.leveldb_world.interface.chunk.leveldb_8 import (
+        LevelDB8Interface,
+    )
+
+    iface = LevelDB8Interface()
+    db = LevelDB(os.path.join(world, "db"))
+    out = {}
+    try:
+        for k, v in db.iterate():
+            if len(k) not in (9, 13) or k[-1] != 0x31:
+                continue
+            cx = int.from_bytes(k[0:4], "little", signed=True)
+            cz = int.from_bytes(k[4:8], "little", signed=True)
+            dim = (int.from_bytes(k[8:12], "little", signed=True)
+                   if len(k) == 13 else 0)
+            out[(dim, cx, cz)] = iface._unpack_nbt_list(v)
+    finally:
+        db.close()
+    return out
+
+
+def carries(doc) -> bool:
+    """D15's verdict from the source side: an id the map carries,
+    a block address spelled as integers, and a container the world
+    has already filled — a LootTable is items mcme has no map
+    for, and an empty container where a full one belonged is the
+    answer the mapping refuses to write."""
+    c = plain(doc)
+    return (java_id(c.get("id")) is not None
+            and all(isinstance(c.get(k), int) for k in ("x", "y", "z"))
+            and "LootTable" not in c)
+
+
+def _stack_bookkeeping(k, v) -> bool:
+    """The fields the game puts on a stack that hold no item data
+    Java needs: WasPickedUp's pickup byte; the block identity a
+    block item repeats about itself (name/states/version, and
+    nothing else — measured, a real world's all 5455); and a tag
+    holding exactly {Damage: 0}, the undamaged marker. They drop
+    with the stack's answer intact. Anything else beside a stack's
+    identity is item data mcme cannot translate."""
+    if k == "WasPickedUp":
+        return True
+    if k == "Block":
+        return (isinstance(v, dict)
+                and set(v) == {"name", "states", "version"}
+                and isinstance(v.get("name"), str)
+                and isinstance(v.get("states"), dict)
+                and isinstance(v.get("version"), int))
+    if k == "tag":
+        return (isinstance(v, dict)
+                and set(v) == {"Damage"}
+                and isinstance(v.get("Damage"), int)
+                and v["Damage"] == 0)
+    return False
+
+
+def want_java_doc(doc) -> dict:
+    """D15's mapping, spelled from the source document: Java's id
+    for the container, and the block's own coordinates; the stacks
+    under Slot/id/Count from either of Bedrock's two spellings —
+    Name/Count/Damage as the game writes it, id/count/damage as
+    the frozen fixture holds it — a nonzero damage becoming Java's
+    tag.Damage, and a stack carrying item data mcme cannot
+    translate dropping out of the list entirely; a nonempty
+    CustomName; a Lock; the smelter timers as ints."""
+    c = plain(doc)
+    out = {"id": java_id(c["id"]), "x": c["x"], "y": c["y"],
+           "z": c["z"]}
+    if isinstance(c.get("Items"), list):
+        stacks = []
+        for s in c["Items"]:
+            sid = s.get("Name")
+            if not isinstance(sid, str):
+                sid = s.get("id")
+            count = s.get("Count")
+            if not isinstance(count, int):
+                count = s.get("count")
+            if (not isinstance(sid, str) or not isinstance(count, int)
+                    or not isinstance(s.get("Slot"), int)):
+                continue
+            if any(k not in ("Slot", "Name", "id", "Count", "count",
+                             "Damage", "damage")
+                   and not _stack_bookkeeping(k, v)
+                   for k, v in s.items()):
+                continue
+            stack = {"Slot": s["Slot"], "id": sid, "Count": count}
+            damage = None
+            for dk in ("Damage", "damage"):
+                if isinstance(s.get(dk), int):
+                    damage = s[dk]
+                    break
+            if damage:
+                stack["tag"] = {"Damage": int(damage)}
+            stacks.append(stack)
+        out["Items"] = stacks
+    if c.get("CustomName"):
+        out["CustomName"] = c["CustomName"]
+    if isinstance(c.get("Lock"), str):
+        out["Lock"] = c["Lock"]
+    for k in ("BurnTime", "CookTime", "CookTimeTotal"):
+        if isinstance(c.get(k), int):
+            out[k] = int(c[k])
+    return out
 
 
 def load_level(path: str, little_endian: bool, skip_header: bool):
@@ -342,15 +559,26 @@ def main() -> int:
                     f"want the stored non-legacy subchunks {ok_cys}")
 
             for cy in ok_cys + legacy_cys:
-                kind, layer = subs[(cx, cz, cy)]
+                kind, layers = subs[(cx, cz, cy)]
                 if kind == "legacy":
                     # A legacy subchunk writes no section — the
                     # sections list already proved it — and an
                     # absent section reads back air. The selftest
                     # pins mcme's own reader to the same answer.
                     continue
-                blocks, palette = layer
+                blocks, palette = layers[0]
                 arr = numpy.asarray(blocks).reshape(16, 16, 16)
+                # The second layer, when the subchunk stores one: a
+                # cell of water over a block the reference gives the
+                # waterlogged property carries as that property on
+                # the Java block (decisions.md#D15). Every other
+                # second-layer cell drops and counts, so those
+                # positions keep the first layer's answer alone.
+                l1_arr = None
+                l1_palette = None
+                if len(layers) > 1:
+                    l1_blocks, l1_palette = layers[1]
+                    l1_arr = numpy.asarray(l1_blocks).reshape(16, 16, 16)
                 for lx in range(16):
                     for ly in range(16):
                         for lz in range(16):
@@ -358,6 +586,13 @@ def main() -> int:
                                 palette[int(arr[lx][ly][lz])])
                             want_name, want, default = ref.answer(
                                 name, states)
+                            if (l1_arr is not None
+                                    and entry_of(l1_palette[int(
+                                        l1_arr[lx][ly][lz])])[0]
+                                    == "minecraft:water"
+                                    and ref.waterloggable(want_name)):
+                                want = dict(want,
+                                            waterlogged="true")
                             x, y, z = (cx * 16 + lx, cy * 16 + ly,
                                        cz * 16 + lz)
                             got_name, got_props = read_block(tag, x, y, z)
@@ -387,6 +622,56 @@ def main() -> int:
         checks += 1
         _log(f"ok — {compared} positions read back exactly as "
              f"PyMCTranslate answers them, policies included")
+
+        # ---- block entities: the carry against the fixture's own
+        # documents (D15) ------------------------------------------
+        # The second world is converted as it ships — copied whole,
+        # level.dat added — and its report counts the documents the
+        # mapping carries, the ones it drops, and the keys of the
+        # dimension no chunk is written for.
+        be_in = os.path.join(tmp, "be_in")
+        shutil.copytree(FIXTURE_ENTITIES, be_in)
+        shutil.copy(FIXTURE_LEVEL, os.path.join(be_in, "level.dat"))
+        be_out = os.path.join(tmp, "be_out")
+        rc, stdout, stderr = run(mcme, "--json", "convert", be_in,
+                                 be_out, "--to", "java/1.20")
+        if rc != 0:
+            raise AssertionError(
+                f"convert (entities): exit {rc} ({stderr.strip()})")
+        be_report = json.loads(stdout)
+        if not _subset(be_report, WANT_ENTITIES_REPORT):
+            raise AssertionError(
+                f"entities report is {be_report}, want at least "
+                f"{WANT_ENTITIES_REPORT}")
+        checks += 1
+        _log("ok — the entities fixture's report counts two carried "
+             "documents, the sign and the frame it drops, the nether "
+             "keys as other, and nothing skipped besides")
+
+        # And the output's list against the source's records: each
+        # carried document with its mapping's fields spelled out,
+        # and no document the verdict drops.
+        src_docs = load_entity_docs(be_in)
+        for cx, cz in CHUNKS:
+            region = os.path.join(
+                be_out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+            tag = walk_chunk(region, cx, cz)
+            if tag is None:
+                raise AssertionError(
+                    f"no entities output chunk ({cx}, {cz})")
+            bel = tag.get("block_entities")
+            got = [plain(e) for e in (bel or [])]
+            want = [want_java_doc(d)
+                    for d in src_docs.get((0, cx, cz), [])
+                    if carries(d)]
+            if got != want:
+                raise AssertionError(
+                    f"chunk ({cx}, {cz}) block_entities is {got}, "
+                    f"want {want}")
+        checks += 1
+        _log("ok — every carried document arrives with the mapping's "
+             "fields (id, x/y/z, Items Slot/id/Count, the smelter "
+             "timers) and every dropped one stays away")
 
         # ---- level.dat: the fields that must travel ---------------
         data_out = load_level(os.path.join(out, "level.dat"), False,
