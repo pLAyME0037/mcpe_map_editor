@@ -747,10 +747,13 @@ $ mcme chunk entity set mybedrock 12 64 3 '{id: "minecraft:chest", CustomName: "
 
 The position is the argument, so it wins: the document's own `x`, `y`, `z`
 are set from it, overwriting any they carried, because a document naming
-another block would be stored where nothing can find it. `id` must be a
-namespaced string — `"minecraft:chest"`, with the colon — which is the
-form the game writes and the reference requires; anything else is exit 1,
-and so is SNBT that does not parse or a root that is not a compound.
+another block would be stored where nothing can find it. `id` must be in
+one of the two spellings the game has: the bare savegame id its own
+records carry — `"Chest"`, no colon — or the namespaced one —
+`"minecraft:chest"`. It is stored exactly as given, letters, digits, `_`,
+`-` and `.`, at most one colon with neither side empty; anything else is
+exit 1, and so is SNBT that does not parse or a root that is not a
+compound.
 
 The documents beside it in the record are untouched, byte for byte: the
 record is spliced, not re-encoded, so changing one chest cannot reorder
@@ -763,9 +766,10 @@ Nothing is printed on success; like `chunk set`, the exit code is the
 answer.
 
 Exit codes: `0` written, `1` usage (bad coordinate, SNBT that does not
-parse, a root that is not a compound, an `id` that is not a namespaced
-string), `2` not a world or not a Bedrock world, `3` the record is not a
-format mcme reads, `4` store error, including a store the game has open.
+parse, a root that is not a compound, an `id` that is neither a bare
+savegame id nor a namespaced one), `2` not a world or not a Bedrock
+world, `3` the record is not a format mcme reads, `4` store error,
+including a store the game has open.
 
 ### `mcme chunk entity del`
 

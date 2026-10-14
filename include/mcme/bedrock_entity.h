@@ -10,7 +10,9 @@
  * palette and is read the same way, mcme_nbt_parse_prefix().
  *
  * Each document is a compound. The game gives every block entity
- * `id` (a namespaced string), and `x`, `y`, `z` as ints naming the
+ * `id` (its savegame id — bare in the game's own records, "Chest",
+ * and namespaced in mcme's earlier writes, "minecraft:chest";
+ * both read back), and `x`, `y`, `z` as ints naming the
  * block it belongs to; the rest is the entity's own — `Items` for a
  * container, `Text` for a sign, and so on. mcme reads the document
  * verbatim and adds nothing to it: an editor that rewrites an
@@ -121,9 +123,12 @@ McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
  * first: half a record is not something mcme rewrites.
  *
  * Refuses with MCME_WRITE_REFUSAL_USAGE when `entity` is not a
- * compound or its `id` is not a namespaced string — the form the
- * game writes and the reference requires, so what mcme stores is
- * what both can read back.
+ * compound or its `id` is neither spelling an id takes: the bare
+ * savegame id the game itself writes ("Chest") or the namespaced
+ * one ("minecraft:chest"), each side of the colon a name of
+ * letters, digits, `_`, `-` or `.`. The id is stored exactly as
+ * given — mcme checks the shape both spellings share, not the
+ * game's registry, which it does not have.
  */
 bool mcme_bedrock_put_block_entity(const char *db_dir,
                                    int32_t x, int32_t y,

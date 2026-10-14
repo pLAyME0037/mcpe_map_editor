@@ -634,3 +634,52 @@ the game loads mcme's spelling is untested.
 ids again, extend the table), or the dropped-stack count grows past
 the point where its fields deserve mappings one at a time (measure
 what those stacks hold first).
+
+## D16 — `put` takes an id in either spelling the game has, and stores it as given
+
+The write side had one rule where the read side had two. D15's
+closing note kept it deliberately: `put` required a colon in the
+`id` because the premise then standing was that the reference's
+decoder — and the game — drop a document whose id names no
+namespace. The measurements say the premise is backwards. One
+real store holds 23,806 documents across 43 distinct ids, every
+one of them bare: `Chest`, `TrappedChest`, `BrushableBlock`, no
+colon anywhere. The wiki defines the field as "the savegame ID of
+the block entity". The game binary's own strings hold the
+registry literals bare (`Chest`, `Barrel`, `Hopper`,
+`BlastFurnace`…) and no bare `minecraft:chest`. The namespaced
+spelling is one mcme itself wrote; the refuser was refusing the
+game's own format.
+
+`mcme_bedrock_put_block_entity` now refuses an id in *neither*
+spelling instead of an id without a colon: shape, not list — no
+id, an empty side of the colon, a second colon, or a character
+an id in neither form holds (letters, digits, `_`, `-`, `.`) is
+USAGE before any byte is written. What arrives is what is
+stored: `Chest` in, `Chest` out; `minecraft:chest` in,
+`minecraft:chest` out — the same rule as every other field mcme
+writes, and D15's read path takes either back.
+
+**Rejected.**
+- *Normalizing the input to the game's spelling*: the mapping is
+  registry, not prefix — strip `minecraft:` and `chest` is still
+  not `Chest` — so normalization would guess, and the write path
+  must not lie about what it was given.
+- *Checking the id against the 43-id census*: one world's ids
+  are a floor, not the registry; refusing a document because a
+  measured subset lacks its id is D15's half-answer wearing a
+  different hat.
+- *Keeping the namespaced-only rule*: it refuses what every
+  document in a real store is.
+
+**Cost accepted.** mcme can refuse a malformed id but not a
+wrong one: `{id: "chest"}` now stores, and whether the game's
+lookup keeps it — or mcme's own namespaced writes, for that
+matter — is the same untested question D15 named: which
+spellings the game holds on load can only be measured by
+loading a world that holds both.
+
+**Reverses if:** that load test proves a spelling dropped — then
+the rule becomes write the spelling the game keeps, the census
+question returns with a real registry behind it, and mcme's
+earlier namespaced writes become a repair job.

@@ -271,6 +271,32 @@ static bool put_coord(McmeArena *arena, McmeTag *entity,
     return mcme_nbt_compound_put(arena, entity, key, 1, t);
 }
 
+/* The id field in either spelling the game has: the bare savegame
+   id — "Chest", what all 43 distinct ids in one real store are —
+   or the namespaced one — "minecraft:chest", what mcme's earlier
+   writes carry. What is refused is neither spelling: no id, an
+   empty side of the colon, a second colon, or a character no id
+   in either form holds. The shape, not the list: the registry of
+   real ids is the game's and versioned, and mcme does not have
+   it. */
+static bool put_id_is_spelled(const char *s, size_t len)
+{
+    if (len == 0) return false;
+    size_t colons = 0;
+    for (size_t i = 0; i < len; ++i) {
+        char c = s[i];
+        if (c == ':') {
+            if (++colons > 1) return false;
+            continue;
+        }
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9')
+                || c == '_' || c == '-' || c == '.'))
+            return false;
+    }
+    return !(colons == 1 && (s[0] == ':' || s[len - 1] == ':'));
+}
+
 bool mcme_bedrock_put_block_entity(const char *db_dir,
                                    int32_t x, int32_t y,
                                    int32_t z,
@@ -294,16 +320,16 @@ bool mcme_bedrock_put_block_entity(const char *db_dir,
         return false;
     }
 
-    /* What the reference's decoder requires to keep a document at
-       all: an id that names a namespace. Writing anything else
-       would store an entity both the game and amulet drop. */
+    /* An id in one of the two spellings, stored as given: the
+       game's own records are bare savegame ids and mcme's earlier
+       writes are namespaced, and both read back — so what is
+       refused is only an id neither form could be. */
     const McmeTag *id = mcme_nbt_get(entity, "id");
     if (id == NULL || id->type != MCME_TAG_String
-            || id->string.len == 0
-            || memchr(id->string.data, ':', id->string.len) == NULL) {
+            || !put_id_is_spelled(id->string.data, id->string.len)) {
         if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         mcme_set_error("put block entity: an entity needs an \"id\" "
-                       "that is a namespaced string, like "
+                       "naming a savegame id, like \"Chest\" or "
                        "\"minecraft:chest\"");
         return false;
     }

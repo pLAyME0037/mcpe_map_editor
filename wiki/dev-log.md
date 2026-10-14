@@ -9,6 +9,68 @@ Status vocabulary:
 
 ---
 
+## 2026-10-14 — The write side meets the game's spelling: `put` takes a bare savegame id
+
+### Built
+
+- `mcme_bedrock_put_block_entity` now refuses an id in *neither*
+  spelling instead of an id without a colon. The old premise —
+  "the reference's decoder requires [a namespace] … the game and
+  amulet drop" anything else — measures backwards: the real-world
+  store holds 23,806 documents across 43 distinct ids and every
+  one is bare (`Chest`, `TrappedChest`, `BrushableBlock`), the
+  wiki calls the field "the savegame ID of the block entity", and
+  `strings` on the game's `libminecraftpe.so` (v1.26.52.3) holds
+  the registry literals bare — `Chest`, `Barrel`, `Hopper`,
+  `BlastFurnace` and a dozen more — with no bare
+  `minecraft:chest` anywhere. The refuser was refusing the game's
+  own format.
+- What stays refused is a shape neither spelling has: no id, an
+  empty side of the colon, a second colon, a character an id in
+  neither form holds (letters, digits, `_`, `-`, `.`) — USAGE,
+  before any byte is written. The id itself is stored exactly as
+  given: mcme checks the shape both spellings share, not the
+  registry, which is the game's and versioned. `Chest` in,
+  `Chest` out; `minecraft:chest` in, `minecraft:chest` out — and
+  D15's read path takes either back.
+- Pins: `test_bedrock_entity_write` refuses an id-less document,
+  an empty name and a stray space, and round-trips a bare id
+  (put `{id: "Chest"}` at a block, read `Chest` back with the
+  position's coordinates set). `test_convert_carry` now puts the
+  furnace under the bare id, so the write API itself feeds both
+  spellings to convert — same five carried, the same
+  `minecraft:furnace` answer under Java. The reference
+  (`ref_bedrock_entity`, 27 checks) stores a bare id verbatim,
+  cross-reads it against amulet's own loader, and keeps the
+  refusal pin on documents in neither spelling, record untouched.
+
+### Cross-check
+
+- 5 suites PASS under ASan (debug + release); battery 11/11
+  rc=0; goldens untouched (`git status tests/` empty); release
+  selftest PASS.
+- Measurements behind the rule: the D15 world snapshot's id
+  census (43 distinct, 0 namespaced), the wiki's field
+  definition, and the game binary's own strings.
+
+### Known gaps
+
+- Still untested, and only the game can test it: which
+  spellings survive a load. mcme's earlier writes are
+  namespaced; this world holds none, so nothing in it says what
+  the game does with them — or with the wrong-case `{id:
+  "chest"}`, which now stores. The experiment is one world
+  holding both spellings, loaded, store read back after.
+
+### Next
+
+- That load test: a prepared copy with a `Chest` doc and a
+  `minecraft:chest` doc side by side, opened in the game, the
+  store compared afterwards — then decide from what the game
+  left standing whether put writes one spelling after all.
+
+---
+
 ## 2026-10-14 — Convert carries waterlogging and containers, in both spellings Bedrock writes
 
 ### Built

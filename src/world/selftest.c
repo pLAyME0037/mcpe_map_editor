@@ -3978,8 +3978,8 @@ static void test_bedrock_entity_write(void)
                                          &refusal));
     CHECK(refusal == MCME_WRITE_REFUSAL_NOT_THERE);
 
-    /* --- What mcme will not write: the reference would drop it.
-       Each refusal leaves the record as it was. --- */
+    /* --- What mcme will not write: not an id in either spelling
+       the game has. Each refusal leaves the record as it was. --- */
     mcme_buffer_free(&before);
     mcme_buffer_init(&before);
     CHECK(raw_record(dbdir, 0, 0, 0, &before, &deleted));
@@ -3992,8 +3992,16 @@ static void test_bedrock_entity_write(void)
     CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
     CHECK(strstr(mcme_last_error(), "\"id\"") != NULL);
 
-    const char *flat_id = "{id: \"chest\"}";
-    CHECK(mcme_nbt_parse_snbt(arena, flat_id, strlen(flat_id), &bad));
+    const char *empty_name = "{id: \"minecraft:\"}";
+    CHECK(mcme_nbt_parse_snbt(arena, empty_name, strlen(empty_name),
+                              &bad));
+    CHECK(!mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, bad,
+                                         arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+    const char *stray_space = "{id: \"not an id\"}";
+    CHECK(mcme_nbt_parse_snbt(arena, stray_space, strlen(stray_space),
+                              &bad));
     CHECK(!mcme_bedrock_put_block_entity(dbdir, 12, 64, 3, 0, bad,
                                          arena, &refusal));
     CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
@@ -4012,6 +4020,32 @@ static void test_bedrock_entity_write(void)
     CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
     CHECK(!mcme_bedrock_del_block_entity(NULL, 0, 0, 0, 0, &refusal));
     CHECK(refusal == MCME_WRITE_REFUSAL_USAGE);
+
+    /* --- The game's own spelling writes: a bare savegame id,
+       stored as given and read back as given — the position
+       argument still sets the coordinates. --- */
+    const char *bare_snbt = "{id: \"Chest\", CustomName: \"bare\"}";
+    McmeTag *bare = NULL;
+    CHECK(mcme_nbt_parse_snbt(arena, bare_snbt, strlen(bare_snbt),
+                              &bare));
+    CHECK(mcme_bedrock_put_block_entity(dbdir, 13, 64, 3, 0, bare,
+                                        arena, &refusal));
+    CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
+    McmeLevelDb *read_db = NULL;
+    CHECK(mcme_leveldb_open(&read_db, dbdir));
+    if (read_db != NULL) {
+        CHECK(mcme_bedrock_block_entity(read_db, 13, 64, 3, 0, arena,
+                                        &got)
+              == MCME_ENTITY_OK);
+        const McmeTag *bid = mcme_nbt_path(got.root, "id");
+        CHECK(bid != NULL && bid->type == MCME_TAG_String
+              && strcmp(bid->string.data, "Chest") == 0);
+        const McmeTag *bname = mcme_nbt_path(got.root, "CustomName");
+        CHECK(bname != NULL && bname->type == MCME_TAG_String
+              && strcmp(bname->string.data, "bare") == 0);
+        CHECK(mcme_nbt_int_or(mcme_nbt_path(got.root, "x"), -1) == 13);
+        mcme_leveldb_close(read_db);
+    }
 
     /* --- And what it will not rewrite: a record with a tail that
        will not read. Both refusals come before any byte is
@@ -4516,10 +4550,12 @@ static void test_convert_carry(void)
     }
     mcme_buffer_free(&payload);
 
-    /* The record, in two spellings of Bedrock's own. The five docs
-       put through the write API carry mcme's namespaced ids; the
-       three appended below are the game's bytes — short savegame
-       ids, Name/Count stacks — and must carry the same answer.
+    /* The record, in both spellings of Bedrock's own, through the
+       write API and as the game's bytes. Four of the five docs
+       put through the write API carry namespaced ids, the furnace
+       the bare savegame one — put takes both; the three appended
+       below are the game's bytes — short savegame
+       ids, Name/Count stacks — and all carry the same answer.
        Carried: both chests, the furnace, the short-id chest, the
        short-id trapped chest. Dropped and counted: the sign, the
        frame (no coordinates), the not-yet-filled loot chest. One
@@ -4560,7 +4596,10 @@ static void test_convert_carry(void)
         { "{id: \"minecraft:glowitemframe\", "
           "item: \"minecraft:stick\"}",
           58, 10, 6 },
-        { "{id: \"minecraft:furnace\", BurnTime: 100s, "
+        /* put takes the game's bare savegame id as readily as the
+           namespaced one — the same container, the same answer
+           under Java's id */
+        { "{id: \"Furnace\", BurnTime: 100s, "
           "CookTime: 40s, Items: [{Slot: 0b, id: \"minecraft:coal\", "
           "count: 5b, damage: 0s}]}",
           56, 10, 4 },

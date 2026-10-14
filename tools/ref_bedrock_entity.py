@@ -34,8 +34,9 @@ Covered:
     is exit 2, and a record that will not decode is exit 3
   * setting a document whose own coordinates are absent: the
     position argument is what lands in the stored document
-  * a document whose id names no namespace is refused before the
-    store changes
+  * a bare savegame id — the spelling the game's own records
+    carry — is stored as given, and ids in neither spelling are
+    refused before the store changes
   * setting into a chunk with no record creates one, and removing
     its last document removes the record
   * a record that will not decode is one mcme will not rewrite,
@@ -370,18 +371,36 @@ def main() -> int:
     expect_entity("chest after a deletion", 12, 64, 3)
     expect_entity("the deleted sign", 0, 65, 0)
 
-    # --- A document mcme will not write: the reference drops one
-    #     whose id names no namespace, so mcme refuses it and the
-    #     record does not move.
-    before = raw(0, 0)
-    rc, out, err = run_set(12, 64, 3, '{id: "chest"}')
-    if rc != 1:
+    # --- A bare savegame id: the spelling the game's own records
+    #     carry ("Chest", no colon), stored as given.
+    rc, out, err = run_set(13, 64, 3,
+                           '{id: "Chest", CustomName: "bare"}')
+    if rc != 0 or out:
         raise AssertionError(
-            f"an id with no namespace: exit {rc}, want 1 ({err})")
-    if raw(0, 0) != before:
-        raise AssertionError("a refused write changed the record")
+            f"a bare savegame id: exit {rc} ({err})")
+    held = stored_at(iface, raw(0, 0), 13, 64, 3)
+    if len(held) != 1 or held[0]["doc"].get("id") != "Chest":
+        raise AssertionError(
+            f"the store holds "
+            f"{[m['doc'].get('id') for m in held]!r}, want 'Chest'")
     checks += 1
-    _log("an id with no namespace: exit 1, record untouched")
+    _log("set: a bare savegame id is stored as given")
+    expect_entity("a bare savegame id", 13, 64, 3)
+
+    # --- Documents mcme will not write: ids in neither spelling —
+    #     an empty name after the colon, and characters no savegame
+    #     id holds — so mcme refuses them and the record does not
+    #     move.
+    before = raw(0, 0)
+    for bad in ('{id: "minecraft:"}', '{id: "not an id"}'):
+        rc, out, err = run_set(12, 64, 3, bad)
+        if rc != 1:
+            raise AssertionError(
+                f"a malformed id: exit {rc}, want 1 ({err})")
+        if raw(0, 0) != before:
+            raise AssertionError("a refused write changed the record")
+    checks += 1
+    _log("a malformed id: exit 1 each, record untouched")
 
     # --- A chunk that holds no record at all gets one.
     if raw(2, 2) is not None:
