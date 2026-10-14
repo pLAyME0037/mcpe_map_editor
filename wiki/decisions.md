@@ -683,3 +683,16 @@ loading a world that holds both.
 the rule becomes write the spelling the game keeps, the census
 question returns with a real registry behind it, and mcme's
 earlier namespaced writes become a repair job.
+
+**Measured, same day.** The load test ran and nothing dropped.
+Three full chests — a control (`Chest`), one written
+`minecraft:chest`, one `chest` — loaded in the game (1.26.52.3),
+about five minutes played, store read back: all three documents
+survived as working containers with their items, and all three
+ids came back `Chest`. The game accepts either spelling on load
+and rewrites the id to its own spelling at the next save; its
+re-serialization added `BlockEntityVersion: 0` and dropped
+`isMovable` on every chest, the control included, so that touch-up
+is the game's format, not the id's fate. The reversal clause does
+not fire: the rule stands, and mcme's earlier namespaced writes
+need no repair — the game canonicalises them itself.

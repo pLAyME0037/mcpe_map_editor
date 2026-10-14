@@ -755,6 +755,11 @@ records carry — `"Chest"`, no colon — or the namespaced one —
 exit 1, and so is SNBT that does not parse or a root that is not a
 compound.
 
+The game takes either spelling on load — the document survives as a
+working container — and rewrites the id to its own spelling (`"Chest"`)
+at its next save (measured 2026-10-14; see the dev log). mcme stores
+what it is given; the game is the normaliser.
+
 The documents beside it in the record are untouched, byte for byte: the
 record is spliced, not re-encoded, so changing one chest cannot reorder
 the sign beside it. A chunk with no entity record at all gets one —

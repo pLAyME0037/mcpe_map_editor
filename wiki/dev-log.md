@@ -9,6 +9,60 @@ Status vocabulary:
 
 ---
 
+## 2026-10-14 — Load test: the game keeps the documents and rewrites the id to its own spelling
+
+### Built
+
+- Nothing; this entry is the experiment D16 closed on. A copy of
+  the D15 snapshot holds three full chests (27 lava-bucket stacks
+  each) side by side: a control the game itself wrote (`Chest`,
+  -994,18,79), one mcme wrote as `minecraft:chest` (-994,20,79)
+  and one as `chest` (-993,19,79) — the namespaced spelling
+  mcme's own writes used, and a wrong-case one that is neither
+  spelling's canonical form. Loaded in the game (1.26.52.3),
+  played about five minutes (Time +5,996 ticks), Save & Quit,
+  store read back.
+
+### Measured
+
+- Every document survived, and all three ids came back `Chest`.
+  The game accepts either spelling on load — nothing dropped, no
+  items lost — and rewrites the id to its own spelling at the
+  next save. The `minecraft:chest` chest demonstrably worked
+  in-game: its contents changed during the session (27 stacks
+  down to 4, the player interacting with it).
+- The re-serialization is the game's usual touch-up, not the
+  id's fate: it added `BlockEntityVersion: 0` and dropped
+  `isMovable` — on the control document mcme never touched, the
+  same as on the two it did. `Items`,
+  `pairlead`/`pairx`/`pairz` and the position carried unchanged,
+  and level.dat kept the name and spawn mcme wrote.
+- D16 does not reverse: nothing dropped, so there is no repair
+  job — mcme's namespaced writes load, work, and the game
+  canonicalises them itself. `put` keeps storing what it was
+  given; the game's save is the normaliser.
+
+### Method notes
+
+- Two earlier sessions went to the operator's live world instead
+  of the prepared copy — the world list shows both under the same
+  name. The store told them apart without guessing: in the
+  prepared world `level.dat` still held the prep write and
+  `Time`/`currentTick` never advanced, while the live world's db
+  and `level.dat` carried the session. A world that ticked says
+  so in level.dat; document reads alone cannot.
+- The load-test world survives at
+  `minecraftWorlds/mcme_D16_loadtest` with the post-load store in
+  place.
+
+### Next
+
+- None for D16 — the question it named is closed. The load-test
+  world and the operator-world strays from the two misdirected
+  sessions await disposal.
+
+---
+
 ## 2026-10-14 — The write side meets the game's spelling: `put` takes a bare savegame id
 
 ### Built
