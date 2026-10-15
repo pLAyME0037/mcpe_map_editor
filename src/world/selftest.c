@@ -2303,6 +2303,150 @@ static void test_subchunk_refusals(void)
 }
 
 /* ========================================================================
+ * The Data3D biome record: decode, and every refusal
+ * ======================================================================== */
+
+static void test_biome_record(void)
+{
+    printf("  biome record (Data3D: heightmap + 3D biomes)\n");
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) return;
+
+    /* --- Shorter than the heightmap every record starts with. */
+    {
+        uint8_t b[511];
+        memset(b, 0, sizeof b);
+        McmeBedrockBiomes m;
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+        CHECK(mcme_last_error()[0] != '\0');
+    }
+
+    /* --- The width-0 form: one id through the whole 4x4x4, at the
+       floor, then the game's 0xFF tail walked off a byte at a time
+       the way the reference walks it. The heightmap's little-endian
+       int16s come across signed. */
+    {
+        uint8_t b[512 + 5 + 15];
+        memset(b, 0, sizeof b);
+        b[0] = 0x34; b[1] = 0x12;          /* column 0:     4660 */
+        b[2] = 0x00; b[3] = 0x80;          /* column 1:   -32768 */
+        b[512] = 0x00;                     /* header: width 0    */
+        b[513] = 3;                        /* id 3, little-endian */
+        memset(b + 517, 0xff, 15);
+        McmeBedrockBiomes m;
+        CHECK(mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+        CHECK(m.heightmap[0] == 4660);
+        CHECK(m.heightmap[1] == -32768);
+        CHECK(m.count == 1);
+        CHECK(m.arrays[0].cy == -4);
+        bool all3 = true;
+        for (size_t i = 0; i < MCME_BEDROCK_BIOME_CELLS; ++i) {
+            if (m.arrays[0].cells[i] != 3) all3 = false;
+        }
+        CHECK(all3);
+    }
+
+    /* --- The packed form: the subchunk storage's own word layout at
+       width 2, palette (1, 6, 194), sampled to the 4x4x4 — the cells
+       whose storage slot is 4, 64 or 1024 hold the marked values,
+       every other cell the palette's first. */
+    {
+        static uint8_t b[512 + 1 + 1024 + 4 + 12];
+        memset(b, 0, sizeof b);
+        b[512] = 0x05;                     /* header: width 2, palette */
+        b[513 + 4 * 0 + 1] = 0x02;         /* word 0,  bits 8: value 2  */
+        b[513 + 4 * 4] = 0x01;             /* word 4,  bits 0: value 1  */
+        b[513 + 4 * 64] = 0x01;            /* word 64, bits 0: value 1  */
+        b[513 + 1024] = 3;                 /* palette length            */
+        b[513 + 1024 + 4] = 1;
+        b[513 + 1024 + 8] = 6;
+        b[513 + 1024 + 12] = (uint8_t)194;
+        McmeBedrockBiomes m;
+        CHECK(mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+        CHECK(m.count == 1);
+        CHECK(m.arrays[0].cy == -4);
+        CHECK(m.arrays[0].cells[0] == 1);    /* (x0, y0, z0)             */
+        CHECK(m.arrays[0].cells[1] == 6);    /* (x4, y0, z0)             */
+        CHECK(m.arrays[0].cells[4] == 6);    /* (x0, y0, z4)             */
+        CHECK(m.arrays[0].cells[16] == 194); /* (x0, y4, z0)             */
+        CHECK(m.arrays[0].cells[63] == 1);   /* (x12, y12, z12)          */
+    }
+
+    /* --- A width past the format's widest: header bits 33. */
+    {
+        uint8_t b[512 + 1];
+        memset(b, 0, sizeof b);
+        b[512] = (uint8_t)((33u << 1) | 1u);
+        McmeBedrockBiomes m;
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+        CHECK(mcme_last_error()[0] != '\0');
+    }
+
+    /* --- Packed words that stop before the 4096 values they promise. */
+    {
+        uint8_t b[512 + 1 + 100];
+        memset(b, 0, sizeof b);
+        b[512] = 0x03;                    /* width 1 wants 512 bytes */
+        McmeBedrockBiomes m;
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+    }
+
+    /* --- A width whose palette length reads zero. */
+    {
+        static uint8_t b[512 + 1 + 512 + 4];
+        memset(b, 0, sizeof b);
+        b[512] = 0x03;
+        McmeBedrockBiomes m;
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+    }
+
+    /* --- A cell index past the palette that follows it: width 2,
+       first value 3, palette of two. Refused, never clamped. */
+    {
+        static uint8_t b[512 + 1 + 1024 + 4 + 8];
+        memset(b, 0, sizeof b);
+        b[512] = 0x05;
+        b[513] = 0x03;                    /* word 0: value 3 */
+        b[513 + 1024] = 2;
+        b[513 + 1024 + 4] = 1;
+        b[513 + 1024 + 8] = 6;
+        McmeBedrockBiomes m;
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+    }
+
+    /* --- A 25th array: one world height is what a record may hold,
+       and the count is checked before the extra array's own bytes
+       are asked for. */
+    {
+        static uint8_t b[512 + 24 * 5 + 1];
+        memset(b, 0, sizeof b);
+        b[512 + 24 * 5] = 0x00;            /* one array too many */
+        McmeBedrockBiomes m;
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+    }
+
+    /* --- A record that is only the game's tail: it decodes and holds
+       no arrays — nothing to carry, nothing to count. */
+    {
+        uint8_t b[512 + 15];
+        memset(b, 0, 512);
+        memset(b + 512, 0xff, 15);
+        McmeBedrockBiomes m;
+        CHECK(mcme_bedrock_biome_decode(&m, arena, b, sizeof b, -4));
+        CHECK(m.count == 0);
+    }
+
+    mcme_arena_free(arena);
+}
+
+/* ========================================================================
  * Chunk inventory over the forged store
  * ======================================================================== */
 
@@ -4355,6 +4499,93 @@ static void check_tick(const McmeTag *list, size_t i, const char *name,
     CHECK(mcme_nbt_int_or(mcme_nbt_get(e, "z"), INT32_MIN) == z);
 }
 
+/* One fabricated Data3D record: bytes in, the chunk's own 9-byte key.
+   The fixture worlds ship none — a real store's copy holds 36,848 —
+   so D19's test writes them, as binary rather than SNBT because the
+   record is not NBT: a heightmap, then the arrays, then padding. */
+static bool put_biome(McmeLevelDb *db, int32_t cx, int32_t cz,
+                      const void *payload, size_t len)
+{
+    uint8_t key[9];
+    size_t klen = 0;
+    return mcme_bedrock_key_build(key, sizeof key, &klen, cx, cz, 0,
+                                  MCME_BEDROCK_TAG_BIOME_3D, false, 0)
+        && mcme_leveldb_put(db, key, klen, payload, len);
+}
+
+/* The section with this Y in the chunk's sections list, or NULL. */
+static McmeTag *java_section(const McmeTag *root, int8_t y)
+{
+    const McmeTag *secs = root == NULL ? NULL
+                                       : mcme_nbt_get(root, "sections");
+    if (secs == NULL || secs->type != MCME_TAG_List) return NULL;
+    for (size_t i = 0; i < secs->list.len; ++i) {
+        const McmeTag *s = &secs->list.items[i];
+        if (s->type != MCME_TAG_Compound) continue;
+        const McmeTag *yt = mcme_nbt_get(s, "Y");
+        if (yt != NULL && mcme_nbt_int_or(yt, 999) == y) {
+            return (McmeTag *)s;
+        }
+    }
+    return NULL;
+}
+
+/* The section's biomes container held to its content: the palette's
+   names in order, and the packed data — absent, as the format's
+   one-name shorthand, when the caller passes none. */
+static void check_biomes(const McmeTag *root, int8_t y,
+                         const char *const *names, size_t nnames,
+                         const int64_t *data, size_t ndata)
+{
+    McmeTag *sec = java_section(root, y);
+    CHECK_MSG(sec != NULL, "the chunk has no section at Y %d", (int)y);
+    if (sec == NULL) return;
+    const McmeTag *bio = mcme_nbt_get(sec, "biomes");
+    CHECK_MSG(bio != NULL, "the section at Y %d has no biomes", (int)y);
+    if (bio == NULL || bio->type != MCME_TAG_Compound) return;
+    const McmeTag *pal = mcme_nbt_get(bio, "palette");
+    if (pal == NULL || pal->type != MCME_TAG_List) {
+        CHECK_MSG(false, "the section at Y %d has no biome palette",
+                  (int)y);
+        return;
+    }
+    CHECK_MSG(pal->list.len == nnames,
+              "the section at Y %d spells a palette of %zu, want %zu",
+              (int)y, pal->list.len, nnames);
+    if (pal->list.len != nnames) return;
+    for (size_t i = 0; i < nnames; ++i) {
+        const McmeTag *s = &pal->list.items[i];
+        CHECK_MSG(s->type == MCME_TAG_String
+                  && strcmp(s->string.data, names[i]) == 0,
+                  "the section at Y %d palette[%zu] is %s, want %s",
+                  (int)y, i, s->type == MCME_TAG_String
+                             ? s->string.data : "(not a string)",
+                  names[i]);
+    }
+    const McmeTag *d = mcme_nbt_get(bio, "data");
+    if (ndata == 0) {
+        CHECK_MSG(d == NULL,
+                  "the section at Y %d packs data its one-name "
+                  "palette does not need", (int)y);
+        return;
+    }
+    if (d == NULL || d->type != MCME_TAG_Long_Array) {
+        CHECK_MSG(false, "the section at Y %d has no packed data",
+                  (int)y);
+        return;
+    }
+    CHECK_MSG(d->longs.len == ndata,
+              "the section at Y %d packs %zu longs, want %zu",
+              (int)y, d->longs.len, ndata);
+    if (d->longs.len != ndata) return;
+    for (size_t i = 0; i < ndata; ++i) {
+        CHECK_MSG(d->longs.data[i] == data[i],
+                  "the section at Y %d long %zu is %lld, want %lld",
+                  (int)y, i, (long long)d->longs.data[i],
+                  (long long)data[i]);
+    }
+}
+
 static void test_convert(void)
 {
     printf("  convert (bedrock -> java/1.20)\n");
@@ -4380,13 +4611,23 @@ static void test_convert(void)
     CHECK(mcme_fs_write(lvl, raw, raw_len));
     free(raw);
 
-    /* Four tick records, fabricated on the copy — the fixture ships
-       none: a scheduled record whose entries go through the same map
-       the palettes use and split Java's two lists by content (with
-       one entry missing its z, which must drop whole), a
-       random-tick record beside it, an orphan whose chunk holds no
-       subchunks (its entries count, never carry), and a payload
-       that is not NBT (the record counts once). */
+    /* Four tick records and three Data3D records, fabricated on the
+       copy — the fixture ships none of either. The ticks: a
+       scheduled record whose entries go through the same map the
+       palettes use and split Java's two lists by content (with one
+       entry missing its z, which must drop whole), a random-tick
+       record beside it, an orphan whose chunk holds no subchunks
+       (its entries count, never carry), and a payload that is not
+       NBT (the record counts once). The biome records: chunk (0,0)'s
+       covers six heights from the floor — the id-3 rename in the
+       single form, two strata with no subchunk to stand in (their
+       cells count, never carry), the uniform id 1 under them, a
+       mixed array whose third id the map does not know (the cell
+       holding it becomes the reference's plains fallback and
+       counts), and the uniform id 6 on top — ending in the game's
+       0xFF tail; an
+       orphan's two arrays (counted, never carried); and a payload
+       that is not a record (it counts once). */
     {
         McmeArena *ta = mcme_arena_new();
         McmeLevelDb *tdb = NULL;
@@ -4424,6 +4665,44 @@ static void test_convert(void)
                                          false, 0));
             CHECK(mcme_leveldb_put(tdb, gkey, gklen,
                                    "not NBT, only bytes", 19));
+
+            /* The Data3D records: a zeroed heightmap (the fixture
+               column measures nothing; the map is carried but not
+               written yet), then the arrays byte by byte. */
+            static uint8_t bp[512 + 25 + 1041 + 5 + 15];
+            memset(bp, 0, sizeof bp);
+            size_t q = 512;
+            bp[q] = 0x00; bp[q + 1] = 3; q += 5;   /* cy -4: id 3   */
+            bp[q] = 0x00; bp[q + 1] = 1; q += 5;   /* cy -3: id 1   */
+            bp[q] = 0x00; bp[q + 1] = 1; q += 5;   /* cy -2: id 1   */
+            bp[q] = 0x00; bp[q + 1] = 1; q += 5;   /* cy -1: id 1   */
+            bp[q] = 0x05;                          /* cy  0: width 2 */
+            size_t w = q + 1;
+            bp[w + 4 * 0 + 1] = 0x02;   /* word 0,  bits 8: -> id 194 */
+            bp[w + 4 * 4] = 0x01;       /* word 4,  bits 0: -> id 6   */
+            bp[w + 4 * 64] = 0x01;      /* word 64, bits 0: -> id 6   */
+            size_t pl = w + 1024;
+            bp[pl] = 3;                 /* palette: 1, 6, 194         */
+            bp[pl + 4] = 1;
+            bp[pl + 8] = 6;
+            bp[pl + 12] = (uint8_t)194;
+            q = pl + 16;
+            bp[q] = 0x00; bp[q + 1] = 6; q += 5;   /* cy  1: id 6   */
+            memset(bp + q, 0xff, 15); q += 15;     /* the game's tail */
+            CHECK(put_biome(tdb, 0, 0, bp, q));
+
+            /* The orphan: two arrays for a chunk with no subchunks.
+               */
+            static uint8_t op[512 + 10];
+            memset(op, 0, sizeof op);
+            op[512] = 0x00; op[513] = 1;
+            op[517] = 0x00; op[518] = 6;
+            CHECK(put_biome(tdb, 5, 5, op, sizeof op));
+
+            /* A payload that is not a record: 24 bytes, no
+               heightmap to even begin with. */
+            CHECK(put_biome(tdb, 6, 6, "not a record, only bytes",
+                            sizeof "not a record, only bytes" - 1));
             mcme_leveldb_close(tdb);
         }
         mcme_arena_free(ta);
@@ -4464,6 +4743,16 @@ static void test_convert(void)
        record counts once). */
     CHECK(rep.ticks_carried == 3);
     CHECK(rep.ticks == 4);
+    /* The fabricated biome records, counted their own way: four
+       sections' worth of named cells (4 × 64) minus the one cell
+       that took the plains fallback — 255 — and the drops: the two
+       strata with no section to stand in (128), the orphan's
+       arrays (128), the record that is not a record (1, once), and
+       the fallback cell itself (1). */
+    CHECK_MSG(rep.biomes_carried == 255,
+              "biomes_carried is %zu, want 255", rep.biomes_carried);
+    CHECK_MSG(rep.biomes == 258, "biomes is %zu, want 258",
+              rep.biomes);
 
     /* The output is a whole world: the scaffold, and the probe's
        verdict on it. */
@@ -4560,6 +4849,32 @@ static void test_convert(void)
             check_tick(ft, 0, "minecraft:water", 0, 5, 65, 5);
             check_tick(bt, 0, "minecraft:red_sand", -5, 6, 64, 6);
             check_tick(bt, 1, "minecraft:magma_block", 20, 7, 64, 7);
+
+            /* The biomes, section by section: id 3's rename in the
+               one-name shorthand at the furnace floor, the uniform
+               plain beside the empty strata, the mixed array
+               packed (swamps at cells 1 and 4, the fallback cell
+               16 reading plains like every other), the uniform
+               swamp on top, and — the shape the reference writes —
+               no key at all on the ground section, whose Y the
+               fabricated record's range never reaches. */
+            static const char *const hills[] =
+                {"minecraft:windswept_hills"};
+            check_biomes(root, -4, hills, 1, NULL, 0);
+            static const char *const plains[] =
+                {"minecraft:plains"};
+            check_biomes(root, -1, plains, 1, NULL, 0);
+            static const char *const mixed[] =
+                {"minecraft:plains", "minecraft:swamp"};
+            int64_t mixed_long[] = {18};   /* bits 1 and 4 set      */
+            check_biomes(root, 0, mixed, 2, mixed_long, 1);
+            static const char *const swamp[] =
+                {"minecraft:swamp"};
+            check_biomes(root, 1, swamp, 1, NULL, 0);
+            McmeTag *ground = java_section(root, 4);
+            CHECK(ground != NULL);
+            CHECK(ground != NULL
+                  && mcme_nbt_get(ground, "biomes") == NULL);
         }
         McmeNbtDoc chunk2;
         McmeTag *root2 = convert_chunk_root(arena, out, 1, -2, &chunk2);
@@ -4574,6 +4889,13 @@ static void test_convert(void)
                   && ft2->list.len == 0);
             CHECK(bt2 != NULL && bt2->type == MCME_TAG_List
                   && bt2->list.len == 0);
+            /* And the chunk no biome record touched keeps no
+               invented container — the reference's own shape for
+               a store that held no biome data here. */
+            McmeTag *s2 = java_section(root2, 0);
+            CHECK(s2 != NULL);
+            CHECK(s2 != NULL
+                  && mcme_nbt_get(s2, "biomes") == NULL);
         }
         mcme_arena_free(arena);
     }
@@ -5269,6 +5591,7 @@ int mcme_test_world(void)
     test_bedrock_keys();
     test_bedrock_subchunks();
     test_subchunk_refusals();
+    test_biome_record();
     test_bedrock_inventory();
     test_bedrock_write();
     test_bedrock_column();

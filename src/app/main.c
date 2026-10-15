@@ -2889,6 +2889,7 @@ static void print_convert_drops(const McmeConvertReport *r)
                                "subchunks mcme cannot read" },
         { r->water_positions,  "water position",
                                "water positions" },
+        { r->biomes,           "biome cell",     "biome cells" },
         { r->block_entities,   "block entity",   "block entities" },
         { r->items,            "item stack",     "item stacks" },
         { r->ticks,            "tick entry",     "tick entries" },
@@ -3000,6 +3001,10 @@ static int cmd_convert(int argc, char **argv)
                                 (double)rep.block_entities_carried);
         cJSON_AddNumberToObject(root, "ticks_carried",
                                 (double)rep.ticks_carried);
+        cJSON_AddNumberToObject(root, "biomes_carried",
+                                (double)rep.biomes_carried);
+        cJSON_AddNumberToObject(skipped, "biomes",
+                                (double)rep.biomes);
         cJSON_AddNumberToObject(skipped, "block_entities",
                                 (double)rep.block_entities);
         cJSON_AddNumberToObject(skipped, "chunk_data",
@@ -3025,6 +3030,9 @@ static int cmd_convert(int argc, char **argv)
         }
         if (rep.ticks_carried > 0) {
             printf(" — %zu tick entries carried", rep.ticks_carried);
+        }
+        if (rep.biomes_carried > 0) {
+            printf(" — %zu biome cells carried", rep.biomes_carried);
         }
         putchar('\n');
         print_convert_drops(&rep);

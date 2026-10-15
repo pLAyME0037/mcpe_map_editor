@@ -848,3 +848,103 @@ audit chunk-locality.
 a tick list mcme wrote — a field shape or a `t` the game rejects —
 then the spec narrows to what the game takes and ref_convert's mirror
 narrows with it.
+
+## D19 — Convert carries the 3D biome cells, each name the reference's own answer
+
+Before D19 every Data3D record — tag `0x2b`, 512 heightmap bytes
+followed by the per-stratum biome arrays, 36,848 of them in the
+measured store — was a `chunk_data` skip: the key counted once and
+every cell behind it vanished. 21,799,232 cells, 54 distinct ids, and
+a converted world every biome reader would answer plains across
+terrain that never said so.
+
+**Read once, in the game's own words.** What follows the heightmap
+is a run of arrays, one per stratum from the world floor (−4 in the
+overworld — measured, the arrays run floor to top stored stratum
+without a gap). Each array's first byte is a signed header: shifted
+right one it is the word width (the low bit is amulet's palette
+flag — ignored exactly as amulet ignores it), and a byte at or over
+0x80 (observed 0xFF) is padding, walked off a byte at a time, which
+is the reference's skip too. Width 0 is one u32 id for all 4,096
+positions; widths 1..16 are Tomcc's packed words — 4,096 u32
+little-endian values, LSB-first — then a u32 palette length and i32
+ids. Cells are read the way both decoders read them: every fourth
+block, storage index `(x*4)<<8 | (z*4)<<4 | (y*4)`, handed back in
+Java's container order `y*16 + z*4 + x`. Widths over 16, 24 arrays
+or more, an empty palette, an index past the palette, a truncated
+payload — the whole record refuses and counts once into `biomes`;
+half a record is not a count. Measured widths: 0..3.
+
+**The map answers an id the way the reference answers it.** 86 rows
+in `translate.c` between the generated-map markers, sorted by id
+(the lookup binary searches), each row's Java name produced by the
+reference's own two legs — bedrock `unpack`, `to_universal`,
+`from_universal` — the same pipeline D17 named blocks by. An id the
+table does not hold (measured: 193, 194, 195 — 75,424 cells) lands
+on `minecraft:plains`, the reference's own fallback and its own
+warning, and the cell counts: `biomes_carried` and `biomes` are
+per-cell and mutually exclusive.
+
+**The section speaks only where the store spoke.** An array at the
+stratum puts a `biomes` container on that section: palette the
+distinct resolved names sorted by name, `data` only when there is
+more than one, bits = ceil(log2(palette)) at least 1, floor(64/bits)
+values to a long, none spanning two. No array at the stratum puts
+no key at all: the game reads absent as plains — the reference's
+own answer — so D15's placeholder container is deleted; it said the
+same thing in more bytes. The section set stays mcme's pinned
+non-air one, which costs the cells at pure-air strata (measured:
+27,264, 0.13%): counted, nothing written.
+
+**Counts, never failures (D12).** `biomes_carried` at the top level
+for cells the map named; `skipped.biomes` for what does not arrive —
+fallback cells, cells with no section, one per refused record, an
+orphan record's cells (a record whose chunk holds no subchunks
+counts instead of carries — D15's orphan rule extended; LevelDB
+keys are unique, so a chunk's record is one-to-one with its key).
+The drops line grows `biome cells`; `chunk_data` loses the `0x2b`
+records wholesale (measured −36,848), the 0x2d-era payload records
+still counted there.
+
+**Pinned on the reference itself.** The reference reads this record
+— amulet's `_decode_height_3d_biomes` and `_decode_packed_array` —
+so ref_convert mirrors nothing: it decodes the fabricated records
+with the reference's own decoder, runs each id through the live
+translation pipeline, and lays the cells out in Java's container
+order. All 256 fabricated cells are compared positionally against
+mcme's containers (content is the reference's; palette order is
+mcme's), the fabricated mixed array marking one cell on each axis
+so a sampling slip in either decoder shows as a wrong cell. The
+table re-pins every run — markers present, ids sorted, the id set
+exactly the ones Bedrock's tables name, each row's answer the live
+reference's — and both reports stay exact (255/258 on the fixture;
+the entities fixture 0/0).
+
+**Rejected.**
+- *Refusing cells the map does not know*: the reference carries
+  them as plains, so refusing would drop what the reference itself
+  converts — the count is mcme's half of the same admission.
+- *A sampling other than every fourth block*: the game's storage
+  and the reference's decode both step stride 4; any other sample
+  is a different biome than either shows.
+- *Extending the packed form past 16 bits, or a second packing
+  form*: both decoders cap at the signed header's width and the
+  measured world tops out at 3 — a wider spec is unmeasured
+  invention.
+- *Keeping the placeholder so every section carries a key*: two
+  spellings of one fact (plains), and the absent key is the one
+  the game already treats as the default.
+
+**Cost accepted.** 75,424 cells reach plains — the reference's own
+fallback for three ids this bank has never heard of; 27,264 cells
+count instead of carry, standing where mcme writes no section; the
+heightmap half rides decoded-past and uncounted — it is not a skip,
+it is the heightmap drop's cargo; and the palette's internal order
+is mcme's own, name-sorted, because the mirror pins content and a
+sorted palette is the one order nothing downstream can argue with.
+
+**Reverses if:** a load test of a converted world shows Java
+refusing a biome container mcme wrote — a bits count, a palette
+placement, or a key where the game expects none — then the shape
+narrows to what the game takes and ref_convert's mirror narrows
+with it.

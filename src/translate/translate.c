@@ -620,3 +620,128 @@ McmeTag *mcme_translate_block(McmeArena *arena, const McmeTag *entry)
     }
     return out;
 }
+
+/* ---- BEGIN GENERATED BIOME MAP ----
+ * Biome ids to Java names, one row per id Bedrock registers at the
+ * versions translate.h documents (Bedrock 1.20.80 -> Java 1.20.0).
+ * Generated against PyMCTranslate's own tables: the bedrock int_map,
+ * each name through to_universal and the java from_universal — the same
+ * pipeline ref_convert re-pins on every battery run, one check per row.
+ * Several ids share one Java name (the mutated variants merge: 2, 17
+ * and 130 are all desert), which costs nothing here — the row is the
+ * id's answer, not a partition. An id the table does not hold is one
+ * Bedrock names and this bank has never heard of: convert writes the
+ * reference's own fallback (plains) and counts the cell (D19).
+ * Sorted by id; the lookup binary searches. */
+struct BiomeRow {
+    int32_t    from;
+    const char *to;
+};
+
+static const struct BiomeRow kBiomeMap[] = {
+    {0, "minecraft:ocean"},
+    {1, "minecraft:plains"},
+    {2, "minecraft:desert"},
+    {3, "minecraft:windswept_hills"},
+    {4, "minecraft:forest"},
+    {5, "minecraft:taiga"},
+    {6, "minecraft:swamp"},
+    {7, "minecraft:river"},
+    {8, "minecraft:nether_wastes"},
+    {9, "minecraft:the_end"},
+    {10, "minecraft:frozen_ocean"},
+    {11, "minecraft:frozen_river"},
+    {12, "minecraft:snowy_plains"},
+    {13, "minecraft:snowy_plains"},
+    {14, "minecraft:mushroom_fields"},
+    {15, "minecraft:mushroom_fields"},
+    {16, "minecraft:beach"},
+    {17, "minecraft:desert"},
+    {18, "minecraft:forest"},
+    {19, "minecraft:taiga"},
+    {20, "minecraft:windswept_hills"},
+    {21, "minecraft:jungle"},
+    {22, "minecraft:jungle"},
+    {23, "minecraft:sparse_jungle"},
+    {24, "minecraft:deep_ocean"},
+    {25, "minecraft:stony_shore"},
+    {26, "minecraft:snowy_beach"},
+    {27, "minecraft:birch_forest"},
+    {28, "minecraft:birch_forest"},
+    {29, "minecraft:dark_forest"},
+    {30, "minecraft:snowy_taiga"},
+    {31, "minecraft:snowy_taiga"},
+    {32, "minecraft:old_growth_pine_taiga"},
+    {33, "minecraft:old_growth_pine_taiga"},
+    {34, "minecraft:windswept_forest"},
+    {35, "minecraft:savanna"},
+    {36, "minecraft:savanna_plateau"},
+    {37, "minecraft:badlands"},
+    {38, "minecraft:wooded_badlands"},
+    {39, "minecraft:badlands"},
+    {40, "minecraft:warm_ocean"},
+    {41, "minecraft:warm_ocean"},
+    {42, "minecraft:lukewarm_ocean"},
+    {43, "minecraft:deep_lukewarm_ocean"},
+    {44, "minecraft:cold_ocean"},
+    {45, "minecraft:deep_cold_ocean"},
+    {46, "minecraft:frozen_ocean"},
+    {47, "minecraft:deep_frozen_ocean"},
+    {48, "minecraft:bamboo_jungle"},
+    {49, "minecraft:bamboo_jungle"},
+    {129, "minecraft:sunflower_plains"},
+    {130, "minecraft:desert"},
+    {131, "minecraft:windswept_gravelly_hills"},
+    {132, "minecraft:flower_forest"},
+    {133, "minecraft:taiga"},
+    {134, "minecraft:swamp"},
+    {140, "minecraft:ice_spikes"},
+    {149, "minecraft:jungle"},
+    {151, "minecraft:sparse_jungle"},
+    {155, "minecraft:old_growth_birch_forest"},
+    {156, "minecraft:old_growth_birch_forest"},
+    {157, "minecraft:dark_forest"},
+    {158, "minecraft:snowy_taiga"},
+    {160, "minecraft:old_growth_spruce_taiga"},
+    {161, "minecraft:old_growth_spruce_taiga"},
+    {162, "minecraft:windswept_gravelly_hills"},
+    {163, "minecraft:windswept_savanna"},
+    {164, "minecraft:windswept_savanna"},
+    {165, "minecraft:eroded_badlands"},
+    {166, "minecraft:wooded_badlands"},
+    {167, "minecraft:badlands"},
+    {178, "minecraft:soul_sand_valley"},
+    {179, "minecraft:crimson_forest"},
+    {180, "minecraft:warped_forest"},
+    {181, "minecraft:basalt_deltas"},
+    {182, "minecraft:jagged_peaks"},
+    {183, "minecraft:frozen_peaks"},
+    {184, "minecraft:snowy_slopes"},
+    {185, "minecraft:grove"},
+    {186, "minecraft:meadow"},
+    {187, "minecraft:lush_caves"},
+    {188, "minecraft:dripstone_caves"},
+    {189, "minecraft:stony_peaks"},
+    {190, "minecraft:deep_dark"},
+    {191, "minecraft:mangrove_swamp"},
+    {192, "minecraft:cherry_grove"},
+};
+/* ---- END GENERATED BIOME MAP ---- */
+
+/* The biome map's lookup: the row with this id, or false when the
+   table does not name it. The name is a literal the table owns — no
+   arena, no copy, no lifetime question. */
+bool mcme_translate_biome(int32_t id, McmeStr *out)
+{
+    size_t n = sizeof kBiomeMap / sizeof kBiomeMap[0];
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (kBiomeMap[mid].from < id) lo = mid + 1;
+        else                          hi = mid;
+    }
+    if (lo >= n || kBiomeMap[lo].from != id) return false;
+    out->data = (char *)kBiomeMap[lo].to;
+    out->len  = strlen(kBiomeMap[lo].to);
+    return true;
+}

@@ -65,4 +65,19 @@
  */
 McmeTag *mcme_translate_block(McmeArena *arena, const McmeTag *entry);
 
+/*
+ * The Java spelling of a Bedrock biome id, from the table between the
+ * GENERATED BIOME MAP markers: the reference's own answer for the id
+ * at the versions above, enumerated from its tables, re-pinned row by
+ * row by tools/ref_convert.py.
+ *
+ * `out` receives a string the table owns — a literal, no arena, valid
+ * as long as the table does. Returns false for an id the table does
+ * not name: Bedrock ids past what this bank registers. The caller
+ * decides what an unnamed id becomes; the reference answers plains,
+ * and the count of cells that took that fallback belongs in the
+ * report (decisions.md#D19).
+ */
+bool mcme_translate_biome(int32_t id, McmeStr *out);
+
 #endif /* MCME_TRANSLATE_H */

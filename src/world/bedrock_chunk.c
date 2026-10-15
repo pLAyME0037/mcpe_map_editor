@@ -531,3 +531,150 @@ bool mcme_bedrock_subchunk_set(McmeBedrockSubchunk *sc,
     }
     return true;
 }
+
+/* --- Data3D biome record (tag 0x2b) -------------------------------------
+ *
+ * Format contract in mcme/bedrock_chunk.h. The packed half is the same
+ * word layout the subchunk layers use — little-endian 32-bit words,
+ * floor(32/bits) values from the low bit up — so only the sampling is
+ * new: cell (x, y, z) of the 4x4x4 reads block (4x, 4y, 4z) of the
+ * 16x16x16 storage, in the storage's XZY order, and lands in Java's
+ * container order x + z*4 + y*16.
+ */
+
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+bool mcme_bedrock_biome_decode(McmeBedrockBiomes *out, McmeArena *arena,
+                               const void *data, size_t size, int8_t floor_cy)
+{
+    if (!out || !arena || (!data && size > 0)) {
+        mcme_set_error("biome record: null argument");
+        return false;
+    }
+    memset(out, 0, sizeof *out);
+
+    const uint8_t *p = (const uint8_t *)data;
+
+    if (size < 512) {
+        mcme_set_error("biome record: %zu bytes, shorter than the 512-byte "
+                       "heightmap every one starts with", size);
+        return false;
+    }
+    for (size_t i = 0; i < 256; ++i) {
+        uint32_t u = (uint32_t)p[i * 2] | ((uint32_t)p[i * 2 + 1] << 8);
+        out->heightmap[i] = (int16_t)(u & 0x8000u ? (int32_t)u - 65536
+                                                   : (int32_t)u);
+    }
+
+    out->arrays = mcme_arena_alloc(arena, MCME_BEDROCK_BIOME_MAX_ARRAYS
+                                           * sizeof *out->arrays);
+    if (!out->arrays) return false;
+    memset(out->arrays, 0, MCME_BEDROCK_BIOME_MAX_ARRAYS
+                               * sizeof *out->arrays);
+
+    size_t pos = 512;
+    while (pos < size) {
+        uint8_t header = p[pos];
+
+        if (header & 0x80u) {
+            /* Signed, this byte is negative: the game's end padding.
+               The reference skips it a byte at a time and so loses
+               nothing; do the same. */
+            ++pos;
+            continue;
+        }
+        unsigned bits = header >> 1;
+        ++pos;
+
+        if (bits > 16) {
+            mcme_set_error("biome record: array %zu stores %u bits per cell; "
+                           "valid widths are 0 (one id) and 1..16",
+                           out->count, bits);
+            return false;
+        }
+        if (out->count >= MCME_BEDROCK_BIOME_MAX_ARRAYS) {
+            mcme_set_error("biome record: more arrays than one world height "
+                           "holds above floor %d", (int)floor_cy);
+            return false;
+        }
+
+        struct McmeBedrockBiomeArray *arr = &out->arrays[out->count];
+
+        if (bits == 0) {
+            if (pos + 4 > size) {
+                mcme_set_error("biome record: truncated: the single cell id "
+                               "of array %zu needs 4 bytes at offset %zu of "
+                               "%zu", out->count, pos, size);
+                return false;
+            }
+            uint32_t v = le32(p + pos);
+            pos += 4;
+            for (size_t j = 0; j < MCME_BEDROCK_BIOME_CELLS; ++j) {
+                arr->cells[j] = v;
+            }
+        } else {
+            size_t per_word = 32u / bits;
+            size_t words = (MCME_BEDROCK_SUBCHUNK_BLOCKS + per_word - 1)
+                           / per_word;
+            if (pos + words * 4 > size) {
+                mcme_set_error("biome record: truncated: the %u-bit cells of "
+                               "array %zu need %zu bytes at offset %zu of %zu",
+                               bits, out->count, words * 4, pos, size);
+                return false;
+            }
+            const uint8_t *w = p + pos;
+            pos += words * 4;
+
+            if (pos + 4 > size) {
+                mcme_set_error("biome record: truncated: the palette length "
+                               "of array %zu needs 4 bytes at offset %zu of "
+                               "%zu", out->count, pos, size);
+                return false;
+            }
+            uint32_t plen = le32(p + pos);
+            pos += 4;
+            if (plen == 0) {
+                mcme_set_error("biome record: array %zu stores %u-bit cells "
+                               "with an empty palette", out->count, bits);
+                return false;
+            }
+            if (plen > (size - pos) / 4) {
+                mcme_set_error("biome record: truncated: the palette of array "
+                               "%zu claims %u ids past offset %zu of %zu",
+                               out->count, plen, pos, size);
+                return false;
+            }
+
+            uint32_t mask = (1u << bits) - 1u;
+            for (size_t cyi = 0; cyi < 4; ++cyi) {
+                for (size_t zi = 0; zi < 4; ++zi) {
+                    for (size_t xi = 0; xi < 4; ++xi) {
+                        size_t u = ((size_t)(xi * 4) << 8)
+                                 | ((size_t)(zi * 4) << 4)
+                                 | (size_t)(cyi * 4);
+                        size_t word = u / per_word;
+                        uint32_t packed = (le32(w + word * 4)
+                                           >> ((u % per_word) * bits)) & mask;
+                        if (packed >= plen) {
+                            mcme_set_error("biome record: array %zu holds cell "
+                                           "index %u past its %u-id palette",
+                                           out->count, packed, plen);
+                            return false;
+                        }
+                        uint32_t id = le32(p + pos + (size_t)packed * 4);
+                        arr->cells[cyi * 16 + zi * 4 + xi] = id;
+                    }
+                }
+            }
+            pos += (size_t)plen * 4;
+        }
+
+        arr->cy = (int8_t)(floor_cy + (int32_t)out->count);
+        ++out->count;
+    }
+    return true;
+}

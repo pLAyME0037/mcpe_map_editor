@@ -20,9 +20,10 @@
  * treats as marking a chunk (tags 0x2c and 0x76) and adds 0x2f, which is the
  * same subchunk prefix under a later version of the game — leaving it out
  * would report a modern world as having no chunks at all. Tags that appear on
- * chunk data without identifying a chunk, such as 0x2d (biome/heightmap) and
- * 0x36 (chunk version), are recognised by name but are not chunk markers:
- * counting them would count some chunks twice and others not at all.
+ * chunk data without identifying a chunk, such as 0x2b (Data3D), 0x2d (the
+ * older biome/heightmap spelling) and 0x36 (chunk version), are recognised by
+ * name but are not chunk markers: counting them would count some chunks twice
+ * and others not at all.
  */
 
 #ifndef MCME_BEDROCK_KEYS_H
@@ -58,8 +59,18 @@
 /* Tags that belong to a chunk without identifying one. Reported by name so a
    listing can say what a key holds, but never counted as a chunk: a chunk with
    a biome record and no subchunk is still one chunk, and counting the biome
-   record as a second would double it. */
-#define MCME_BEDROCK_TAG_BIOME 0x2du /* biome / heightmap, 768 bytes */
+   record as a second would double it.
+
+   0x2b (Data3D) is the record the game writes now: the 512-byte heightmap
+   plus one biome array per subchunk height, measured on one real store as
+   36,848 overworld records of 568 to 21,040 bytes each — the arrays run
+   from the world floor up to each chunk's own top, so sizes track terrain.
+   Convert carries its biome half into the Java sections since D19. 0x2d is
+   the older 768-byte spelling (heightmap plus a flat 16x16 id table) of
+   worlds this store does not hold; its keys still parse and still count as
+   chunk data, not carried. */
+#define MCME_BEDROCK_TAG_BIOME_3D 0x2bu /* Data3D: heightmap + 3D biomes  */
+#define MCME_BEDROCK_TAG_BIOME 0x2du /* the older 768-byte 2D spelling    */
 
 typedef struct {
     bool    is_chunk;        /* tag marks a chunk; x/z/dimension are valid */
@@ -107,7 +118,8 @@ bool mcme_bedrock_key_build(uint8_t *out, size_t cap, size_t *len,
 int32_t mcme_bedrock_chunk_of(int32_t block);
 int32_t mcme_bedrock_offset_in(int32_t block);
 
-/* Short name for a tag byte: "subchunk", "subchunk-old", "version", "biome".
+/* Short name for a tag byte: "subchunk", "subchunk-old", "version", "biome",
+   "biome3d", "block-entity".
    Returns NULL for a tag this build does not know, which callers should print
    as a hex value rather than hide — an unrecognised tag in a store is exactly
    what someone debugging a version mismatch needs to see. */

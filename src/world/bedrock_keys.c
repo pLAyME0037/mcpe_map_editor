@@ -116,6 +116,7 @@ const char *mcme_bedrock_tag_name(uint8_t tag)
     case MCME_BEDROCK_TAG_SUBCHUNK:     return "subchunk";
     case MCME_BEDROCK_TAG_CHUNK_VERSION: return "version";
     case MCME_BEDROCK_TAG_BIOME:        return "biome";
+    case MCME_BEDROCK_TAG_BIOME_3D:     return "biome3d";
     case MCME_BEDROCK_TAG_BLOCK_ENTITY: return "block-entity";
     default:                            return NULL;
     }

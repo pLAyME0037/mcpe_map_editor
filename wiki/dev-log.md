@@ -9,6 +9,100 @@ Status vocabulary:
 
 ---
 
+## 2026-10-15 — The biome carry: 21,696,544 cells, 102,688 counted instead
+
+### Built
+
+- Convert stops counting Data3D records (`0x2b`) as `chunk_data`.
+  The scan collects them as `BiomeRef`s holding the chunk's full
+  stored key beside the others; the run pairs each chunk with its
+  record (LevelDB keys are unique — one record per chunk), and a
+  record whose chunk holds no subchunks counts after the loop,
+  cells and all — D15's orphan rule, extended. Decode reads past
+  the 512-byte heightmap to the arrays from the world floor (−4):
+  signed header shifted one (low bit amulet's palette flag,
+  ignored), the game's ≥0x80 tail walked byte-wise, width 0 → one
+  u32 id, widths 1..16 → Tomcc packed words + i32 palette, cells
+  sampled every fourth block into Java's `y*16+z*4+x` order.
+  Refusals (width >16, 24+ arrays, empty palette, index past
+  palette, truncated payload) drop the record whole, once, into
+  `biomes`. The dump name for the tag is `biome3d` (the 0x2d-era
+  tag keeps `biome`).
+- The map: 86 rows in translate.c between
+  `---- BEGIN/END GENERATED BIOME MAP ----`, ids sorted (the
+  lookup binary searches), each row's Java name the reference's
+  own two-leg answer (bedrock unpack → universal → java) — D17's
+  pattern pointed at ids. An id the table does not hold —
+  measured, 193/194/195 — lands on plains, the reference's own
+  fallback with its warning, and the cell counts:
+  `biomes_carried` and `biomes` are per-cell, exclusive.
+- Shape: an array at the stratum → a `biomes` container on that
+  section, palette the distinct resolved names sorted by name,
+  `data` only past one name, bits ceil(log2) at least 1,
+  floor(64/bits) values to a long. No array → no key: the game
+  reads absent as plains, which is exactly the reference's
+  answer, so D15's placeholder container is deleted. The section
+  set stays mcme's pinned non-air one.
+- Counts (D12): root `biomes_carried`; `skipped.biomes` for
+  fallback cells, cells with no section, one per refused record,
+  an orphan's cells; the drops line grows `biome cells`, the JSON
+  grows `biomes_carried` and `skipped.biomes`, the carried
+  sentence reports the total. `chunk_data` loses the `0x2b`
+  records wholesale.
+
+### Measured
+
+- Census of the same store: 36,848 overworld records,
+  568..21,040 bytes, arrays −4..top contiguous; 21,799,232 cells;
+  54 distinct ids — 51 the map names, 3 it does not → 75,424
+  cells on the fallback; widths 0..3; 27,264 cells (0.13%) sit at
+  strata with no stored subchunk.
+- Real world, `--json convert` to java/1.20 (release): rc=0, the
+  same 36,849 chunks / 340,599 subchunks / 1,395,093,504 blocks —
+  **`biomes_carried` 21,696,544, `skipped.biomes` 102,688**, and
+  21,696,544 + 102,688 = 21,799,232 = the census's cells exactly
+  (102,688 = 75,424 fallback + 27,264 sectionless; no refused
+  record, no orphan in the real store). `chunk_data` 217,817 →
+  180,969, exactly −36,848. Every other count byte-identical to
+  D18's run. The ASan run reports the same JSON (1m55s release vs
+  7m49s under the sanitizers — the sanitizer, not the biome work).
+- Gates: 5 suites PASS under rebuild.sh, nob, and
+  `rebuild.sh release`; battery 11/11 rc=0, ref_convert 10
+  checks; `tests/` clean.
+
+### Method notes
+
+- The mirror needed no reimplementation: amulet decodes `0x2b`
+  itself (`_decode_height_3d_biomes`, `_decode_packed_array`), so
+  ref_convert decodes with the reference's own decoder, runs each
+  id through the live PyMCTranslate pipeline, and lays the cells
+  out in Java's container order — all 256 fabricated cells
+  compared positionally against mcme's containers (palette order
+  is mcme's; content is not). The fabricated mixed array marks
+  one cell on the x, z and y axes so a sampling slip in either
+  decoder shows as a wrong cell, and its id-194 cell fires the
+  reference's `Reverting to plains` warning beside mcme's own
+  count of the same cell.
+- The table re-pins each battery run: markers present, ids
+  sorted, the id set equal to the ones the Bedrock tables name
+  (any other id falls back on both sides), every row's answer
+  the live reference's — 86 rows.
+- The heightmap half rides decoded-past and uncounted: it is not
+  a skip, it is the heightmap drop's cargo (next).
+- The fixture ships no `0x2b`, so both tools fabricate the same
+  three records: six strata from the floor (the id-3 rename,
+  two strata with no subchunks beneath them, a uniform id 1, a
+  width-2 mixed palette with the marked cells, a uniform id 6,
+  15 bytes of 0xFF), an orphan of two arrays, a junk payload.
+  The report pins 255 carried / 258 counted; the selftest's
+  decoder units cover every refusal on their own.
+
+### Next
+
+- Heightmaps: the record's other half, already read past — then
+  other dimensions, non-container block entities, entities,
+  legacy v1 palettes.
+
 ## 2026-10-15 — The tick carry: 74,361 scheduled updates, none dropped
 
 ### Built

@@ -41,6 +41,12 @@ enum {
 static const char kAir[]   = "minecraft:air";
 static const char kPlains[] = "minecraft:plains";
 
+/* The overworld's floor is y -64: subchunks run from -4 up, and the
+   Data3D record's biome arrays count from there. The record carries
+   no floor of its own — the dimension gives it one — and convert
+   walks the overworld, so this is the floor every decode here uses. */
+static const int8_t kBedrockFloorCy = -4;
+
 static void refuse(McmeWriteRefusal *r, McmeWriteRefusal v)
 {
     if (r != NULL) *r = v;
@@ -137,9 +143,16 @@ typedef struct {
 } TickRef;                   /* a chunk's tick record               */
 
 typedef struct {
+    int32_t cx, cz;
+    uint8_t key[14];      /* the key exactly as stored, for the get */
+    uint8_t key_len;
+} BiomeRef;                 /* a chunk's Data3D record               */
+
+typedef struct {
     SubRef            *subs;   /* stb array */
     BeRef             *bes;    /* stb array */
     TickRef           *ticks;  /* stb array */
+    BiomeRef          *biomes; /* stb array */
     McmeConvertReport *rep;
 } Scan;
 
@@ -187,6 +200,21 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
         arrpush(s->ticks, t);
         return true;
     }
+    if (k.tag == MCME_BEDROCK_TAG_BIOME_3D) {
+        /* Collected the same way (D19): the record whose chunk
+           converts carries its biome cells, the record whose chunk
+           holds no subchunks counts them after the chunk loop. The
+           whole key is kept for the get — the record has no reader
+           keyed by coordinates the way entities have, and rebuilding
+           the key would drop a second spelling store's might hold. */
+        BiomeRef b;
+        b.cx = k.x;
+        b.cz = k.z;
+        memcpy(b.key, e->key, e->key_len);
+        b.key_len = (uint8_t)e->key_len;
+        arrpush(s->biomes, b);
+        return true;
+    }
     if (k.tag == MCME_BEDROCK_TAG_ENTITIES) {
         s->rep->entities++;
         return true;
@@ -194,7 +222,7 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
     bool is_sub = k.tag == MCME_BEDROCK_TAG_SUBCHUNK
         || k.tag == MCME_BEDROCK_TAG_SUBCHUNK_OLD;
     if (!is_sub) {
-        /* Biome records, chunk versions, markers. */
+        /* Chunk versions, the older 0x2d biome spelling, markers. */
         s->rep->chunk_data++;
         return true;
     }
@@ -244,6 +272,15 @@ static int tick_cmp(const void *a, const void *b)
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
     if (x->tag != y->tag) return (x->tag < y->tag) ? -1 : 1;
+    return 0;
+}
+
+static int biome_cmp(const void *a, const void *b)
+{
+    const BiomeRef *x = (const BiomeRef *)a;
+    const BiomeRef *y = (const BiomeRef *)b;
+    if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
+    if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
     return 0;
 }
 
@@ -407,9 +444,144 @@ static uint8_t extra_cell_kind(const McmeBedrockLayer *extra, size_t idx)
    the Java blocks' `waterlogged` property where the block has one and
    counted dropped where it does not. *out stays NULL when every
    position is air after the map — nothing to write, not a fault. */
+/* One section's `biomes` container, from the chunk record's own 64
+   cells (already in Java's container order, x + z*4 + y*16).
+
+   Every cell goes through the biome map; a cell the map does not name
+   becomes the reference's own fallback — plains — and counts, so the
+   report says which cells arrived as their fallback rather than their
+   biome (D19). The palette is the distinct names sorted by name: the
+   container's internal order is mcme's own (ref_convert pins cell
+   content, not byte order), and a sorted palette is the one order
+   nothing downstream can argue with. One name is the format's
+   shorthand — no data array; more pack the way the block indices do,
+   floor(64 / bits) values to a long, none spanning two. */
+/* Two names, bytewise: the lengths belong to the comparison too,
+   though every name here is a literal that ends where it says. */
+static bool str_eq(const McmeStr *a, const McmeStr *b)
+{
+    return a->len == b->len && memcmp(a->data, b->data, a->len) == 0;
+}
+
+/* One cell's name for the palette sort, with the position it came
+   from so the sort hands back the mapping, not just the order. */
+struct BiomeCellName {
+    const McmeStr *name;
+    uint8_t        cell;
+};
+
+static int biome_cell_cmp(const void *a, const void *b)
+{
+    const struct BiomeCellName *x = (const struct BiomeCellName *)a;
+    const struct BiomeCellName *y = (const struct BiomeCellName *)b;
+    size_t n = x->name->len < y->name->len ? x->name->len
+                                           : y->name->len;
+    int c = n == 0 ? 0 : memcmp(x->name->data, y->name->data, n);
+    if (c != 0) return c;
+    if (x->name->len != y->name->len) {
+        return x->name->len < y->name->len ? -1 : 1;
+    }
+    return 0;
+}
+
+static bool make_biomes(McmeArena *arena, const uint32_t *cells,
+                        McmeConvertReport *rep, McmeTag *sec)
+{
+    McmeStr names[MCME_BEDROCK_BIOME_CELLS];
+    for (size_t i = 0; i < MCME_BEDROCK_BIOME_CELLS; ++i) {
+        if (mcme_translate_biome((int32_t)cells[i], &names[i])) {
+            rep->biomes_carried++;
+        } else {
+            names[i].data = (char *)kPlains;
+            names[i].len = sizeof kPlains - 1;
+            rep->biomes++;
+        }
+    }
+
+    /* The palette and the mapping, from one sort of the cells
+       themselves: a run of equal names is one palette entry, and
+       every cell in the run takes that entry's index. The sort
+       carries names by pointer — they are literals, none is going
+       anywhere — so what moves is a name's address and a byte. */
+    struct BiomeCellName order[MCME_BEDROCK_BIOME_CELLS];
+    for (size_t i = 0; i < MCME_BEDROCK_BIOME_CELLS; ++i) {
+        order[i].name = &names[i];
+        order[i].cell = (uint8_t)i;
+    }
+    qsort(order, MCME_BEDROCK_BIOME_CELLS, sizeof order[0],
+          biome_cell_cmp);
+
+    McmeStr pal[MCME_BEDROCK_BIOME_CELLS];
+    uint8_t slot[MCME_BEDROCK_BIOME_CELLS];
+    size_t np = 0;
+    for (size_t i = 0; i < MCME_BEDROCK_BIOME_CELLS; ) {
+        size_t j = i + 1;
+        while (j < MCME_BEDROCK_BIOME_CELLS
+               && str_eq(order[j].name, order[i].name)) {
+            ++j;
+        }
+        for (size_t k = i; k < j; ++k) {
+            slot[order[k].cell] = (uint8_t)np;
+        }
+        pal[np] = *order[i].name;
+        ++np;
+        i = j;
+    }
+
+    McmeTag *bpal = mcme_nbt_new(arena, MCME_TAG_List);
+    if (bpal == NULL
+            || !mcme_nbt_list_alloc(arena, bpal, MCME_TAG_String, np)) {
+        return false;
+    }
+    for (size_t k = 0; k < np; ++k) {
+        McmeTag *s = mcme_nbt_new(arena, MCME_TAG_String);
+        if (s == NULL
+                || !mcme_nbt_set_string(arena, s, pal[k].data,
+                                        pal[k].len)) {
+            return false;
+        }
+        bpal->list.items[k] = *s;
+    }
+
+    McmeTag *biomes = mcme_nbt_new(arena, MCME_TAG_Compound);
+    if (biomes == NULL
+            || !mcme_nbt_compound_init(arena, biomes,
+                                       np > 1 ? 2 : 1)
+            || !mcme_nbt_compound_put(arena, biomes, "palette", 7,
+                                      bpal)) {
+        return false;
+    }
+
+    if (np > 1) {
+        int bits = 1;
+        while (((size_t)1 << bits) < np) ++bits;
+        size_t per = MCME_BEDROCK_BIOME_CELLS / (size_t)bits;
+        size_t nlongs = (MCME_BEDROCK_BIOME_CELLS + per - 1) / per;
+        int64_t *longs = mcme_arena_alloc(arena,
+                                          nlongs * sizeof *longs);
+        if (longs == NULL) return false;
+        memset(longs, 0, nlongs * sizeof *longs);
+        for (size_t p = 0; p < MCME_BEDROCK_BIOME_CELLS; ++p) {
+            size_t word = p / per;
+            size_t bit = (p % per) * (size_t)bits;
+            longs[word] |= (int64_t)((uint64_t)slot[p] << bit);
+        }
+        McmeTag *data = mcme_nbt_new(arena, MCME_TAG_Long_Array);
+        if (data == NULL
+                || !mcme_nbt_set_longs(arena, data, longs, nlongs)
+                || !mcme_nbt_compound_put(arena, biomes, "data", 4,
+                                          data)) {
+            return false;
+        }
+    }
+
+    return mcme_nbt_compound_put(arena, sec, "biomes", 6, biomes);
+}
+
 static bool make_section(McmeArena *arena, int8_t cy,
                          const McmeBedrockLayer *layer,
                          const McmeBedrockLayer *extra,
+                         const uint32_t *biome_cells,
                          McmeConvertReport *rep, McmeTag **out)
 {
     *out = NULL;
@@ -609,21 +781,13 @@ static bool make_section(McmeArena *arena, int8_t cy,
         return false;
     }
 
-    /* Biomes: the one-entry palette the format takes as shorthand.
-       A plains default until the biome map is a later entry. */
-    McmeTag *biomes = mcme_nbt_new(arena, MCME_TAG_Compound);
-    McmeTag *bpal = mcme_nbt_new(arena, MCME_TAG_List);
-    McmeTag *bp = mcme_nbt_new(arena, MCME_TAG_String);
-    if (biomes == NULL || bpal == NULL || bp == NULL
-        || !mcme_nbt_compound_init(arena, biomes, 1)
-        || !mcme_nbt_list_alloc(arena, bpal, MCME_TAG_String, 1)
-        || !mcme_nbt_set_string(arena, bp, kPlains, sizeof kPlains - 1)) {
-        arrfree(slots);
-        return false;
-    }
-    bpal->list.items[0] = *bp;
-    if (!mcme_nbt_compound_put(arena, biomes, "palette", 7, bpal)
-        || !mcme_nbt_compound_put(arena, sec, "biomes", 6, biomes)) {
+    /* Biomes: the section's own cells from the chunk's Data3D record.
+       The record's absence at this Y leaves no key at all — the old
+       plains placeholder went with the map it was waiting for: an
+       absent container reads back as the default that placeholder
+       spelled, and Bedrock held nothing here to say otherwise (D19). */
+    if (biome_cells != NULL
+            && !make_biomes(arena, biome_cells, rep, sec)) {
         arrfree(slots);
         return false;
     }
@@ -1125,10 +1289,17 @@ static bool carry_tick_record(McmeLevelDb *db, const TickRef *ref,
     return true;
 }
 
+static bool count_unconverted_biomes(McmeLevelDb *db,
+                                     const BiomeRef *refs, size_t n,
+                                     McmeArena *arena,
+                                     McmeConvertReport *rep,
+                                     McmeWriteRefusal *refusal);
+
 static bool convert_chunk(McmeLevelDb *db, const char *out,
                           const SubRef *subs, size_t n,
                           const BeRef *bes, size_t nb,
                           const TickRef *ticks, size_t ntk,
+                          const BiomeRef *biomes, size_t nbi,
                           McmeConvertReport *rep,
                           McmeWriteRefusal *refusal)
 {
@@ -1155,6 +1326,52 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
     McmeTag **block = NULL;      /* the block_ticks entries    */
     int32_t cx = subs[0].cx;
     int32_t cz = subs[0].cz;
+
+    /* The chunk's Data3D record, decoded once before the sections it
+       decorates are built. One record is the shape — one key per
+       chunk — so the span's first entry is the chunk's own; a second
+       spelling of the same record is not merged by guessing which the
+       game means, and its cells count as not carried like any other
+       record the chunk gets no use from. A record that will not
+       decode drops every cell it would have held, counted once; a
+       tombstone held nothing to drop. */
+    McmeBedrockBiomes bis;
+    bool has_biomes = false;
+    memset(&bis, 0, sizeof bis);
+    if (nbi > 1
+            && !count_unconverted_biomes(db, biomes + 1, nbi - 1, arena,
+                                         rep, refusal)) {
+        mcme_arena_free(arena);
+        return false;
+    }
+    if (nbi > 0) {
+        McmeBuffer val;
+        mcme_buffer_init(&val);
+        bool deleted = false;
+        if (!mcme_leveldb_get(db, biomes[0].key, biomes[0].key_len,
+                              &val, &deleted)) {
+            mcme_buffer_free(&val);
+            mcme_set_error("the biome record at (%d, %d) is gone from "
+                           "the store", cx, cz);
+            refuse(refusal, MCME_WRITE_REFUSAL_STORE);
+            mcme_arena_free(arena);
+            return false;
+        }
+        if (deleted) {
+            mcme_buffer_free(&val);
+        } else if (!mcme_bedrock_biome_decode(&bis, arena, val.data,
+                                              val.len,
+                                              kBedrockFloorCy)) {
+            mcme_buffer_free(&val);
+            mcme_clear_error();
+            rep->biomes += 1;   /* the record counts once */
+        } else {
+            mcme_buffer_free(&val);
+            has_biomes = true;
+        }
+    }
+    uint8_t taken[MCME_BEDROCK_BIOME_MAX_ARRAYS] = {0};
+
     for (size_t i = 0; i < n; ++i) {
         McmeBuffer val;
         mcme_buffer_init(&val);
@@ -1188,10 +1405,21 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         mcme_buffer_free(&val);
         rep->subchunks++;
         if (sc.layer_count == 0) continue;   /* the all-air marker */
+        const uint32_t *cells = NULL;
+        size_t arr_i = 0;
+        if (has_biomes) {
+            for (size_t b = 0; b < bis.count; ++b) {
+                if (bis.arrays[b].cy == subs[i].cy) {
+                    cells = bis.arrays[b].cells;
+                    arr_i = b;
+                    break;
+                }
+            }
+        }
         McmeTag *sec = NULL;
         if (!make_section(arena, subs[i].cy, &sc.layers[0],
                           sc.layer_count > 1 ? &sc.layers[1] : NULL,
-                          rep, &sec)) {
+                          cells, rep, &sec)) {
             mcme_set_error("out of memory building the "
                            "section at (%d, %d, %d)", subs[i].cx,
                            (int)subs[i].cy, subs[i].cz);
@@ -1200,7 +1428,22 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
             mcme_arena_free(arena);
             return false;
         }
-        if (sec != NULL) arrpush(built, sec);
+        if (sec != NULL) {
+            arrpush(built, sec);
+            if (cells != NULL) taken[arr_i] = 1;
+        }
+    }
+
+    /* An array whose Y got no section — a stratum with no subchunk
+       key beneath it, a legacy payload, an all-air marker, a record
+       reaching past the chunk's own top — carried nowhere: its cells
+       count (D19). Measured on one real store every such cell was the
+       first kind: 0.13% of all cells, in 343 chunks, all pure-air
+       strata beside the terrain the sections do hold. */
+    if (has_biomes) {
+        for (size_t b = 0; b < bis.count; ++b) {
+            if (!taken[b]) rep->biomes += MCME_BEDROCK_BIOME_CELLS;
+        }
     }
 
     size_t nsec = (size_t)arrlen(built);
@@ -1459,6 +1702,47 @@ static bool count_unconverted_ticks(McmeLevelDb *db,
             continue;
         }
         rep->ticks += list->list.len;
+    }
+    return true;
+}
+
+/* A biome record no chunk gets use from — its span's chunk never
+   appears in the subchunk scan. The whole record is the drop: its
+   cells count (decoded first, since the count is the payload's own
+   shape), and a record that will not decode counts once like any
+   other, never half-read. */
+static bool count_unconverted_biomes(McmeLevelDb *db,
+                                     const BiomeRef *refs, size_t n,
+                                     McmeArena *arena,
+                                     McmeConvertReport *rep,
+                                     McmeWriteRefusal *refusal)
+{
+    for (size_t i = 0; i < n; ++i) {
+        McmeBuffer val;
+        mcme_buffer_init(&val);
+        bool deleted = false;
+        if (!mcme_leveldb_get(db, refs[i].key, refs[i].key_len, &val,
+                              &deleted)) {
+            mcme_buffer_free(&val);
+            mcme_set_error("the biome record at (%d, %d) is gone from "
+                           "the store", refs[i].cx, refs[i].cz);
+            refuse(refusal, MCME_WRITE_REFUSAL_STORE);
+            return false;
+        }
+        if (deleted) {
+            mcme_buffer_free(&val);
+            continue;          /* a tombstone holds no cells */
+        }
+        McmeBedrockBiomes biomes;
+        if (!mcme_bedrock_biome_decode(&biomes, arena, val.data, val.len,
+                                       kBedrockFloorCy)) {
+            mcme_buffer_free(&val);
+            mcme_clear_error();
+            rep->biomes += 1;   /* the record counts once */
+            continue;
+        }
+        mcme_buffer_free(&val);
+        rep->biomes += biomes.count * MCME_BEDROCK_BIOME_CELLS;
     }
     return true;
 }
@@ -1725,14 +2009,17 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     scan.subs = NULL;
     scan.bes = NULL;
     scan.ticks = NULL;
+    scan.biomes = NULL;
     scan.rep = report;
     mcme_leveldb_iterate(db, scan_key, &scan);
     size_t nsubs = (size_t)arrlen(scan.subs);
     size_t nbes = (size_t)arrlen(scan.bes);
     size_t ntk = (size_t)arrlen(scan.ticks);
+    size_t nbi = (size_t)arrlen(scan.biomes);
     if (nsubs > 1) qsort(scan.subs, nsubs, sizeof (SubRef), sub_cmp);
     if (nbes > 1) qsort(scan.bes, nbes, sizeof (BeRef), be_cmp);
     if (ntk > 1) qsort(scan.ticks, ntk, sizeof (TickRef), tick_cmp);
+    if (nbi > 1) qsort(scan.biomes, nbi, sizeof (BiomeRef), biome_cmp);
 
     /* Every list is ordered by chunk, so one walk pairs records with
        the chunks that convert. A record whose chunk never appears has
@@ -1746,7 +2033,7 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         ok = false;
     }
-    size_t i = 0, bi = 0, ki = 0;
+    size_t i = 0, bi = 0, ki = 0, bmi = 0;
     while (ok && i < nsubs) {
         size_t j = i;
         while (j < nsubs && scan.subs[j].cx == scan.subs[i].cx
@@ -1780,14 +2067,29 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
                && scan.ticks[kj].cz == cz) {
             ++kj;
         }
+        while (ok && bmi < nbi
+               && (scan.biomes[bmi].cx < cx
+                   || (scan.biomes[bmi].cx == cx
+                       && scan.biomes[bmi].cz < cz))) {
+            ok = count_unconverted_biomes(db, scan.biomes + bmi, 1,
+                                          rec_arena, report, refusal);
+            ++bmi;
+        }
+        size_t bmj = bmi;
+        while (bmj < nbi && scan.biomes[bmj].cx == cx
+               && scan.biomes[bmj].cz == cz) {
+            ++bmj;
+        }
         if (ok) {
             ok = convert_chunk(db, out, scan.subs + i, j - i,
                                scan.bes + bi, bj - bi,
-                               scan.ticks + ki, kj - ki, report,
+                               scan.ticks + ki, kj - ki,
+                               scan.biomes + bmi, bmj - bmi, report,
                                refusal);
         }
         bi = bj;
         ki = kj;
+        bmi = bmj;
         i = j;
     }
     while (ok && bi < nbes) {
@@ -1800,11 +2102,17 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
                                      rec_arena, report, refusal);
         ++ki;
     }
+    while (ok && bmi < nbi) {
+        ok = count_unconverted_biomes(db, scan.biomes + bmi, 1,
+                                      rec_arena, report, refusal);
+        ++bmi;
+    }
     mcme_arena_free(rec_arena);
 
     arrfree(scan.subs);
     arrfree(scan.bes);
     arrfree(scan.ticks);
+    arrfree(scan.biomes);
     mcme_leveldb_close(db);
     mcme_world_info_free(&info);
     if (!ok) rm_rf(out);

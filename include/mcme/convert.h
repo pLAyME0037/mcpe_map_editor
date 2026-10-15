@@ -37,8 +37,9 @@ typedef struct {
                                  fields the mapping cannot translate —
                                  no half-translated item leaves           */
     size_t chunk_data;        /* chunk keys that are not subchunks:
-                                 biome records, chunk versions, entity
-                                 lists — counted, not carried             */
+                                 chunk versions, entity lists, the older
+                                 0x2d biome records — counted, not
+                                 carried                                 */
     size_t entities;          /* entity-list keys, not carried            */
     size_t legacy_subchunks;  /* subchunks dropped: payloads this build
                                  does not decode, or palettes carrying
@@ -56,6 +57,14 @@ typedef struct {
                                  record that will not decode (counted
                                  once), an entry missing the fields the
                                  Java list spells                      */
+    size_t biomes_carried;    /* biome cells (a 4x4x4 each) written to
+                                 the output sections' biomes containers */
+    size_t biomes;            /* biome cells not carried: an id with no
+                                 Java spelling (the cell arrives as the
+                                 reference's plains fallback), a cell
+                                 whose section mcme does not write, or a
+                                 record that will not decode (counted
+                                 once — half a record is not a count)   */
 } McmeConvertReport;
 
 /*

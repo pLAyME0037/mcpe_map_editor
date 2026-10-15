@@ -110,7 +110,9 @@ WANT_REPORT = {
     "blocks": 24576,
     "block_entities_carried": 0,
     "ticks_carried": 3,
+    "biomes_carried": 255,
     "skipped": {
+        "biomes": 258,
         "block_entities": 0,
         "chunk_data": 0,
         "entities": 0,
@@ -131,7 +133,9 @@ WANT_ENTITIES_REPORT = {
     "blocks": 8192,
     "block_entities_carried": 2,
     "ticks_carried": 0,
+    "biomes_carried": 0,
     "skipped": {
+        "biomes": 0,
         "block_entities": 2,
         "chunk_data": 0,
         "entities": 0,
@@ -265,6 +269,23 @@ class Reference:
                 self._java.is_waterloggable(name))
         return self._waterlog[name]
 
+    def biome(self, bedrock_id: int) -> str:
+        """The Java biome name for a Bedrock biome id, through the
+        reference's own two legs: unpack to the Bedrock name — an id
+        its tables do not name answers plains, with a warning
+        mcme's count plays the part of (decisions.md#D19) — to
+        universal, to Java."""
+        name = self._bed.biome.unpack(int(bedrock_id))
+        universal = self._bed.biome.to_universal(name)
+        return str(self._java.biome.from_universal(universal))
+
+    def biome_int_ids(self) -> list:
+        """The ids the reference's Bedrock tables name at all:
+        exactly the set convert's biome table holds — any other id
+        falls back to plains on both sides (decisions.md#D19)."""
+        return sorted(int(i) for i in
+                      self._bed.biome._biome_int_to_str)
+
 
 def canon(props: dict) -> dict:
     """One spelling for values both editions write differently:
@@ -380,6 +401,60 @@ def put_tick_record(db, cx: int, cz: int, tag: int, snbt: str) -> None:
     db.put(key, t.to_nbt(compressed=False, little_endian=True))
 
 
+def put_biome_record(db, cx: int, cz: int, payload: bytes) -> None:
+    """One fabricated Data3D record on the copy: bytes as the game
+    writes them — a heightmap, then the arrays, then padding — under
+    the chunk's own 9-byte key. The fixtures ship none; the closed
+    store the census read held 36,848."""
+    key = (cx).to_bytes(4, "little", signed=True) \
+        + (cz).to_bytes(4, "little", signed=True) + bytes([0x2B])
+    db.put(key, payload)
+
+
+def biome_record_chunk() -> bytes:
+    """Chunk (0,0)'s record, byte for byte what the selftest writes:
+    a zeroed heightmap, then six arrays from the world floor — the
+    id-3 rename in the single form, two strata with no subchunk to
+    stand in (their cells count, never carry), the uniform id 1, a
+    mixed width-2 array whose third id the map does not know (the
+    cell holding it becomes the reference's plains fallback and
+    counts), and the uniform id 6 on top — then the game's 0xFF
+    tail, which both decoders walk off a byte at a time."""
+    rec = bytearray(512)                      # heightmap: zeros
+    rec += bytes([0x00, 3, 0, 0, 0])          # cy -4: one id 3
+    rec += bytes([0x00, 1, 0, 0, 0])          # cy -3: one id 1
+    rec += bytes([0x00, 1, 0, 0, 0])          # cy -2: one id 1
+    rec += bytes([0x00, 1, 0, 0, 0])          # cy -1: one id 1
+    arr = bytearray(1 + 1024 + 4 + 12)        # cy  0: width 2
+    arr[0] = 0x05                             # header: width 2, palette
+    arr[1 + 4 * 0 + 1] = 0x02                 # word 0,  bits 8 -> 194
+    arr[1 + 4 * 4] = 0x01                     # word 4,  bits 0 -> 6
+    arr[1 + 4 * 64] = 0x01                    # word 64, bits 0 -> 6
+    p = 1 + 1024
+    arr[p:p + 4] = (3).to_bytes(4, "little")           # palette len
+    arr[p + 4:p + 8] = (1).to_bytes(4, "little")       # id 1
+    arr[p + 8:p + 12] = (6).to_bytes(4, "little")      # id 6
+    arr[p + 12:p + 16] = (194).to_bytes(4, "little",
+                                        signed=True)   # id 194
+    rec += arr
+    rec += bytes([0x00, 6, 0, 0, 0])          # cy  1: one id 6
+    rec += b"\xff" * 15                       # the game's tail
+    return bytes(rec)
+
+
+def biome_records_orphans() -> list:
+    """The two records no chunk gets use from: an orphan's two
+    single-value arrays (every cell counts, none carries) and a
+    payload that is not a record (it counts once)."""
+    orphan = bytearray(512)
+    orphan += bytes([0x00, 1, 0, 0, 0])       # cy -4: one id 1
+    orphan += bytes([0x00, 6, 0, 0, 0])       # cy -3: one id 6
+    return [
+        (5, 5, bytes(orphan)),
+        (6, 6, b"not a record, only bytes"),
+    ]
+
+
 def tick_mirror(world: str, ref) -> dict:
     """(cx, cz) -> {'fluid': [...], 'block': [...]} for the chunks
     this fixture converts: records in the scan's order (chunk, then
@@ -429,6 +504,69 @@ def tick_mirror(world: str, ref) -> dict:
             else:
                 bucket["block"].append(entry)
     return out
+
+
+def biome_mirror(world: str, ref) -> dict:
+    """(cx, cz) -> {cy: [64 Java biome names]} for the chunks this
+    fixture converts: the stored Data3D record decoded the way
+    amulet decodes it — one 4x4x4 per height from the world floor,
+    cells sampled every fourth block — each id through the
+    reference's own biome answer, handed back in Java's container
+    order y*16 + z*4 + x. A chunk with no record maps to nothing:
+    mcme must carry no biomes key there. Orphan records are the
+    report's count, not a section (decisions.md#D19)."""
+    from amulet.libs.leveldb import LevelDB
+    from amulet.level.formats.leveldb_world.interface.chunk.\
+        leveldb_8 import LevelDB8Interface
+    iface = LevelDB8Interface()
+    db = LevelDB(os.path.join(world, "db"))
+    out = {(cx, cz): {} for cx, cz in CHUNKS}
+    try:
+        for cx, cz in CHUNKS:
+            key = (cx).to_bytes(4, "little", signed=True) \
+                + (cz).to_bytes(4, "little", signed=True) \
+                + bytes([0x2B])
+            try:
+                payload = db.get(key)
+            except KeyError:
+                continue                      # no record: no key
+            _, arrays = iface._decode_height_3d_biomes(payload, -4)
+            for cy, cells in arrays.items():
+                names = [""] * 64
+                for x in range(4):
+                    for y in range(4):
+                        for z in range(4):
+                            names[y * 16 + z * 4 + x] = ref.biome(
+                                int(cells[x][y][z]))
+                out[(cx, cz)][cy] = names
+    finally:
+        db.close()
+    return out
+
+
+def _container_cells(bio) -> list:
+    """A section's biomes container resolved back to 64 names in
+    Java's order: the palette unpacking read_block does, over the
+    container the biome map built — one name is the shorthand with
+    no data array, more pack floor(64 / bits) to a long, none
+    spanning two."""
+    pal = [str(py(bio["palette"][i]))
+           for i in range(len(bio["palette"]))]
+    data = bio.get("data")
+    if data is None:
+        longs = None
+    else:
+        longs = data.py_data
+    cells = []
+    for i in range(64):
+        if longs is None or len(pal) == 1:
+            cells.append(pal[0])
+            continue
+        bits = (len(pal) - 1).bit_length()
+        word, bit = divmod(i, 64 // bits)
+        idx = (longs[word] >> (bit * bits)) & ((1 << bits) - 1)
+        cells.append(pal[idx])
+    return cells
 
 
 def plain(v):
@@ -596,6 +734,7 @@ ROW_RE = re.compile(
     r'\s+(?:"([^"]+)"|NULL),'
     r'\s+(-?\d+),'
     r'\s+"([^"]+)"\},')
+BIOME_ROW_RE = re.compile(r'\{\s*(-?\d+),\s*"([^"]+)"\s*\}')
 NUMERIC = (amulet_nbt.ByteTag, amulet_nbt.IntTag, amulet_nbt.ShortTag,
            amulet_nbt.LongTag)
 
@@ -703,6 +842,49 @@ def pin_name_map(ref) -> int:
     return len(rows)
 
 
+def pin_biome_map(ref) -> int:
+    """The generated biome table re-pinned against the reference:
+    every row's Java name is the reference's own two-leg answer for
+    its id, the ids are exactly the ones the Bedrock tables name
+    (an id they do not name falls back to plains on both sides,
+    mcme counting the cell), and the rows stay in the id order the
+    lookup's binary search walks (decisions.md#D19)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        os.pardir, "src", "translate", "translate.c")
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    if "---- BEGIN GENERATED BIOME MAP ----" not in src \
+            or "---- END GENERATED BIOME MAP ----" not in src:
+        raise AssertionError(
+            "the generated biome map's markers are missing from "
+            "translate.c")
+    body = src.split("---- BEGIN GENERATED BIOME MAP ----", 1)[1] \
+        .split("---- END GENERATED BIOME MAP ----", 1)[0]
+    rows = BIOME_ROW_RE.findall(body)
+    if not rows:
+        raise AssertionError("the generated biome map holds no rows")
+    order = [int(r[0]) for r in rows]
+    if order != sorted(order):
+        raise AssertionError(
+            "the biome map is not sorted by id; the lookup's binary "
+            "search walks id order")
+    named = ref.biome_int_ids()
+    if order != named:
+        missing = sorted(set(named) - set(order))
+        extra = sorted(set(order) - set(named))
+        raise AssertionError(
+            f"the biome map holds {len(order)} ids, the reference "
+            f"names {len(named)} — unnamed in the map: {missing}; "
+            f"named only by the map: {extra}")
+    for i, name in rows:
+        want = ref.biome(int(i))
+        if name != want:
+            raise AssertionError(
+                f"biome {i}: the reference answers {want}, the table "
+                f"says {name}")
+    return len(rows)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mcme", required=True)
@@ -718,12 +900,16 @@ def main() -> int:
         shutil.copytree(FIXTURE_CHUNKS, in_world)
         shutil.copy(FIXTURE_LEVEL, os.path.join(in_world, "level.dat"))
 
-        # ---- four tick records, fabricated on the copy (D18) ----
+        # ---- four tick records and three Data3D records,
+        # fabricated on the copy (D18, D19) ------------------------
         # Three entries must arrive in the output's lists — the
         # mirror below recomputes them from these records. The
         # orphan's two entries and the payload that is not NBT must
         # be counted and never appear; the entry with no z drops
         # whole. WANT_REPORT pins all seven (3 carried, 4 dropped).
+        # The biome records answer to the same report and to the
+        # biome mirror below: (0,0)'s cells carried per section, the
+        # orphan's and the junk's counted and never carried.
         from amulet.libs.leveldb import LevelDB
         tdb = LevelDB(os.path.join(in_world, "db"))
         try:
@@ -752,6 +938,9 @@ def main() -> int:
                 + (8).to_bytes(4, "little", signed=True)
                 + bytes([0x33]),
                 b"not NBT, only bytes")
+            put_biome_record(tdb, 0, 0, biome_record_chunk())
+            for cx, cz, payload in biome_records_orphans():
+                put_biome_record(tdb, cx, cz, payload)
         finally:
             tdb.close()
 
@@ -892,6 +1081,58 @@ def main() -> int:
              "every record's entries with the reference's names, "
              "t = time − currentTick, p 0, fluid split from blocks")
 
+        # ---- biomes: the Data3D record against the output's own
+        # containers (D19) ----------------------------------------
+        # Every section the record reaches spells the reference's
+        # own name for each of its 64 cells, resolved through
+        # mcme's palette and packed data in Java's container order —
+        # content pinned cell by cell, the container's internal
+        # order left mcme's to choose. A section the record does not
+        # reach (the strata with no subchunk, the ground above the
+        # range, the chunk with no record) carries no key at all:
+        # the reference's own shape for a store that held no biome
+        # data there.
+        want_biomes = biome_mirror(in_world, ref)
+        cells_checked = 0
+        for cx, cz in CHUNKS:
+            region = os.path.join(
+                out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+            tag = walk_chunk(region, cx, cz)
+            if tag is None:
+                raise AssertionError(
+                    f"no biome output chunk ({cx}, {cz})")
+            for sec in tag["sections"]:
+                cy = sec["Y"].py_data
+                want = want_biomes[(cx, cz)].get(cy)
+                bio = sec.get("biomes")
+                if want is None:
+                    if bio is not None:
+                        raise AssertionError(
+                            f"chunk ({cx}, {cz}) section {cy} carries "
+                            f"biomes the record never held")
+                    continue
+                if bio is None:
+                    raise AssertionError(
+                        f"chunk ({cx}, {cz}) section {cy} holds no "
+                        f"biomes for the record's cells")
+                got = _container_cells(bio)
+                for i in range(64):
+                    cells_checked += 1
+                    if got[i] != want[i]:
+                        raise AssertionError(
+                            f"chunk ({cx}, {cz}) section {cy} cell "
+                            f"{i} reads {got[i]}, the reference says "
+                            f"{want[i]}")
+        if cells_checked != 256:
+            raise AssertionError(
+                f"checked {cells_checked} biome cells across the "
+                f"sections the record reaches, want 256 (4 heights "
+                f"x 64)")
+        checks += 1
+        _log("ok — every section the record reaches carries the "
+             "reference's biome for each of its 64 cells, packed "
+             "cell by cell, and every other section keeps no key")
+
         # ---- block entities: the carry against the fixture's own
         # documents (D15) ------------------------------------------
         # The second world is converted as it ships — copied whole,
@@ -979,6 +1220,13 @@ def main() -> int:
         checks += 1
         _log(f"ok — the name map's {pinned} rows all answer the way "
              "the reference answers, in the order the lookup walks")
+
+        # ---- the generated biome map, against the reference ---------
+        pinned_biomes = pin_biome_map(ref)
+        checks += 1
+        _log(f"ok — the biome map's {pinned_biomes} ids all answer "
+             "the way the reference answers, in the order the "
+             "lookup walks")
 
         # ---- the documented refusals -------------------------------
         # a --to that names no edition: usage

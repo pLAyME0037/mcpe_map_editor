@@ -170,4 +170,46 @@ bool mcme_bedrock_subchunk_set(McmeBedrockSubchunk *sc,
                               int32_t x, int32_t y, int32_t z,
                               const McmeNbtDoc *block);
 
+#define MCME_BEDROCK_BIOME_CELLS      64u /* one 4x4x4 cell block      */
+#define MCME_BEDROCK_BIOME_MAX_ARRAYS 24u /* one world height of them  */
+
+/*
+ * The biome half of a Data3D record (tag 0x2b): the heightmap, and one
+ * array of biome ids per subchunk Y counted up from the world floor.
+ *
+ * The payload is `heightmap` (256 little-endian int16 column heights,
+ * carried but not written anywhere yet) followed by the arrays. Each
+ * array is either a single id (width 0: one id fills the whole 4x4x4)
+ * or the same packed-word storage a subchunk layer uses — 4096 ids at
+ * up to 16 bits — whose every 4th cell along each axis is the cell
+ * value, plus a palette of plain little-endian int32 ids. `cells` holds
+ * those 64 values already in Java's biome-container order, x + z*4 +
+ * y*16, so a writer packs them straight.
+ *
+ * The record's trailing 0xFF padding (the game pads; the reference
+ * walks it off one byte at a time because its header is read signed,
+ * and this decoder does the same by the high bit) is skipped. Refused
+ * with the finding in mcme_last_error(): a record shorter than the
+ * heightmap; an array count past one world height; a packed width
+ * outside 1..16; a zero-length palette; an index past its palette;
+ * truncation anywhere. One refusal is the whole record's — the caller
+ * counts it once (decisions.md#D19) rather than trusting a half.
+ *
+ * Ownership: everything returned lives in the arena; the input bytes
+ * are borrowed for the call only.
+ */
+struct McmeBedrockBiomeArray {
+    int8_t   cy;
+    uint32_t cells[MCME_BEDROCK_BIOME_CELLS];
+};
+
+typedef struct {
+    int16_t heightmap[256];
+    struct McmeBedrockBiomeArray *arrays;
+    size_t count;            /* arrays used; array i sits at floor_cy + i */
+} McmeBedrockBiomes;
+
+bool mcme_bedrock_biome_decode(McmeBedrockBiomes *out, McmeArena *arena,
+                               const void *data, size_t size, int8_t floor_cy);
+
 #endif /* MCME_BEDROCK_CHUNK_H */
