@@ -9,6 +9,90 @@ Status vocabulary:
 
 ---
 
+## 2026-10-15 — The tick carry: 74,361 scheduled updates, none dropped
+
+### Built
+
+- Convert stops counting tick records as `chunk_data`. The scan
+  collects overworld records of both tags — `0x33` and `0x3a` — as
+  `TickRef`s beside the block-entity refs, sorted chunk-then-tag so
+  one walk pairs each chunk with its own records; a record whose
+  chunk holds no subchunks counts after the loop, entries and all.
+- The carry reads `currentTick` + `tickList`; a tick's `blockState`
+  is shaped exactly like a palette entry, so D17's table answers it
+  — no second map. An entry carries whole as Java's
+  `{i, p, t, x, y, z}` or counts as dropped: `p` 0 (Bedrock records
+  no priority to carry and inventing one would reorder
+  simultaneous ticks), `t = time − currentTick` as an Int (bounded
+  before the subtraction — two full-range int64s would overflow it;
+  outside int32 the entry drops), coordinates verbatim. The split
+  reads the *translated* name: `minecraft:water`/`minecraft:lava`
+  to `fluid_ticks`, every other block to `block_ticks`, both keys
+  standing in every chunk, empty where nothing lands.
+- Counts (D12, never a failure): `ticks_carried` at the top level,
+  `skipped.ticks` for what does not arrive — an entry missing
+  x/y/z/time, a t outside int32, a blockState the map refuses (each
+  whole or not at all), a record that will not decode (once — half
+  a record is not a count), an orphan's entries. Tick keys of other
+  dimensions keep the one rule every tag has: `other`. The human
+  drops line grew `tick entries`, the JSON grew `ticks_carried` and
+  `skipped.ticks`.
+- Pins: selftest fabricates four records on its fixture copy —
+  a scheduled record whose entries must split through the map
+  (flowing_water → `water` to fluid at t 0, red sand to block at
+  t −5, magma to block at t 20), an entry with no z, an orphan
+  record, a payload that is not NBT — and asserts the lists, the
+  counts (3 carried, 4 counted), and the empty-list shape on the
+  untouched chunk. ref_convert fabricates the same four on its own
+  copy: amulet reads no tick records, so the tool *states* the
+  spec — recomputes both lists from the records through the same
+  pinned reference — and pins all seven counts in its exact report
+  check. 8 checks.
+
+### Measured
+
+- Census: 2,235 tick records, three dimensions — 1,623 `0x33` and
+  377 `0x3a` in the overworld, the rest other dimensions. The two
+  tags both carry explicit times: `0x33` holds water and lava flows
+  from +28 pending to −31,149,718 (31 million ticks overdue),
+  `0x3a` holds fire spread scheduled +15 to +36 — a second schedule,
+  not a candidate list, which is why both tags carry.
+- Real world, `--json convert` to java/1.20: rc=0, 36,849 chunks,
+  340,599 subchunks, 1,395,093,504 blocks — **`ticks_carried`
+  74,361, `skipped.ticks` 0** (every overworld record's chunk
+  converts; no orphan, no undecodable record). `chunk_data` fell
+  219,817 → 217,817, exactly −2,000 = the overworld records leaving
+  the skip bucket. Every other count is byte-identical to D17's run
+  (carried 4,023, water 1,455,655, legacy 0).
+- Gates: 5 suites PASS under rebuild.sh and nob with the fabricated
+  records among them; battery 11/11 rc=0, ref_convert 8 checks;
+  `tests/` clean.
+
+### Method notes
+
+- The pin had to be written rather than mirrored: PyMCTranslate is
+  never asked a tick, so ref_convert does for D18 what it did for
+  the waterlogging policy — records the spec mcme carries, then
+  holds the output to it. The report check stays exact, so the
+  dropped-side arithmetic (1 + 2 + 1) is pinned too, not just the
+  lists.
+- The goldens' db directories were compacted by an outside LevelDB
+  open at 13:44 — found by mtime forensics after `git status` grew
+  unexpected `tests/` entries mid-task. Every operation of this
+  session that touches the fixtures reproduced clean afterwards
+  (plain build, both suites, battery, ref_convert, both converts),
+  so the write was not this repo's own tooling; `git checkout` +
+  `git clean` restored the committed store and the post-restore
+  battery re-verified. The four not-mine files and `tests/` stay
+  out of every staging list regardless.
+
+### Next
+
+- Biomes: the Data3D record (`0x2b`, the 768-byte biome +
+  heightmap payload) — the biome names have to cross D17's table
+  the way ticks did. Then heightmaps, other dimensions,
+  non-container block entities, entities, legacy v1 palettes.
+
 ## 2026-10-15 — The block map's name half: 309 rows, and the reference answers them all
 
 ### Built

@@ -49,6 +49,13 @@ typedef struct {
                                  water beside a block the Java half has
                                  no waterlogged property for, or a layer
                                  cell that is not water at all           */
+    size_t ticks_carried;     /* tick entries written to the output
+                                 chunk's fluid_ticks / block_ticks lists */
+    size_t ticks;             /* tick entries not carried: a record
+                                 whose chunk holds no subchunks, a
+                                 record that will not decode (counted
+                                 once), an entry missing the fields the
+                                 Java list spells                      */
 } McmeConvertReport;
 
 /*

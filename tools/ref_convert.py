@@ -33,7 +33,18 @@ What is compared:
   REPORT   — the JSON counts, exact: two chunks, seven subchunks,
              24576 blocks, no documents carried, and the skips
              the fixture carries (the legacy subchunk, the nether
-             key, the 3280 water positions).
+             key, the 3280 water positions) — plus the four tick
+             records this tool fabricates on the copy: three
+             entries carried, four dropped (decisions.md#D18).
+
+  TICKS    — the fabricated records against the output's
+             fluid_ticks and block_ticks lists: every carried
+             entry named by the same pinned reference, t spelled
+             time − currentTick, p 0, water and lava under
+             fluid_ticks, and both keys standing in every chunk
+             even where they are empty. amulet reads and writes
+             no tick records, so this mirror IS the spec mcme
+             carries.
 
   ENTITIES — a second world, the block-entity fixture: the
              report's document counts, and the output's
@@ -98,6 +109,7 @@ WANT_REPORT = {
     "subchunks": 7,
     "blocks": 24576,
     "block_entities_carried": 0,
+    "ticks_carried": 3,
     "skipped": {
         "block_entities": 0,
         "chunk_data": 0,
@@ -105,6 +117,7 @@ WANT_REPORT = {
         "items": 0,
         "legacy_subchunks": 1,
         "other": 1,
+        "ticks": 4,
         "water_positions": 3280,
     },
 }
@@ -117,6 +130,7 @@ WANT_ENTITIES_REPORT = {
     "subchunks": 2,
     "blocks": 8192,
     "block_entities_carried": 2,
+    "ticks_carried": 0,
     "skipped": {
         "block_entities": 2,
         "chunk_data": 0,
@@ -124,6 +138,7 @@ WANT_ENTITIES_REPORT = {
         "items": 0,
         "legacy_subchunks": 0,
         "other": 2,
+        "ticks": 0,
         "water_positions": 0,
     },
 }
@@ -353,6 +368,67 @@ def load_input(world: str):
     finally:
         db.close()
     return subs
+
+
+def put_tick_record(db, cx: int, cz: int, tag: int, snbt: str) -> None:
+    """One fabricated tick record on the copy: SNBT in, little-endian
+    bytes out, the chunk's own 9-byte key. The fixtures ship no tick
+    records; the closed store the census read counted 2235."""
+    key = (cx).to_bytes(4, "little", signed=True) \
+        + (cz).to_bytes(4, "little", signed=True) + bytes([tag])
+    t = amulet_nbt.from_snbt(snbt)
+    db.put(key, t.to_nbt(compressed=False, little_endian=True))
+
+
+def tick_mirror(world: str, ref) -> dict:
+    """(cx, cz) -> {'fluid': [...], 'block': [...]} for the chunks
+    this fixture converts: records in the scan's order (chunk, then
+    0x33 before 0x3a), every entry through the same pinned reference
+    the blocks walk uses, t spelled time − currentTick, p 0 — the
+    lists mcme must write. A record on a chunk with no subchunks is
+    the report's count, not a list; an entry missing x/y/z/time
+    drops here the way mcme drops it."""
+    from amulet.libs.leveldb import LevelDB
+    db = LevelDB(os.path.join(world, "db"))
+    out = {(cx, cz): {"fluid": [], "block": []} for cx, cz in CHUNKS}
+    try:
+        recs = []
+        for k, v in db.iterate():
+            if len(k) not in (9, 13):
+                continue
+            tag = k[8] if len(k) == 9 else k[12]
+            if tag not in (0x33, 0x3A):
+                continue
+            cx = int.from_bytes(k[0:4], "little", signed=True)
+            cz = int.from_bytes(k[4:8], "little", signed=True)
+            recs.append((cx, cz, tag, v))
+    finally:
+        db.close()
+    for cx, cz, tag, payload in sorted(recs):
+        bucket = out.get((cx, cz))
+        if bucket is None:
+            continue          # no subchunks: the report counts it
+        root = amulet_nbt.load(io.BytesIO(payload),
+                               little_endian=True).tag
+        now = root["currentTick"].py_data
+        for e in root["tickList"]:
+            try:
+                t = e["time"].py_data - now
+                x = e["x"].py_data
+                y = e["y"].py_data
+                z = e["z"].py_data
+            except KeyError:
+                continue      # an entry without the fields drops
+            bs = e["blockState"]
+            name = str(py(bs["name"]))
+            states = dict(bs["states"]) if "states" in bs else {}
+            want, _, _ = ref.answer(name, states)
+            entry = {"i": want, "p": 0, "t": t, "x": x, "y": y, "z": z}
+            if want in ("minecraft:water", "minecraft:lava"):
+                bucket["fluid"].append(entry)
+            else:
+                bucket["block"].append(entry)
+    return out
 
 
 def plain(v):
@@ -641,6 +717,44 @@ def main() -> int:
         in_world = os.path.join(tmp, "in")
         shutil.copytree(FIXTURE_CHUNKS, in_world)
         shutil.copy(FIXTURE_LEVEL, os.path.join(in_world, "level.dat"))
+
+        # ---- four tick records, fabricated on the copy (D18) ----
+        # Three entries must arrive in the output's lists — the
+        # mirror below recomputes them from these records. The
+        # orphan's two entries and the payload that is not NBT must
+        # be counted and never appear; the entry with no z drops
+        # whole. WANT_REPORT pins all seven (3 carried, 4 dropped).
+        from amulet.libs.leveldb import LevelDB
+        tdb = LevelDB(os.path.join(in_world, "db"))
+        try:
+            put_tick_record(tdb, 0, 0, 0x33,
+                '{currentTick:100,tickList:['
+                '{blockState:{name:"minecraft:flowing_water",'
+                'states:{liquid_depth:3},version:17959425},'
+                'time:100L,x:5,y:65,z:5},'
+                '{blockState:{name:"minecraft:sand",'
+                'states:{sand_type:"red"},version:17959425},'
+                'time:95L,x:6,y:64,z:6},'
+                '{blockState:{name:"minecraft:stone",states:{},'
+                'version:17959425},time:100L,x:7,y:64}]}')
+            put_tick_record(tdb, 0, 0, 0x3A,
+                '{currentTick:100,tickList:['
+                '{blockState:{name:"minecraft:magma",states:{},'
+                'version:17959425},time:120L,x:7,y:64,z:7}]}')
+            put_tick_record(tdb, 7, 7, 0x33,
+                '{currentTick:50,tickList:['
+                '{blockState:{name:"minecraft:gravel",states:{},'
+                'version:17959425},time:60L,x:113,y:64,z:113},'
+                '{blockState:{name:"minecraft:sand",states:{},'
+                'version:17959425},time:61L,x:114,y:64,z:114}]}')
+            tdb.put(
+                (8).to_bytes(4, "little", signed=True)
+                + (8).to_bytes(4, "little", signed=True)
+                + bytes([0x33]),
+                b"not NBT, only bytes")
+        finally:
+            tdb.close()
+
         out = os.path.join(tmp, "out")
 
         # ---- the run, and the counts it prints --------------------
@@ -744,6 +858,39 @@ def main() -> int:
         checks += 1
         _log(f"ok — {compared} positions read back exactly as "
              f"PyMCTranslate answers them, policies included")
+
+        # ---- ticks: the carried lists against the source records
+        # (D18) ----------------------------------------------------
+        # Both keys must stand in every chunk — empty where no entry
+        # lands — and every carried entry must spell the mirror's:
+        # the reference's own name for the block, t = time −
+        # currentTick (negative is legal, the record's own delay
+        # past due), p 0, water and lava under fluid_ticks.
+        want_lists = tick_mirror(in_world, ref)
+        for cx, cz in CHUNKS:
+            region = os.path.join(
+                out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+            tag = walk_chunk(region, cx, cz)
+            if tag is None:
+                raise AssertionError(
+                    f"no tick output chunk ({cx}, {cz})")
+            ft = tag.get("fluid_ticks")
+            bt = tag.get("block_ticks")
+            if ft is None or bt is None:
+                raise AssertionError(
+                    f"chunk ({cx}, {cz}) does not spell both tick "
+                    f"lists (fluid_ticks {ft is not None}, "
+                    f"block_ticks {bt is not None})")
+            got = {"fluid": [plain(e) for e in ft],
+                   "block": [plain(e) for e in bt]}
+            if got != want_lists[(cx, cz)]:
+                raise AssertionError(
+                    f"chunk ({cx}, {cz}) tick lists are {got}, "
+                    f"want {want_lists[(cx, cz)]}")
+        checks += 1
+        _log("ok — both tick lists stand in every chunk and carry "
+             "every record's entries with the reference's names, "
+             "t = time − currentTick, p 0, fluid split from blocks")
 
         # ---- block entities: the carry against the fixture's own
         # documents (D15) ------------------------------------------

@@ -767,3 +767,84 @@ grows; D17 fixes spellings, not states.
 diverging from the reference on fixture blocks — then the enumeration,
 not the reference, is wrong, and ref_convert's first failing row names
 it.
+
+## D18 — Convert carries the tick records, split the way Java spells its lists
+
+Before D18 every pending-tick record was a `chunk_data` skip: the key was
+counted, the entries vanished. The census of one real store counted 2,235
+tick records across three dimensions — 1,623 of tag 0x33 and 377 of 0x3a
+in the overworld alone — and with them every scheduled update the world
+set: water and lava with their times (including entries over 31 million
+ticks overdue, `t` far negative), fire spread scheduled seconds ahead. A
+converted world that loses those is a different world at the next tick.
+
+**Carried, through the same map.** A tick's `blockState` is shaped
+exactly like a subchunk palette entry — name, states, version — so
+D17's table answers it and mcme carries what it would have written as a
+block, with no second set of rules. Both tags are read for the chunk
+(0x33 first, then 0x3a — the scan's sort ties on the tag, so list order
+is the records' order) and merged into the chunk's two Java lists.
+
+**Two lists by translated content.** Java spells fluid ticks apart:
+after the map answers, `minecraft:water` and `minecraft:lava` land in
+`fluid_ticks`, every other block in `block_ticks`. The split reads the
+*translated* name — the map is the single answer to "what block is
+this", and a source-side test (`flowing_water` contains "water") would
+disagree with it the moment the table renames.
+
+**The entry Java spells.** `{i, p, t, x, y, z}`: `i` is the map's name
+(Java's tick entry carries no properties — the block at x/y/z holds
+them), `p` is 0 because Bedrock's record carries no field mcme may map
+to a priority and inventing one would reorder simultaneous ticks,
+`t = time − currentTick` as an Int, and the coordinates verbatim. A
+negative `t` is Java's own spelling of overdue, which the measured
+world needs: entries exist at −31,149,718.
+
+**Both keys stand in every chunk.** `fluid_ticks` and `block_ticks` are
+written always, empty where no entry lands — a shape fact, like
+`block_entities`, never a conditional one.
+
+**Counts, never failures (D12).** `ticks_carried` at the top level;
+`skipped.ticks` for what does not arrive: an entry missing x/y/z/time,
+a `time − currentTick` that leaves int32, a blockState the map refuses
+(each counted once, whole or not at all), a record that will not
+decode (counted once — half a record is not a count), and a record
+whose chunk holds no subchunks, whose entries count instead of carry —
+the D15 orphan rule, extended. Tick keys of other dimensions stay
+`other`: one rule for every tag, D15's dimension rule untouched.
+
+**Pinned where the reference is silent.** Amulet reads no tick
+records — PyMCTranslate is never asked one — so there is no reference
+answer to mirror; the silence is a gap in the tool, not an answer to
+match. ref_convert therefore states the spec itself: it fabricates
+four records on the fixture copy (a scheduled record whose entries
+must split through the same pinned reference, an entry with no z, an
+orphan record, a payload that is not NBT), recomputes both lists from
+them, and pins all seven counts in its exact report check. The C
+selftest fabricates the same four shapes on its own copy.
+
+**Rejected.**
+- *Counting them like every other uncarried key*: nothing in the
+  entries needs more than D17 already provides, and D12's counts are
+  for what mcme cannot carry — this is what it can.
+- *Splitting on the source name*: two places deciding "is this a
+  fluid" is two places to disagree, and the map is the one that has
+  to be right anyway.
+- *Carrying only 0x33, the canonical pending-tick tag*: measured, the
+  0x3a records hold fire entries with explicit future times —
+  scheduled updates under another tag — so dropping 0x3a drops every
+  fire spread in the world.
+- *A priority ordering in `p`*: Bedrock records none, and a made-up
+  order changes when blocks tick relative to each other — a lie
+  about time, the one thing a tick list is for.
+
+**Cost accepted.** The 92 names D17 leaves untranslated reach the tick
+lists with the same spelling (parity, D17's cost, now scheduled);
+coordinates are carried verbatim, so an entry naming a block outside
+its own chunk arrives where the record said it, and mcme does not
+audit chunk-locality.
+
+**Reverses if:** a load test of a converted world shows Java refusing
+a tick list mcme wrote — a field shape or a `t` the game rejects —
+then the spec narrows to what the game takes and ref_convert's mirror
+narrows with it.

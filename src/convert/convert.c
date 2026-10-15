@@ -59,6 +59,18 @@ static bool put_string(McmeArena *a, McmeTag *c, const char *k,
         && mcme_nbt_compound_put(a, c, k, strlen(k), t);
 }
 
+/* The same, for a name the map hands back with its own length — a
+   parsed NBT string is not NUL-terminated, so strlen would read past
+   it. */
+static bool put_stringn(McmeArena *a, McmeTag *c, const char *k,
+                        const char *v, size_t vlen)
+{
+    McmeTag *t = mcme_nbt_new(a, MCME_TAG_String);
+    return t != NULL
+        && mcme_nbt_set_string(a, t, v, vlen)
+        && mcme_nbt_compound_put(a, c, k, strlen(k), t);
+}
+
 static bool put_int(McmeArena *a, McmeTag *c, const char *k, int32_t v)
 {
     McmeTag *t = mcme_nbt_new(a, MCME_TAG_Int);
@@ -120,8 +132,14 @@ typedef struct {
 } BeRef;                     /* a chunk's block-entity record       */
 
 typedef struct {
+    int32_t cx, cz;
+    uint8_t tag;             /* 0x33 or 0x3a: which record this is  */
+} TickRef;                   /* a chunk's tick record               */
+
+typedef struct {
     SubRef            *subs;   /* stb array */
     BeRef             *bes;    /* stb array */
+    TickRef           *ticks;  /* stb array */
     McmeConvertReport *rep;
 } Scan;
 
@@ -156,6 +174,19 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
         arrpush(s->bes, b);
         return true;
     }
+    if (k.tag == MCME_BEDROCK_TAG_PENDING_TICKS
+            || k.tag == MCME_BEDROCK_TAG_RANDOM_TICKS) {
+        /* Collected like the block-entity records: a record whose
+           chunk converts carries its entries, a record whose chunk
+           holds no subchunks counts them after the chunk loop, and
+           neither count is guessed here (D18). */
+        TickRef t;
+        t.cx = k.x;
+        t.cz = k.z;
+        t.tag = k.tag;
+        arrpush(s->ticks, t);
+        return true;
+    }
     if (k.tag == MCME_BEDROCK_TAG_ENTITIES) {
         s->rep->entities++;
         return true;
@@ -163,7 +194,7 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
     bool is_sub = k.tag == MCME_BEDROCK_TAG_SUBCHUNK
         || k.tag == MCME_BEDROCK_TAG_SUBCHUNK_OLD;
     if (!is_sub) {
-        /* Biome records, chunk versions, pending ticks, markers. */
+        /* Biome records, chunk versions, markers. */
         s->rep->chunk_data++;
         return true;
     }
@@ -200,6 +231,19 @@ static int be_cmp(const void *a, const void *b)
     const BeRef *y = (const BeRef *)b;
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
+    return 0;
+}
+
+/* One chunk may hold both tick records; the tag tiebreak keeps the
+   0x33 entries ahead of the 0x3a ones, so a carried list's order is
+   the scan's order, not the sort's mood. */
+static int tick_cmp(const void *a, const void *b)
+{
+    const TickRef *x = (const TickRef *)a;
+    const TickRef *y = (const TickRef *)b;
+    if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
+    if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
+    if (x->tag != y->tag) return (x->tag < y->tag) ? -1 : 1;
     return 0;
 }
 
@@ -943,9 +987,148 @@ static BeVerdict carry_block_entity(McmeArena *arena,
  * One chunk: every subchunk, one region-file write
  * ======================================================================== */
 
+/* Is this tag one of the four integer types the tick fields spell?
+   long_or's fallback is not a type check — a compound field would
+   read back as 0 and carry a lie. */
+static bool tick_int(const McmeTag *t)
+{
+    if (t == NULL) return false;
+    switch (t->type) {
+    case MCME_TAG_Byte: case MCME_TAG_Short:
+    case MCME_TAG_Int:  case MCME_TAG_Long:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* One tick record's entries, carried into the Java lists. The
+   blockState is shaped exactly like a subchunk palette entry — name,
+   states, version — so the same map answers it (D17); Java spells the
+   two lists apart by content: water and lava under `fluid_ticks`,
+   every other block under `block_ticks`. An entry either carries
+   whole or counts as dropped — no half-translated entry reaches a
+   Java list (D12, D18). */
+static bool carry_tick_record(McmeLevelDb *db, const TickRef *ref,
+                              McmeArena *arena,
+                              McmeTag ***fluid, McmeTag ***block,
+                              McmeConvertReport *rep,
+                              McmeWriteRefusal *refusal)
+{
+    uint8_t key[9];
+    size_t klen = 0;
+    if (!mcme_bedrock_key_build(key, sizeof key, &klen,
+                                ref->cx, ref->cz, 0, ref->tag,
+                                false, 0)) {
+        mcme_set_error("the tick record key at (%d, %d) does not fit",
+                       ref->cx, ref->cz);
+        refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+        return false;
+    }
+    McmeBuffer val;
+    mcme_buffer_init(&val);
+    bool deleted = false;
+    if (!mcme_leveldb_get(db, key, klen, &val, &deleted)) {
+        mcme_buffer_free(&val);
+        mcme_set_error("the tick record at (%d, %d) is gone from "
+                       "the store", ref->cx, ref->cz);
+        refuse(refusal, MCME_WRITE_REFUSAL_STORE);
+        return false;
+    }
+    if (deleted) {
+        mcme_buffer_free(&val);
+        return true;           /* a tombstone holds no entries */
+    }
+    McmeNbtDoc doc;
+    if (!mcme_nbt_parse(&doc, arena, val.data, val.len, true)) {
+        mcme_buffer_free(&val);
+        mcme_clear_error();
+        rep->ticks += 1;       /* the record counts once */
+        return true;
+    }
+    mcme_buffer_free(&val);
+
+    const McmeTag *ct = NULL;
+    const McmeTag *list = NULL;
+    if (doc.root == NULL || doc.root->type != MCME_TAG_Compound
+            || (ct = mcme_nbt_get(doc.root, "currentTick")) == NULL
+            || !tick_int(ct)
+            || (list = mcme_nbt_get(doc.root, "tickList")) == NULL
+            || list->type != MCME_TAG_List) {
+        rep->ticks += 1;       /* not a record mcme can read: once */
+        return true;
+    }
+    int64_t now = mcme_nbt_long_or(ct, 0);
+
+    for (size_t i = 0; i < list->list.len; ++i) {
+        const McmeTag *e = &list->list.items[i];
+        const McmeTag *bs = NULL, *tm = NULL, *xt = NULL, *yt = NULL;
+        const McmeTag *zt = NULL;
+        if (e->type != MCME_TAG_Compound
+                || (bs = mcme_nbt_get(e, "blockState")) == NULL
+                || bs->type != MCME_TAG_Compound
+                || (tm = mcme_nbt_get(e, "time")) == NULL
+                || (xt = mcme_nbt_get(e, "x")) == NULL
+                || (yt = mcme_nbt_get(e, "y")) == NULL
+                || (zt = mcme_nbt_get(e, "z")) == NULL
+                || !tick_int(tm) || !tick_int(xt)
+                || !tick_int(yt) || !tick_int(zt)) {
+            rep->ticks++;      /* an entry without the fields: dropped */
+            continue;
+        }
+        /* Bounded before the subtraction: two full-range int64s
+           would overflow it, and a time nowhere near the clock is
+           not a tick Java can spell as its Int. */
+        int64_t time_val = mcme_nbt_long_or(tm, 0);
+        if (time_val < INT64_MIN / 2 || time_val > INT64_MAX / 2
+                || now < INT64_MIN / 2 || now > INT64_MAX / 2) {
+            rep->ticks++;
+            continue;
+        }
+        int64_t t = time_val - now;
+        if (t < INT32_MIN || t > INT32_MAX) {
+            rep->ticks++;
+            continue;
+        }
+        McmeTag *jn = mcme_translate_block(arena, bs);
+        const McmeTag *nm = jn != NULL ? mcme_nbt_get(jn, "Name") : NULL;
+        if (jn == NULL || nm == NULL || nm->type != MCME_TAG_String) {
+            mcme_clear_error();
+            rep->ticks++;      /* legacy or nameless: dropped, named */
+            continue;
+        }
+        McmeTag *ent = mcme_nbt_new(arena, MCME_TAG_Compound);
+        if (ent == NULL || !mcme_nbt_compound_init(arena, ent, 6)
+                || !put_stringn(arena, ent, "i",
+                                nm->string.data, nm->string.len)
+                || !put_int(arena, ent, "p", 0)
+                || !put_int(arena, ent, "t", (int32_t)t)
+                || !put_int(arena, ent, "x", mcme_nbt_int_or(xt, 0))
+                || !put_int(arena, ent, "y", mcme_nbt_int_or(yt, 0))
+                || !put_int(arena, ent, "z", mcme_nbt_int_or(zt, 0))) {
+            refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+        bool fluid_name = (nm->string.len == sizeof "minecraft:water" - 1
+                           && memcmp(nm->string.data, "minecraft:water",
+                                     nm->string.len) == 0)
+            || (nm->string.len == sizeof "minecraft:lava" - 1
+                && memcmp(nm->string.data, "minecraft:lava",
+                          nm->string.len) == 0);
+        if (fluid_name) {
+            arrpush(*fluid, ent);
+        } else {
+            arrpush(*block, ent);
+        }
+        rep->ticks_carried++;
+    }
+    return true;
+}
+
 static bool convert_chunk(McmeLevelDb *db, const char *out,
                           const SubRef *subs, size_t n,
                           const BeRef *bes, size_t nb,
+                          const TickRef *ticks, size_t ntk,
                           McmeConvertReport *rep,
                           McmeWriteRefusal *refusal)
 {
@@ -968,6 +1151,8 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
 
     McmeTag **built = NULL;
     McmeTag **carried = NULL;    /* the block_entities entries */
+    McmeTag **fluid = NULL;      /* the fluid_ticks entries    */
+    McmeTag **block = NULL;      /* the block_ticks entries    */
     int32_t cx = subs[0].cx;
     int32_t cz = subs[0].cz;
     for (size_t i = 0; i < n; ++i) {
@@ -1047,12 +1232,16 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
             refuse(refusal, MCME_WRITE_REFUSAL_STORE);
             arrfree(built);
             arrfree(carried);
+            arrfree(fluid);
+            arrfree(block);
             mcme_arena_free(arena);
             return false;
         } else if (st != MCME_ENTITY_OK && st != MCME_ENTITY_ABSENT) {
             refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
             arrfree(built);
             arrfree(carried);
+            arrfree(fluid);
+            arrfree(block);
             mcme_arena_free(arena);
             return false;
         } else {
@@ -1066,6 +1255,8 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
                     refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
                     arrfree(built);
                     arrfree(carried);
+                    arrfree(fluid);
+                    arrfree(block);
                     mcme_arena_free(arena);
                     return false;
                 }
@@ -1076,6 +1267,22 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
                     rep->block_entities++;
                 }
             }
+        }
+    }
+
+    /* The chunk's tick records: every entry through the same map the
+       palettes use, split the way Java spells its two lists. Both
+       lists stand in every chunk, empty when the records hold none —
+       the shape the reference writes (D18). */
+    for (size_t i = 0; i < ntk; ++i) {
+        if (!carry_tick_record(db, &ticks[i], arena, &fluid, &block,
+                               rep, refusal)) {
+            arrfree(built);
+            arrfree(carried);
+            arrfree(fluid);
+            arrfree(block);
+            mcme_arena_free(arena);
+            return false;
         }
     }
 
@@ -1103,12 +1310,43 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
     ok = ok && bel_ok
         && mcme_nbt_compound_put(arena, root, "block_entities", 14,
                                  entities);
+    /* fluid_ticks and block_ticks: both keys in every chunk, empty
+       when the records carried nothing — never half a list. Java
+       reads a missing list and an empty one the same, but the shape
+       a chunk is written in is a fact, not a knob. */
+    McmeTag *fluid_list = mcme_nbt_new(arena, MCME_TAG_List);
+    McmeTag *block_list = mcme_nbt_new(arena, MCME_TAG_List);
+    size_t nfl = (size_t)arrlen(fluid);
+    size_t nbl = (size_t)arrlen(block);
+    bool ft_ok = fluid_list != NULL
+        && (nfl > 0
+            ? mcme_nbt_list_alloc(arena, fluid_list, MCME_TAG_Compound,
+                                  nfl)
+            : mcme_nbt_list_alloc(arena, fluid_list, MCME_TAG_Byte, 0));
+    bool bt_ok = block_list != NULL
+        && (nbl > 0
+            ? mcme_nbt_list_alloc(arena, block_list, MCME_TAG_Compound,
+                                  nbl)
+            : mcme_nbt_list_alloc(arena, block_list, MCME_TAG_Byte, 0));
+    for (size_t i = 0; ft_ok && i < nfl; ++i) {
+        fluid_list->list.items[i] = *fluid[i];
+    }
+    for (size_t i = 0; bt_ok && i < nbl; ++i) {
+        block_list->list.items[i] = *block[i];
+    }
+    ok = ok && ft_ok && bt_ok
+        && mcme_nbt_compound_put(arena, root, "fluid_ticks", 11,
+                                 fluid_list)
+        && mcme_nbt_compound_put(arena, root, "block_ticks", 11,
+                                 block_list);
     if (!ok) {
         mcme_set_error("out of memory building the chunk at "
                        "(%d, %d)", cx, cz);
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         arrfree(built);
         arrfree(carried);
+        arrfree(fluid);
+        arrfree(block);
         mcme_arena_free(arena);
         return false;
     }
@@ -1122,6 +1360,8 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         arrfree(built);
         arrfree(carried);
+        arrfree(fluid);
+        arrfree(block);
         mcme_arena_free(arena);
         return false;
     }
@@ -1130,6 +1370,8 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
     if (written) rep->chunks++;
     arrfree(built);
     arrfree(carried);
+    arrfree(fluid);
+    arrfree(block);
     mcme_arena_free(arena);
     return written;
 }
@@ -1162,6 +1404,61 @@ static bool count_unconverted_records(McmeLevelDb *db,
                    : MCME_WRITE_REFUSAL_INTERNAL);
             return false;
         }
+    }
+    return true;
+}
+
+/* Tick records whose chunk holds no subchunks: no Java chunk is
+   written for that chunk, so every entry counts as dropped. The read
+   is the same whole-record read the carried path uses — the count is
+   entries, and an unreadable record counts once (D18). */
+static bool count_unconverted_ticks(McmeLevelDb *db,
+                                    const TickRef *refs, size_t n,
+                                    McmeArena *arena,
+                                    McmeConvertReport *rep,
+                                    McmeWriteRefusal *refusal)
+{
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t key[9];
+        size_t klen = 0;
+        if (!mcme_bedrock_key_build(key, sizeof key, &klen,
+                                    refs[i].cx, refs[i].cz, 0,
+                                    refs[i].tag, false, 0)) {
+            mcme_set_error("the tick record key at (%d, %d) does not fit",
+                           refs[i].cx, refs[i].cz);
+            refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+        McmeBuffer val;
+        mcme_buffer_init(&val);
+        bool deleted = false;
+        if (!mcme_leveldb_get(db, key, klen, &val, &deleted)) {
+            mcme_buffer_free(&val);
+            mcme_set_error("the tick record at (%d, %d) is gone from "
+                           "the store", refs[i].cx, refs[i].cz);
+            refuse(refusal, MCME_WRITE_REFUSAL_STORE);
+            return false;
+        }
+        if (deleted) {
+            mcme_buffer_free(&val);
+            continue;          /* a tombstone holds no entries */
+        }
+        McmeNbtDoc doc;
+        if (!mcme_nbt_parse(&doc, arena, val.data, val.len, true)) {
+            mcme_buffer_free(&val);
+            mcme_clear_error();
+            rep->ticks += 1;   /* the record counts once */
+            continue;
+        }
+        mcme_buffer_free(&val);
+        const McmeTag *list = (doc.root != NULL
+                               && doc.root->type == MCME_TAG_Compound)
+            ? mcme_nbt_get(doc.root, "tickList") : NULL;
+        if (list == NULL || list->type != MCME_TAG_List) {
+            rep->ticks += 1;   /* not a record mcme can count: once */
+            continue;
+        }
+        rep->ticks += list->list.len;
     }
     return true;
 }
@@ -1427,25 +1724,29 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     Scan scan;
     scan.subs = NULL;
     scan.bes = NULL;
+    scan.ticks = NULL;
     scan.rep = report;
     mcme_leveldb_iterate(db, scan_key, &scan);
     size_t nsubs = (size_t)arrlen(scan.subs);
     size_t nbes = (size_t)arrlen(scan.bes);
+    size_t ntk = (size_t)arrlen(scan.ticks);
     if (nsubs > 1) qsort(scan.subs, nsubs, sizeof (SubRef), sub_cmp);
     if (nbes > 1) qsort(scan.bes, nbes, sizeof (BeRef), be_cmp);
+    if (ntk > 1) qsort(scan.ticks, ntk, sizeof (TickRef), tick_cmp);
 
-    /* Both lists are ordered by chunk, so one walk pairs records with
+    /* Every list is ordered by chunk, so one walk pairs records with
        the chunks that convert. A record whose chunk never appears has
-       no Java chunk to live in; its documents are counted, not
-       carried — a drop the report names like any other. */
+       no Java chunk to live in; its documents and entries are
+       counted, not carried — a drop the report names like any
+       other. */
     bool ok = true;
-    McmeArena *be_arena = mcme_arena_new();
-    if (be_arena == NULL) {
+    McmeArena *rec_arena = mcme_arena_new();
+    if (rec_arena == NULL) {
         mcme_set_error("out of memory");
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         ok = false;
     }
-    size_t i = 0, bi = 0;
+    size_t i = 0, bi = 0, ki = 0;
     while (ok && i < nsubs) {
         size_t j = i;
         while (j < nsubs && scan.subs[j].cx == scan.subs[i].cx
@@ -1458,7 +1759,7 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
                && (scan.bes[bi].cx < cx
                    || (scan.bes[bi].cx == cx && scan.bes[bi].cz < cz))) {
             ok = count_unconverted_records(db, scan.bes + bi, 1,
-                                           be_arena, report, refusal);
+                                           rec_arena, report, refusal);
             ++bi;
         }
         size_t bj = bi;
@@ -1466,23 +1767,44 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
                && scan.bes[bj].cz == cz) {
             ++bj;
         }
+        while (ok && ki < ntk
+               && (scan.ticks[ki].cx < cx
+                   || (scan.ticks[ki].cx == cx
+                       && scan.ticks[ki].cz < cz))) {
+            ok = count_unconverted_ticks(db, scan.ticks + ki, 1,
+                                         rec_arena, report, refusal);
+            ++ki;
+        }
+        size_t kj = ki;
+        while (kj < ntk && scan.ticks[kj].cx == cx
+               && scan.ticks[kj].cz == cz) {
+            ++kj;
+        }
         if (ok) {
             ok = convert_chunk(db, out, scan.subs + i, j - i,
-                               scan.bes + bi, bj - bi, report,
+                               scan.bes + bi, bj - bi,
+                               scan.ticks + ki, kj - ki, report,
                                refusal);
         }
         bi = bj;
+        ki = kj;
         i = j;
     }
     while (ok && bi < nbes) {
         ok = count_unconverted_records(db, scan.bes + bi, 1,
-                                       be_arena, report, refusal);
+                                       rec_arena, report, refusal);
         ++bi;
     }
-    mcme_arena_free(be_arena);
+    while (ok && ki < ntk) {
+        ok = count_unconverted_ticks(db, scan.ticks + ki, 1,
+                                     rec_arena, report, refusal);
+        ++ki;
+    }
+    mcme_arena_free(rec_arena);
 
     arrfree(scan.subs);
     arrfree(scan.bes);
+    arrfree(scan.ticks);
     mcme_leveldb_close(db);
     mcme_world_info_free(&info);
     if (!ok) rm_rf(out);

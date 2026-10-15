@@ -45,6 +45,16 @@
    has half-written. */
 #define MCME_BEDROCK_TAG_BLOCK_ENTITY 0x31u
 
+/* The tick records: one per chunk, a `currentTick` plus a `tickList`
+   of {blockState, time, x/y/z} entries. 0x33 holds the world's own
+   schedules — measured: water and lava flows, overdue and pending;
+   0x3a a second schedule in the same shape, measured holding fire
+   entries with their own future times. Both carry into the chunk's
+   Java lists, split by content (D18). Neither marks a chunk on its
+   own: a record without subchunks is still not a chunk. */
+#define MCME_BEDROCK_TAG_PENDING_TICKS 0x33u
+#define MCME_BEDROCK_TAG_RANDOM_TICKS  0x3au
+
 /* Tags that belong to a chunk without identifying one. Reported by name so a
    listing can say what a key holds, but never counted as a chunk: a chunk with
    a biome record and no subchunk is still one chunk, and counting the biome

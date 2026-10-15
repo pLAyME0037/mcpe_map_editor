@@ -2891,6 +2891,7 @@ static void print_convert_drops(const McmeConvertReport *r)
                                "water positions" },
         { r->block_entities,   "block entity",   "block entities" },
         { r->items,            "item stack",     "item stacks" },
+        { r->ticks,            "tick entry",     "tick entries" },
         { r->entities,         "entity list",    "entity lists" },
         { r->chunk_data,       "other chunk key", "other chunk keys" },
         { r->other,            "other key",      "other keys" },
@@ -2997,6 +2998,8 @@ static int cmd_convert(int argc, char **argv)
         cJSON_AddNumberToObject(root, "blocks", (double)rep.blocks);
         cJSON_AddNumberToObject(root, "block_entities_carried",
                                 (double)rep.block_entities_carried);
+        cJSON_AddNumberToObject(root, "ticks_carried",
+                                (double)rep.ticks_carried);
         cJSON_AddNumberToObject(skipped, "block_entities",
                                 (double)rep.block_entities);
         cJSON_AddNumberToObject(skipped, "chunk_data",
@@ -3008,6 +3011,7 @@ static int cmd_convert(int argc, char **argv)
         cJSON_AddNumberToObject(skipped, "legacy_subchunks",
                                 (double)rep.legacy_subchunks);
         cJSON_AddNumberToObject(skipped, "other", (double)rep.other);
+        cJSON_AddNumberToObject(skipped, "ticks", (double)rep.ticks);
         cJSON_AddNumberToObject(skipped, "water_positions",
                                 (double)rep.water_positions);
         cJSON_AddItemToObject(root, "skipped", skipped);
@@ -3018,6 +3022,9 @@ static int cmd_convert(int argc, char **argv)
         if (rep.block_entities_carried > 0) {
             printf(" — %zu block entities carried",
                    rep.block_entities_carried);
+        }
+        if (rep.ticks_carried > 0) {
+            printf(" — %zu tick entries carried", rep.ticks_carried);
         }
         putchar('\n');
         print_convert_drops(&rep);

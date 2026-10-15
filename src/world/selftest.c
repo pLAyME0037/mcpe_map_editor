@@ -4303,6 +4303,58 @@ static McmeTag *convert_chunk_root(McmeArena *arena, const char *out,
     return parsed ? doc->root : NULL;
 }
 
+/* One fabricated tick record: SNBT in, little-endian bytes out, the
+   chunk's own 9-byte key. The fixture worlds ship no tick records —
+   real ones are everywhere (the census counted 2,235), so D18's test
+   writes them. */
+static bool put_tick(McmeArena *arena, McmeLevelDb *db, int32_t cx,
+                     int32_t cz, uint8_t tag, const char *snbt)
+{
+    uint8_t key[9];
+    size_t klen = 0;
+    McmeTag *root = NULL;
+    McmeBuffer bin;
+    mcme_buffer_init(&bin);
+    bool ok = db != NULL
+        && mcme_bedrock_key_build(key, sizeof key, &klen, cx, cz, 0,
+                                  tag, false, 0)
+        && mcme_nbt_parse_snbt(arena, snbt, strlen(snbt), &root)
+        && root != NULL;
+    if (ok) {
+        McmeNbtDoc doc;
+        doc.arena = arena;
+        doc.root = root;
+        doc.root_name.data = NULL;
+        doc.root_name.len = 0;
+        doc.little_endian = true;
+        ok = mcme_nbt_write_binary_as(&doc, &bin, true)
+            && mcme_leveldb_put(db, key, klen, bin.data, bin.len);
+    }
+    mcme_buffer_free(&bin);
+    return ok;
+}
+
+/* One carried tick entry: the fields Java spells, i through z. */
+static void check_tick(const McmeTag *list, size_t i, const char *name,
+                       int32_t t, int32_t x, int32_t y, int32_t z)
+{
+    if (list == NULL || i >= list->list.len) {
+        CHECK_MSG(false, "tick list holds no entry %zu", i);
+        return;
+    }
+    const McmeTag *e = &list->list.items[i];
+    CHECK(e->type == MCME_TAG_Compound);
+    if (e->type != MCME_TAG_Compound) return;
+    const McmeTag *nm = mcme_nbt_get(e, "i");
+    CHECK(nm != NULL && nm->type == MCME_TAG_String
+          && strcmp(nm->string.data, name) == 0);
+    CHECK(mcme_nbt_int_or(mcme_nbt_get(e, "p"), INT32_MIN) == 0);
+    CHECK(mcme_nbt_int_or(mcme_nbt_get(e, "t"), INT32_MIN) == t);
+    CHECK(mcme_nbt_int_or(mcme_nbt_get(e, "x"), INT32_MIN) == x);
+    CHECK(mcme_nbt_int_or(mcme_nbt_get(e, "y"), INT32_MIN) == y);
+    CHECK(mcme_nbt_int_or(mcme_nbt_get(e, "z"), INT32_MIN) == z);
+}
+
 static void test_convert(void)
 {
     printf("  convert (bedrock -> java/1.20)\n");
@@ -4327,6 +4379,56 @@ static void test_convert(void)
     snprintf(lvl, sizeof lvl, "%s/level.dat", in);
     CHECK(mcme_fs_write(lvl, raw, raw_len));
     free(raw);
+
+    /* Four tick records, fabricated on the copy — the fixture ships
+       none: a scheduled record whose entries go through the same map
+       the palettes use and split Java's two lists by content (with
+       one entry missing its z, which must drop whole), a
+       random-tick record beside it, an orphan whose chunk holds no
+       subchunks (its entries count, never carry), and a payload
+       that is not NBT (the record counts once). */
+    {
+        McmeArena *ta = mcme_arena_new();
+        McmeLevelDb *tdb = NULL;
+        CHECK(ta != NULL);
+        CHECK(ta != NULL && mcme_leveldb_open_rw(&tdb, dbdir));
+        if (ta != NULL && tdb != NULL) {
+            CHECK(put_tick(ta, tdb, 0, 0,
+                MCME_BEDROCK_TAG_PENDING_TICKS,
+                "{currentTick:100,tickList:["
+                "{blockState:{name:\"minecraft:flowing_water\","
+                "states:{liquid_depth:3},version:17959425},"
+                "time:100L,x:5,y:65,z:5},"
+                "{blockState:{name:\"minecraft:sand\","
+                "states:{sand_type:\"red\"},version:17959425},"
+                "time:95L,x:6,y:64,z:6},"
+                "{blockState:{name:\"minecraft:stone\","
+                "states:{},version:17959425},time:100L,x:7,y:64}]}"));
+            CHECK(put_tick(ta, tdb, 0, 0,
+                MCME_BEDROCK_TAG_RANDOM_TICKS,
+                "{currentTick:100,tickList:["
+                "{blockState:{name:\"minecraft:magma\",states:{},"
+                "version:17959425},time:120L,x:7,y:64,z:7}]}"));
+            CHECK(put_tick(ta, tdb, 5, 5,
+                MCME_BEDROCK_TAG_PENDING_TICKS,
+                "{currentTick:50,tickList:["
+                "{blockState:{name:\"minecraft:gravel\",states:{},"
+                "version:17959425},time:60L,x:81,y:64,z:81},"
+                "{blockState:{name:\"minecraft:sand\",states:{},"
+                "version:17959425},time:61L,x:82,y:64,z:82}]}"));
+            uint8_t gkey[9];
+            size_t gklen = 0;
+            CHECK(mcme_bedrock_key_build(gkey, sizeof gkey, &gklen,
+                                         6, 6, 0,
+                                         MCME_BEDROCK_TAG_PENDING_TICKS,
+                                         false, 0));
+            CHECK(mcme_leveldb_put(tdb, gkey, gklen,
+                                   "not NBT, only bytes", 19));
+            mcme_leveldb_close(tdb);
+        }
+        mcme_arena_free(ta);
+    }
+
     snprintf(out, sizeof out, "%s_java", in);
     CHECK(!mcme_fs_exists(out));
 
@@ -4356,6 +4458,12 @@ static void test_convert(void)
     CHECK(rep.items == 0);
     CHECK(rep.entities == 0);
     CHECK(rep.chunk_data == 0);
+    /* The fabricated records, counted their own way: three entries
+       carried, and four dropped — the entry with no z (1), the
+       orphan's two entries (2), the record that is not NBT (1, a
+       record counts once). */
+    CHECK(rep.ticks_carried == 3);
+    CHECK(rep.ticks == 4);
 
     /* The output is a whole world: the scaffold, and the probe's
        verdict on it. */
@@ -4437,12 +4545,35 @@ static void test_convert(void)
             check_java_block(root, 0, 10, 0, "minecraft:water");
             /* The v1 legacy subchunk's blocks: air, counted. */
             check_java_block(root, 0, 34, 0, "minecraft:air");
+
+            /* The tick lists, both keys standing in this chunk: the
+               water the map answered as `water` under fluid_ticks
+               (t = time − currentTick = 0), the two blocks Java
+               spells block ticks (t = −5 overdue, t = 20 pending).
+               The entry with no z is nowhere — dropped whole. */
+            const McmeTag *ft = mcme_nbt_get(root, "fluid_ticks");
+            const McmeTag *bt = mcme_nbt_get(root, "block_ticks");
+            CHECK(ft != NULL && ft->type == MCME_TAG_List
+                  && ft->list.len == 1);
+            CHECK(bt != NULL && bt->type == MCME_TAG_List
+                  && bt->list.len == 2);
+            check_tick(ft, 0, "minecraft:water", 0, 5, 65, 5);
+            check_tick(bt, 0, "minecraft:red_sand", -5, 6, 64, 6);
+            check_tick(bt, 1, "minecraft:magma_block", 20, 7, 64, 7);
         }
         McmeNbtDoc chunk2;
         McmeTag *root2 = convert_chunk_root(arena, out, 1, -2, &chunk2);
         CHECK(root2 != NULL);
         if (root2 != NULL) {
             check_java_block(root2, 16, 0, -17, "mcme:fixture_211");
+            /* The chunk no record touched still spells both tick
+               lists — empty, never absent. */
+            const McmeTag *ft2 = mcme_nbt_get(root2, "fluid_ticks");
+            const McmeTag *bt2 = mcme_nbt_get(root2, "block_ticks");
+            CHECK(ft2 != NULL && ft2->type == MCME_TAG_List
+                  && ft2->list.len == 0);
+            CHECK(bt2 != NULL && bt2->type == MCME_TAG_List
+                  && bt2->list.len == 0);
         }
         mcme_arena_free(arena);
     }
