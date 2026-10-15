@@ -1,8 +1,10 @@
 /*
  * The convert pipeline: a Bedrock store walked in full, every
- * overworld subchunk's layer zero through the translate map, a Java
- * 1.20 world written out — sections in Y order with a plains biome,
- * one region file per 32x32 of chunks, a level.dat carrying the seed
+ * subchunk's layer zero through the translate map, a Java 1.20
+ * world written out — the game's three dimensions, each in the
+ * directory Java reads it from (region/, DIM-1/region/,
+ * DIM1/region/), sections in Y order with a plains biome, one
+ * region file per 32x32 of chunks, a level.dat carrying the seed
  * and the world's own name, spawn, game type and difficulty across.
  *
  * The drops are decisions.md#D12: anything not carried is counted in
@@ -43,9 +45,24 @@ static const char kPlains[] = "minecraft:plains";
 
 /* The overworld's floor is y -64: subchunks run from -4 up, and the
    Data3D record's biome arrays count from there. The record carries
-   no floor of its own — the dimension gives it one — and convert
-   walks the overworld, so this is the floor every decode here uses. */
-static const int8_t kBedrockFloorCy = -4;
+   no floor of its own — the dimension gives it one (D21). */
+static const int8_t kBedrockFloorCy = -4;   /* the overworld        */
+
+/* The floor a dimension's records and chunks stand on, and the
+   height it spells, after the Java dimension types the game itself
+   ships: the overworld runs y -64..319 (floor section -4, 384
+   blocks), the nether and the end y 0..255 (floor section 0, 256).
+   So their records count strata and columns from 0, their chunks
+   write yPos 0, and a heightmap column answers inside [0, height]. */
+static int8_t dim_floor_cy(int32_t dim)
+{
+    return dim == 0 ? kBedrockFloorCy : (int8_t)0;
+}
+
+static int32_t dim_height(int32_t dim)
+{
+    return dim == 0 ? 384 : 256;
+}
 
 static void refuse(McmeWriteRefusal *r, McmeWriteRefusal v)
 {
@@ -127,6 +144,7 @@ static void rm_rf(const char *path)
  * ======================================================================== */
 
 typedef struct {
+    int32_t dim;          /* 0 overworld, 1 nether, 2 end (D21)     */
     int32_t cx, cz;
     int8_t  cy;
     uint8_t key[14];      /* the key exactly as stored, for the get */
@@ -134,15 +152,18 @@ typedef struct {
 } SubRef;
 
 typedef struct {
+    int32_t dim;             /* the record's own dimension (D21)    */
     int32_t cx, cz;
 } BeRef;                     /* a chunk's block-entity record       */
 
 typedef struct {
+    int32_t dim;
     int32_t cx, cz;
     uint8_t tag;             /* 0x33 or 0x3a: which record this is  */
 } TickRef;                   /* a chunk's tick record               */
 
 typedef struct {
+    int32_t dim;
     int32_t cx, cz;
     uint8_t key[14];      /* the key exactly as stored, for the get */
     uint8_t key_len;
@@ -153,6 +174,9 @@ typedef struct {
     BeRef             *bes;    /* stb array */
     TickRef           *ticks;  /* stb array */
     BiomeRef          *biomes; /* stb array */
+    bool               has_subs[3];
+                               /* the store holds chunks in this
+                                  dimension (D21)                   */
     McmeConvertReport *rep;
 } Scan;
 
@@ -168,10 +192,12 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
         s->rep->other++;
         return true;
     }
-    if (k.dimension != 0) {
-        /* Every key of another dimension is `other` — block-entity
-           records included. One rule for every tag: the convert walks
-           the overworld, and a nether key is a nether key. */
+    int32_t dim = k.dimension;
+    if (dim != 0 && dim != 1 && dim != 2) {
+        /* The game's three dimensions carry every chunk key the
+           same way now (D21), each landing in the directory Java
+           reads it from. A number beyond them lands nowhere:
+           counted `other`, like any key with nowhere to go. */
         s->rep->other++;
         return true;
     }
@@ -182,6 +208,7 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
            counted after the chunk loop. Counting a record twice, or
            never, would both be lies. */
         BeRef b;
+        b.dim = dim;
         b.cx = k.x;
         b.cz = k.z;
         arrpush(s->bes, b);
@@ -194,6 +221,7 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
            holds no subchunks counts them after the chunk loop, and
            neither count is guessed here (D18). */
         TickRef t;
+        t.dim = dim;
         t.cx = k.x;
         t.cz = k.z;
         t.tag = k.tag;
@@ -208,6 +236,7 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
            keyed by coordinates the way entities have, and rebuilding
            the key would drop a second spelling store's might hold. */
         BiomeRef b;
+        b.dim = dim;
         b.cx = k.x;
         b.cz = k.z;
         memcpy(b.key, e->key, e->key_len);
@@ -234,12 +263,14 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
         return true;
     }
     SubRef r;
+    r.dim = dim;
     r.cx = k.x;
     r.cz = k.z;
     r.cy = (int8_t)e->key[e->key_len - 1];
     memcpy(r.key, e->key, e->key_len);
     r.key_len = (uint8_t)e->key_len;
     arrpush(s->subs, r);
+    s->has_subs[dim] = true;
     return true;
 }
 
@@ -247,6 +278,7 @@ static int sub_cmp(const void *a, const void *b)
 {
     const SubRef *x = (const SubRef *)a;
     const SubRef *y = (const SubRef *)b;
+    if (x->dim != y->dim) return (x->dim < y->dim) ? -1 : 1;
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
     if (x->cy != y->cy) return (x->cy < y->cy) ? -1 : 1;
@@ -257,6 +289,7 @@ static int be_cmp(const void *a, const void *b)
 {
     const BeRef *x = (const BeRef *)a;
     const BeRef *y = (const BeRef *)b;
+    if (x->dim != y->dim) return (x->dim < y->dim) ? -1 : 1;
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
     return 0;
@@ -269,6 +302,7 @@ static int tick_cmp(const void *a, const void *b)
 {
     const TickRef *x = (const TickRef *)a;
     const TickRef *y = (const TickRef *)b;
+    if (x->dim != y->dim) return (x->dim < y->dim) ? -1 : 1;
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
     if (x->tag != y->tag) return (x->tag < y->tag) ? -1 : 1;
@@ -279,9 +313,21 @@ static int biome_cmp(const void *a, const void *b)
 {
     const BiomeRef *x = (const BiomeRef *)a;
     const BiomeRef *y = (const BiomeRef *)b;
+    if (x->dim != y->dim) return (x->dim < y->dim) ? -1 : 1;
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
     return 0;
+}
+
+/* Is a record's chunk before the (dim, cx, cz) the walk stands on?
+   Every list is sorted this way, so the walk pairs each record with
+   its own dimension's chunks and nothing else (D21). */
+static bool pos_before(int32_t rdim, int32_t rcx, int32_t rcz,
+                       int32_t dim, int32_t cx, int32_t cz)
+{
+    if (rdim != dim) return rdim < dim;
+    if (rcx != cx) return rcx < cx;
+    return rcz < cz;
 }
 
 /* ========================================================================
@@ -1179,12 +1225,13 @@ static bool carry_tick_record(McmeLevelDb *db, const TickRef *ref,
                               McmeConvertReport *rep,
                               McmeWriteRefusal *refusal)
 {
-    uint8_t key[9];
+    uint8_t key[13];      /* the game's longest chunk key (D21)     */
     size_t klen = 0;
     if (!mcme_bedrock_key_build(key, sizeof key, &klen,
-                                ref->cx, ref->cz, 0, ref->tag,
+                                ref->cx, ref->cz, ref->dim, ref->tag,
                                 false, 0)) {
-        mcme_set_error("the tick record key at (%d, %d) does not fit",
+        mcme_set_error("the tick record key of dimension %d at "
+                       "(%d, %d) does not fit", (int)ref->dim,
                        ref->cx, ref->cz);
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         return false;
@@ -1194,8 +1241,9 @@ static bool carry_tick_record(McmeLevelDb *db, const TickRef *ref,
     bool deleted = false;
     if (!mcme_leveldb_get(db, key, klen, &val, &deleted)) {
         mcme_buffer_free(&val);
-        mcme_set_error("the tick record at (%d, %d) is gone from "
-                       "the store", ref->cx, ref->cz);
+        mcme_set_error("the tick record of dimension %d at "
+                       "(%d, %d) is gone from the store",
+                       (int)ref->dim, ref->cx, ref->cz);
         refuse(refusal, MCME_WRITE_REFUSAL_STORE);
         return false;
     }
@@ -1295,19 +1343,15 @@ static bool count_unconverted_biomes(McmeLevelDb *db,
                                      McmeConvertReport *rep,
                                      McmeWriteRefusal *refusal);
 
-/* The largest value a heightmap column can spell: the overworld's
-   384 blocks above the floor, both ends included — the range Java's
-   9-bit maps hold, and the one the measured store's columns sat in
-   (10..309, over 36,848 records). */
-enum { kJavaHeightMax = 384 };
-
 /* The record's heightmap, every column inside the world Java
-   spells. One column outside is not a map mcme writes: that half is
-   refused and counted, the cells beside it still cross (D20). */
-static bool heightmap_fits(const int16_t *hm)
+   spells for this dimension — [0, dim_height(dim)], the range the
+   measured store's overworld columns sat in (10..309, over 36,848
+   records). One column outside is not a map mcme writes: that half
+   is refused and counted, the cells beside it still cross (D20). */
+static bool heightmap_fits(const int16_t *hm, int32_t height)
 {
     for (size_t i = 0; i < MCME_BEDROCK_HEIGHTMAP_COLS; ++i) {
-        if (hm[i] < 0 || hm[i] > kJavaHeightMax) return false;
+        if (hm[i] < 0 || hm[i] > height) return false;
     }
     return true;
 }
@@ -1346,6 +1390,7 @@ static bool make_heightmap(McmeArena *arena, const int16_t *hm,
 }
 
 static bool convert_chunk(McmeLevelDb *db, const char *out,
+                          int32_t dim,
                           const SubRef *subs, size_t n,
                           const BeRef *bes, size_t nb,
                           const TickRef *ticks, size_t ntk,
@@ -1405,8 +1450,9 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         if (!mcme_leveldb_get(db, biomes[0].key, biomes[0].key_len,
                               &val, &deleted)) {
             mcme_buffer_free(&val);
-            mcme_set_error("the biome record at (%d, %d) is gone from "
-                           "the store", cx, cz);
+            mcme_set_error("the biome record of dimension %d at "
+                           "(%d, %d) is gone from the store",
+                           (int)dim, cx, cz);
             refuse(refusal, MCME_WRITE_REFUSAL_STORE);
             mcme_arena_free(arena);
             return false;
@@ -1416,7 +1462,7 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
             /* A tombstone held no map either — nothing to drop. */
         } else if (!mcme_bedrock_biome_decode(&bis, arena, val.data,
                                               val.len,
-                                              kBedrockFloorCy)) {
+                                              dim_floor_cy(dim))) {
             mcme_buffer_free(&val);
             mcme_clear_error();
             rep->biomes += 1;      /* the record counts once    */
@@ -1426,7 +1472,8 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
             has_biomes = true;
             /* The map crosses when every column is one the world's
                height spells; the cells cross regardless (D20). */
-            has_heightmap = heightmap_fits(bis.heightmap);
+            has_heightmap = heightmap_fits(bis.heightmap,
+                                           dim_height(dim));
             if (has_heightmap) rep->heightmaps_carried++;
             else rep->heightmaps += 1;
         }
@@ -1445,9 +1492,10 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         if (!mcme_leveldb_get(db, subs[i].key, subs[i].key_len, &val,
                               &deleted)) {
             mcme_buffer_free(&val);
-            mcme_set_error("the subchunk at (%d, %d, %d) is "
-                           "gone from the store", subs[i].cx,
-                           (int)subs[i].cy, subs[i].cz);
+            mcme_set_error("the subchunk of dimension %d at "
+                           "(%d, %d, %d) is gone from the store",
+                           (int)dim, subs[i].cx, (int)subs[i].cy,
+                           subs[i].cz);
             refuse(refusal, MCME_WRITE_REFUSAL_STORE);
             arrfree(built);
             mcme_arena_free(arena);
@@ -1533,7 +1581,7 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         McmeNbtDoc *bdocs = NULL;
         size_t ndocs = 0;
         McmeEntityStatus st = mcme_bedrock_chunk_block_entities(
-            db, cx, cz, 0, arena, &bdocs, &ndocs);
+            db, cx, cz, dim, arena, &bdocs, &ndocs);
         if (st == MCME_ENTITY_NOT_READABLE) {
             mcme_clear_error();
             rep->block_entities++;    /* the record counts once */
@@ -1599,7 +1647,7 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         && put_string(arena, root, "Status", "minecraft:full")
         && put_int(arena, root, "xPos", cx)
         && put_int(arena, root, "zPos", cz)
-        && put_int(arena, root, "yPos", -4)
+        && put_int(arena, root, "yPos", dim_floor_cy(dim))
         && put_long(arena, root, "LastUpdate", 0)
         && put_long(arena, root, "InhabitedTime", 0)
         && mcme_nbt_compound_put(arena, root, "sections", 8, sections);
@@ -1674,11 +1722,27 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
     }
 
     char file[4096];
-    int w = snprintf(file, sizeof file, "%s/region/r.%d.%d.mca", out,
-                     cx >> 5, cz >> 5);
+    char dimpath[16] = "";
+    if (dim != 0) {
+        const char *dd = NULL;
+        if (!mcme_java_dimension_dir(dim, &dd)) {
+            /* scan_key admits only the game's three dimensions, so
+               this is a wrong number reaching here, not world data. */
+            refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+            arrfree(built);
+            arrfree(carried);
+            arrfree(fluid);
+            arrfree(block);
+            mcme_arena_free(arena);
+            return false;
+        }
+        snprintf(dimpath, sizeof dimpath, "%s/", dd);
+    }
+    int w = snprintf(file, sizeof file, "%s/%sregion/r.%d.%d.mca",
+                     out, dimpath, cx >> 5, cz >> 5);
     if (w <= 0 || (size_t)w >= sizeof file) {
-        mcme_set_error("the region path for chunk (%d, %d) "
-                       "does not fit", cx, cz);
+        mcme_set_error("the region path for chunk (%d, %d) of "
+                       "dimension %d does not fit", cx, cz, (int)dim);
         refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
         arrfree(built);
         arrfree(carried);
@@ -1712,7 +1776,7 @@ static bool count_unconverted_records(McmeLevelDb *db,
         McmeNbtDoc *docs = NULL;
         size_t nd = 0;
         McmeEntityStatus st = mcme_bedrock_chunk_block_entities(
-            db, bes[i].cx, bes[i].cz, 0, arena, &docs, &nd);
+            db, bes[i].cx, bes[i].cz, bes[i].dim, arena, &docs, &nd);
         if (st == MCME_ENTITY_OK) {
             rep->block_entities += nd;
         } else if (st == MCME_ENTITY_NOT_READABLE) {
@@ -1741,12 +1805,13 @@ static bool count_unconverted_ticks(McmeLevelDb *db,
                                     McmeWriteRefusal *refusal)
 {
     for (size_t i = 0; i < n; ++i) {
-        uint8_t key[9];
+        uint8_t key[13];  /* the game's longest chunk key (D21)     */
         size_t klen = 0;
         if (!mcme_bedrock_key_build(key, sizeof key, &klen,
-                                    refs[i].cx, refs[i].cz, 0,
+                                    refs[i].cx, refs[i].cz, refs[i].dim,
                                     refs[i].tag, false, 0)) {
-            mcme_set_error("the tick record key at (%d, %d) does not fit",
+            mcme_set_error("the tick record key of dimension %d at "
+                           "(%d, %d) does not fit", (int)refs[i].dim,
                            refs[i].cx, refs[i].cz);
             refuse(refusal, MCME_WRITE_REFUSAL_INTERNAL);
             return false;
@@ -1756,8 +1821,9 @@ static bool count_unconverted_ticks(McmeLevelDb *db,
         bool deleted = false;
         if (!mcme_leveldb_get(db, key, klen, &val, &deleted)) {
             mcme_buffer_free(&val);
-            mcme_set_error("the tick record at (%d, %d) is gone from "
-                           "the store", refs[i].cx, refs[i].cz);
+            mcme_set_error("the tick record of dimension %d at "
+                           "(%d, %d) is gone from the store",
+                           (int)refs[i].dim, refs[i].cx, refs[i].cz);
             refuse(refusal, MCME_WRITE_REFUSAL_STORE);
             return false;
         }
@@ -1803,8 +1869,9 @@ static bool count_unconverted_biomes(McmeLevelDb *db,
         if (!mcme_leveldb_get(db, refs[i].key, refs[i].key_len, &val,
                               &deleted)) {
             mcme_buffer_free(&val);
-            mcme_set_error("the biome record at (%d, %d) is gone from "
-                           "the store", refs[i].cx, refs[i].cz);
+            mcme_set_error("the biome record of dimension %d at "
+                           "(%d, %d) is gone from the store",
+                           (int)refs[i].dim, refs[i].cx, refs[i].cz);
             refuse(refusal, MCME_WRITE_REFUSAL_STORE);
             return false;
         }
@@ -1814,7 +1881,7 @@ static bool count_unconverted_biomes(McmeLevelDb *db,
         }
         McmeBedrockBiomes biomes;
         if (!mcme_bedrock_biome_decode(&biomes, arena, val.data, val.len,
-                                       kBedrockFloorCy)) {
+                                       dim_floor_cy(refs[i].dim))) {
             mcme_buffer_free(&val);
             mcme_clear_error();
             rep->biomes += 1;      /* the record counts once   */
@@ -2093,6 +2160,7 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     scan.bes = NULL;
     scan.ticks = NULL;
     scan.biomes = NULL;
+    memset(scan.has_subs, 0, sizeof scan.has_subs);
     scan.rep = report;
     mcme_leveldb_iterate(db, scan_key, &scan);
     size_t nsubs = (size_t)arrlen(scan.subs);
@@ -2104,11 +2172,43 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     if (ntk > 1) qsort(scan.ticks, ntk, sizeof (TickRef), tick_cmp);
     if (nbi > 1) qsort(scan.biomes, nbi, sizeof (BiomeRef), biome_cmp);
 
-    /* Every list is ordered by chunk, so one walk pairs records with
-       the chunks that convert. A record whose chunk never appears has
-       no Java chunk to live in; its documents and entries are
-       counted, not carried — a drop the report names like any
-       other. */
+    /* The nether and the end arrive where Java reads them: their own
+       directories, made only when the store holds chunks there — an
+       output tree spells the dimensions its input had, the same
+       emptiness the reference-shaped outputs keep (D21). */
+    for (int32_t d = 1; d <= 2; ++d) {
+        if (!scan.has_subs[d]) continue;
+        const char *dd = NULL;
+        char dimdir[4096];
+        w = mcme_java_dimension_dir(d, &dd)
+            ? snprintf(dimdir, sizeof dimdir, "%s/%s/region", out, dd)
+            : -1;
+        if (w > 0 && (size_t)w < sizeof dimdir
+                && mcme_fs_mkdir_p(dimdir)) {
+            continue;
+        }
+        if (mcme_last_error()[0] == '\0') {
+            mcme_set_error("cannot write the dimension %d region "
+                           "directory under '%s'", (int)d, out);
+        }
+        arrfree(scan.subs);
+        arrfree(scan.bes);
+        arrfree(scan.ticks);
+        arrfree(scan.biomes);
+        mcme_leveldb_close(db);
+        mcme_world_info_free(&info);
+        rm_rf(out);
+        refuse(refusal, MCME_WRITE_REFUSAL_STORE);
+        return false;
+    }
+
+    /* Every list is ordered by (dimension, chunk), so one walk pairs
+       each record with the chunks that convert beside it — the
+       nether's records with the nether's chunks, never the
+       overworld's at the same coordinates (D21). A record whose
+       chunk never appears has no Java chunk to live in; its
+       documents and entries are counted, not carried — a drop the
+       report names like any other. */
     bool ok = true;
     McmeArena *rec_arena = mcme_arena_new();
     if (rec_arena == NULL) {
@@ -2119,52 +2219,55 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     size_t i = 0, bi = 0, ki = 0, bmi = 0;
     while (ok && i < nsubs) {
         size_t j = i;
-        while (j < nsubs && scan.subs[j].cx == scan.subs[i].cx
+        while (j < nsubs && scan.subs[j].dim == scan.subs[i].dim
+               && scan.subs[j].cx == scan.subs[i].cx
                && scan.subs[j].cz == scan.subs[i].cz) {
             ++j;
         }
+        int32_t dim = scan.subs[i].dim;
         int32_t cx = scan.subs[i].cx;
         int32_t cz = scan.subs[i].cz;
         while (ok && bi < nbes
-               && (scan.bes[bi].cx < cx
-                   || (scan.bes[bi].cx == cx && scan.bes[bi].cz < cz))) {
+               && pos_before(scan.bes[bi].dim, scan.bes[bi].cx,
+                             scan.bes[bi].cz, dim, cx, cz)) {
             ok = count_unconverted_records(db, scan.bes + bi, 1,
                                            rec_arena, report, refusal);
             ++bi;
         }
         size_t bj = bi;
-        while (bj < nbes && scan.bes[bj].cx == cx
+        while (bj < nbes && scan.bes[bj].dim == dim
+               && scan.bes[bj].cx == cx
                && scan.bes[bj].cz == cz) {
             ++bj;
         }
         while (ok && ki < ntk
-               && (scan.ticks[ki].cx < cx
-                   || (scan.ticks[ki].cx == cx
-                       && scan.ticks[ki].cz < cz))) {
+               && pos_before(scan.ticks[ki].dim, scan.ticks[ki].cx,
+                             scan.ticks[ki].cz, dim, cx, cz)) {
             ok = count_unconverted_ticks(db, scan.ticks + ki, 1,
                                          rec_arena, report, refusal);
             ++ki;
         }
         size_t kj = ki;
-        while (kj < ntk && scan.ticks[kj].cx == cx
+        while (kj < ntk && scan.ticks[kj].dim == dim
+               && scan.ticks[kj].cx == cx
                && scan.ticks[kj].cz == cz) {
             ++kj;
         }
         while (ok && bmi < nbi
-               && (scan.biomes[bmi].cx < cx
-                   || (scan.biomes[bmi].cx == cx
-                       && scan.biomes[bmi].cz < cz))) {
+               && pos_before(scan.biomes[bmi].dim, scan.biomes[bmi].cx,
+                             scan.biomes[bmi].cz, dim, cx, cz)) {
             ok = count_unconverted_biomes(db, scan.biomes + bmi, 1,
                                           rec_arena, report, refusal);
             ++bmi;
         }
         size_t bmj = bmi;
-        while (bmj < nbi && scan.biomes[bmj].cx == cx
+        while (bmj < nbi && scan.biomes[bmj].dim == dim
+               && scan.biomes[bmj].cx == cx
                && scan.biomes[bmj].cz == cz) {
             ++bmj;
         }
         if (ok) {
-            ok = convert_chunk(db, out, scan.subs + i, j - i,
+            ok = convert_chunk(db, out, dim, scan.subs + i, j - i,
                                scan.bes + bi, bj - bi,
                                scan.ticks + ki, kj - ki,
                                scan.biomes + bmi, bmj - bmi, report,

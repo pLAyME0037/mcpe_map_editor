@@ -30,12 +30,25 @@ What is compared:
              false/0 alike — the two editions spell them
              differently over the same NBT meaning.
 
-  REPORT   — the JSON counts, exact: two chunks, seven subchunks,
-             24576 blocks, no documents carried, and the skips
-             the fixture carries (the legacy subchunk, the nether
-             key, the 3280 water positions) — plus the four tick
-             records this tool fabricates on the copy: three
-             entries carried, four dropped (decisions.md#D18).
+  REPORT   — the JSON counts, exact: five chunks across three
+             dimensions, ten subchunks, 36864 blocks, the nether's
+             own document carried, and the skips the fixture
+             carries (the legacy subchunk, the key of a dimension
+             beyond the game's three, the 3280 water positions) —
+             plus the tick records this tool fabricates on the
+             copy: four entries carried, five dropped
+             (decisions.md#D18).
+
+  DIMENSIONS — three dimensions' own answers (D21): every chunk
+             written where the game reads it (region/,
+             DIM-1/region, DIM1/region), yPos at the dimension's
+             floor (-4 overworld, 0 nether and end), every map
+             inside its own dimension's height (384 or 256), and
+             the walks, pairing and records holding dimensions
+             apart at shared coordinates — the same (0,0) and
+             (1,-2) in two dimensions are five chunks with five
+             answers, and a dimension number beyond the three
+             counts `other`.
 
   TICKS    — the fabricated records against the output's
              fluid_ticks and block_ticks lists: every carried
@@ -98,6 +111,24 @@ FIXTURE_LEVEL = "tests/golden/worlds/bedrock/level.dat"
 FIXTURE_JAVA = "tests/golden/worlds/java"
 AIR = "minecraft:air"
 CHUNKS = ((0, 0), (1, -2))
+# The fixture's chunks as three dimensions hold them (D21): the
+# overworld's two, the nether's own at (0,0) and (1,-2), the end's
+# at the overworld's own (1,-2) — the nether key that ships with
+# the store and the rest fabricated on the copy below.
+DIM_CHUNKS = {
+    0: ((0, 0), (1, -2)),
+    1: ((0, 0), (1, -2)),
+    2: ((1, -2),),
+}
+DIM_DIR = {0: "", 1: "DIM-1", 2: "DIM1"}
+DIM_FLOOR = {0: -4, 1: 0, 2: 0}   # yPos: the floor section
+
+
+def region_path(world: str, dim: int, cx: int, cz: int) -> str:
+    """The output region file a dimension keeps this chunk in: the
+    game's own layout — region/, DIM-1/region, DIM1/region."""
+    return os.path.join(world, DIM_DIR[dim], "region",
+                        f"r.{cx >> 5}.{cz >> 5}.mca")
 
 TRUEISH = {True, "true", 1, "1"}
 FALSEISH = {False, "false", 0, "0"}
@@ -105,23 +136,28 @@ FALSEISH = {False, "false", 0, "0"}
 WANT_REPORT = {
     "from": "bedrock",
     "to": "java/1.20",
-    "chunks": 2,
-    "subchunks": 7,
-    "blocks": 24576,
-    "block_entities_carried": 0,
-    "ticks_carried": 3,
-    "biomes_carried": 255,
-    "heightmaps_carried": 1,
+    # five chunks across three dimensions (D21): the overworld's
+    # two, the fixture's nether key at (0,0), the nether and end
+    # chunks fabricated at (1,-2); ten subchunks; the two extra
+    # parity payloads of 4096 cells apiece over the fixture's
+    # 28672.
+    "chunks": 5,
+    "subchunks": 10,
+    "blocks": 36864,
+    "block_entities_carried": 1,   # the nether's own document
+    "ticks_carried": 4,
+    "biomes_carried": 383,
+    "heightmaps_carried": 2,       # overworld base 100, nether 0
     "skipped": {
-        "biomes": 258,
-        "block_entities": 0,
-        "chunk_data": 0,
-        "entities": 0,
-        "heightmaps": 3,
+        "biomes": 386,
+        "block_entities": 1,       # the nether orphan's document
+        "chunk_data": 1,           # its dimension's version key
+        "entities": 1,             # its dimension's entity list
+        "heightmaps": 6,
         "items": 0,
         "legacy_subchunks": 1,
-        "other": 1,
-        "ticks": 4,
+        "other": 1,                # the dimension beyond the three
+        "ticks": 5,
         "water_positions": 3280,
     },
 }
@@ -130,10 +166,14 @@ WANT_REPORT = {
 # whole-document counts D15 added, and the ones that must stay zero
 # (decisions.md#D15).
 WANT_ENTITIES_REPORT = {
-    "chunks": 2,
-    "subchunks": 2,
-    "blocks": 8192,
-    "block_entities_carried": 2,
+    # The store's nether keys are no longer `other`: its subchunk
+    # becomes the nether's own chunk (in DIM-1) and its record's
+    # document rides with it — three carried now, the overworld's
+    # two beside it (D21).
+    "chunks": 3,
+    "subchunks": 3,
+    "blocks": 12288,
+    "block_entities_carried": 3,
     "ticks_carried": 0,
     "biomes_carried": 0,
     "heightmaps_carried": 0,
@@ -142,10 +182,10 @@ WANT_ENTITIES_REPORT = {
         "block_entities": 2,
         "chunk_data": 0,
         "entities": 0,
-        "heightmaps": 2,
+        "heightmaps": 3,
         "items": 0,
         "legacy_subchunks": 0,
-        "other": 2,
+        "other": 0,
         "ticks": 0,
         "water_positions": 0,
     },
@@ -366,10 +406,12 @@ def entry_of(entry):
 
 def load_input(world: str):
     """The fixture's stored subchunks, read from the COPIED store:
-    (cx, cz, cy) -> (kind, layers) where kind is 'ok' or 'legacy'
-    and layers is the subchunk's full list of (blocks, palette)
-    pairs — the second layer is the waterlogging half D15 folds
-    into the Java property."""
+    (dim, cx, cz, cy) -> (kind, layers) where kind is 'ok' or
+    'legacy' and layers is the subchunk's full list of (blocks,
+    palette) pairs — the second layer is the waterlogging half D15
+    folds into the Java property. The key speaks its own dimension
+    (D21): the three dimensions keep separate chunks even where
+    they share coordinates."""
     from amulet.libs.leveldb import LevelDB
     from amulet.level.formats.leveldb_world.interface.chunk.leveldb_8 import (
         LevelDB8Interface,
@@ -379,40 +421,60 @@ def load_input(world: str):
     db = LevelDB(os.path.join(world, "db"))
     subs = {}
     try:
-        for cx, cz in CHUNKS:
-            for cy in range(-5, 6):
-                try:
-                    payload = db.get(chunk_key(cx, cz, cy))
-                except KeyError:
-                    continue
-                version, layers = decode_payload(iface, payload)
-                if version == 1:
-                    subs[(cx, cz, cy)] = ("legacy", None)
-                else:
-                    subs[(cx, cz, cy)] = ("ok", layers)
+        for dim, chunks in DIM_CHUNKS.items():
+            for cx, cz in chunks:
+                for cy in range(-5, 6):
+                    try:
+                        payload = db.get(chunk_key(cx, cz, cy, dim))
+                    except KeyError:
+                        continue
+                    version, layers = decode_payload(iface, payload)
+                    if version == 1:
+                        subs[(dim, cx, cz, cy)] = ("legacy", None)
+                    else:
+                        subs[(dim, cx, cz, cy)] = ("ok", layers)
     finally:
         db.close()
     return subs
 
 
-def put_tick_record(db, cx: int, cz: int, tag: int, snbt: str) -> None:
-    """One fabricated tick record on the copy: SNBT in, little-endian
-    bytes out, the chunk's own 9-byte key. The fixtures ship no tick
-    records; the closed store the census read counted 2235."""
+def _record_key(cx: int, cz: int, dim: int, tag: int) -> bytes:
+    """A record's key in its own dimension (D21): x, z, the
+    dimension when it is not 0, the tag — 9 bytes spoken, 13."""
     key = (cx).to_bytes(4, "little", signed=True) \
-        + (cz).to_bytes(4, "little", signed=True) + bytes([tag])
+        + (cz).to_bytes(4, "little", signed=True)
+    if dim:
+        key += (dim).to_bytes(4, "little", signed=True)
+    return key + bytes([tag])
+
+
+def put_tick_record(db, cx: int, cz: int, dim: int, tag: int,
+                    snbt: str) -> None:
+    """One fabricated tick record on the copy: SNBT in, little-endian
+    bytes out, the chunk's own key in its own dimension. The
+    fixtures ship no tick records; the closed store the census read
+    counted 2235."""
     t = amulet_nbt.from_snbt(snbt)
-    db.put(key, t.to_nbt(compressed=False, little_endian=True))
+    db.put(_record_key(cx, cz, dim, tag),
+           t.to_nbt(compressed=False, little_endian=True))
 
 
-def put_biome_record(db, cx: int, cz: int, payload: bytes) -> None:
+def put_biome_record(db, cx: int, cz: int, dim: int,
+                     payload: bytes) -> None:
     """One fabricated Data3D record on the copy: bytes as the game
     writes them — a heightmap, then the arrays, then padding — under
-    the chunk's own 9-byte key. The fixtures ship none; the closed
-    store the census read held 36,848."""
-    key = (cx).to_bytes(4, "little", signed=True) \
-        + (cz).to_bytes(4, "little", signed=True) + bytes([0x2B])
-    db.put(key, payload)
+    the chunk's own key in its own dimension. The fixtures ship
+    none; the closed store the census read held 36,848."""
+    db.put(_record_key(cx, cz, dim, 0x2B), payload)
+
+
+def put_be_record(db, cx: int, cz: int, dim: int, snbt: str) -> None:
+    """One block-entity record on the copy: the document with its
+    own coordinates, little-endian, under the chunk's key in its own
+    dimension (D21)."""
+    t = amulet_nbt.from_snbt(snbt)
+    db.put(_record_key(cx, cz, dim, 0x31),
+           t.to_nbt(compressed=False, little_endian=True))
 
 
 def biome_record_chunk() -> bytes:
@@ -487,21 +549,70 @@ def pack_heightmap(values) -> list:
     return longs
 
 
-def tick_mirror(world: str, ref) -> dict:
+def nether_biome_record() -> bytes:
+    """The nether chunk (0,0)'s record, byte for byte what the
+    selftest writes (D21): a heightmap whose columns spell their own
+    coordinates — column i reads i, inside the nether's own 256 —
+    then two single-value strata from the nether's floor 0, then the
+    game's 0xFF tail. The floor stratum lands in the section at Y0;
+    the one above stands where the nether holds no section, counted
+    and never carried."""
+    rec = bytearray(512)
+    for i in range(256):
+        rec[i * 2:i * 2 + 2] = i.to_bytes(2, "little")
+    rec += bytes([0x00, 1, 0, 0, 0])          # cy 0: one id 1
+    rec += bytes([0x00, 1, 0, 0, 0])          # cy 1: one id 1
+    rec += b"\xff" * 15
+    return bytes(rec)
+
+
+def nether_dropped_map_record() -> bytes:
+    """The nether chunk (1,-2)'s record (D21): no arrays, and one
+    column at 300 — inside the overworld's 384, past the nether's
+    256 — so the map drops while the floor stratum's cells still
+    cross beside it (D20's halves, per dimension)."""
+    rec = bytearray(512)
+    for i in range(256):
+        rec[i * 2:i * 2 + 2] = i.to_bytes(2, "little")
+    bad = 3 * 16 + 5                          # column (x=5, z=3)
+    rec[bad * 2:bad * 2 + 2] = (300).to_bytes(2, "little")
+    rec += bytes([0x00, 1, 0, 0, 0])          # cy 0: one id 1
+    return bytes(rec)
+
+
+def nether_orphan_record() -> bytes:
+    """The nether orphan at (7,7) (D21): a record whose chunk holds
+    no subchunks — its floor cells and its valid map count in the
+    nether's own half of the report, never carried."""
+    rec = bytearray(512)
+    for i in range(256):
+        rec[i * 2:i * 2 + 2] = i.to_bytes(2, "little")
+    rec += bytes([0x00, 1, 0, 0, 0])          # cy 0: one id 1
+    return bytes(rec)
+
+
+def tick_mirror(world: str, ref, dim: int = 0) -> dict:
     """(cx, cz) -> {'fluid': [...], 'block': [...]} for the chunks
-    this fixture converts: records in the scan's order (chunk, then
-    0x33 before 0x3a), every entry through the same pinned reference
-    the blocks walk uses, t spelled time − currentTick, p 0 — the
-    lists mcme must write. A record on a chunk with no subchunks is
-    the report's count, not a list; an entry missing x/y/z/time
-    drops here the way mcme drops it."""
+    this dimension converts: records in the scan's order (chunk,
+    then 0x33 before 0x3a), every entry through the same pinned
+    reference the blocks walk uses, t spelled time − currentTick,
+    p 0 — the lists mcme must write. A record on a chunk with no
+    subchunks is the report's count, not a list; an entry missing
+    x/y/z/time drops here the way mcme drops it. Only this
+    dimension's keys are read (D21): the same coordinates in two
+    dimensions are two chunks with two records."""
     from amulet.libs.leveldb import LevelDB
     db = LevelDB(os.path.join(world, "db"))
-    out = {(cx, cz): {"fluid": [], "block": []} for cx, cz in CHUNKS}
+    out = {(cx, cz): {"fluid": [], "block": []}
+           for cx, cz in DIM_CHUNKS[dim]}
     try:
         recs = []
         for k, v in db.iterate():
             if len(k) not in (9, 13):
+                continue
+            kdim = (int.from_bytes(k[8:12], "little", signed=True)
+                    if len(k) == 13 else 0)
+            if kdim != dim:
                 continue
             tag = k[8] if len(k) == 9 else k[12]
             if tag not in (0x33, 0x3A):
@@ -538,7 +649,7 @@ def tick_mirror(world: str, ref) -> dict:
     return out
 
 
-def biome_mirror(world: str, ref) -> dict:
+def biome_mirror(world: str, ref, dim: int = 0) -> dict:
     """(cx, cz) -> {cy: [64 Java biome names]} for the chunks this
     fixture converts: the stored Data3D record decoded the way
     amulet decodes it — one 4x4x4 per height from the world floor,
@@ -546,23 +657,28 @@ def biome_mirror(world: str, ref) -> dict:
     reference's own biome answer, handed back in Java's container
     order y*16 + z*4 + x. A chunk with no record maps to nothing:
     mcme must carry no biomes key there. Orphan records are the
-    report's count, not a section (decisions.md#D19)."""
+    report's count, not a section (decisions.md#D19). Only this
+    dimension's keys are read, decoded from its own floor — -4
+    overworld, 0 nether and end (D21)."""
     from amulet.libs.leveldb import LevelDB
     from amulet.level.formats.leveldb_world.interface.chunk.\
         leveldb_8 import LevelDB8Interface
     iface = LevelDB8Interface()
     db = LevelDB(os.path.join(world, "db"))
-    out = {(cx, cz): {} for cx, cz in CHUNKS}
+    out = {(cx, cz): {} for cx, cz in DIM_CHUNKS[dim]}
     try:
-        for cx, cz in CHUNKS:
+        for cx, cz in DIM_CHUNKS[dim]:
             key = (cx).to_bytes(4, "little", signed=True) \
-                + (cz).to_bytes(4, "little", signed=True) \
-                + bytes([0x2B])
+                + (cz).to_bytes(4, "little", signed=True)
+            if dim:
+                key += (dim).to_bytes(4, "little", signed=True)
+            key += bytes([0x2B])
             try:
                 payload = db.get(key)
             except KeyError:
                 continue                      # no record: no key
-            _, arrays = iface._decode_height_3d_biomes(payload, -4)
+            _, arrays = iface._decode_height_3d_biomes(
+                payload, DIM_FLOOR[dim])
             for cy, cells in arrays.items():
                 names = [""] * 64
                 for x in range(4):
@@ -932,20 +1048,24 @@ def main() -> int:
         shutil.copytree(FIXTURE_CHUNKS, in_world)
         shutil.copy(FIXTURE_LEVEL, os.path.join(in_world, "level.dat"))
 
-        # ---- four tick records and three Data3D records,
-        # fabricated on the copy (D18, D19) ------------------------
+        # ---- the records fabricated on the copy: the
+        # overworld's half (D18, D19) then the dimensions' own
+        # (D21) ------------------------------------------------
         # Three entries must arrive in the output's lists — the
         # mirror below recomputes them from these records. The
         # orphan's two entries and the payload that is not NBT must
         # be counted and never appear; the entry with no z drops
-        # whole. WANT_REPORT pins all seven (3 carried, 4 dropped).
-        # The biome records answer to the same report and to the
-        # biome mirror below: (0,0)'s cells carried per section, the
-        # orphan's and the junk's counted and never carried.
+        # whole. The nether's records beside them: its chunk's own
+        # entry carried, its orphan counted. WANT_REPORT pins every
+        # count (4 carried, 5 dropped of the ticks). The biome
+        # records answer to the same report and to the biome mirror
+        # below: (0,0)'s cells carried per section, the orphan's and
+        # the junk's counted and never carried, the nether's floor
+        # strata carried in DIM-1.
         from amulet.libs.leveldb import LevelDB
         tdb = LevelDB(os.path.join(in_world, "db"))
         try:
-            put_tick_record(tdb, 0, 0, 0x33,
+            put_tick_record(tdb, 0, 0, 0, 0x33,
                 '{currentTick:100,tickList:['
                 '{blockState:{name:"minecraft:flowing_water",'
                 'states:{liquid_depth:3},version:17959425},'
@@ -955,11 +1075,11 @@ def main() -> int:
                 'time:95L,x:6,y:64,z:6},'
                 '{blockState:{name:"minecraft:stone",states:{},'
                 'version:17959425},time:100L,x:7,y:64}]}')
-            put_tick_record(tdb, 0, 0, 0x3A,
+            put_tick_record(tdb, 0, 0, 0, 0x3A,
                 '{currentTick:100,tickList:['
                 '{blockState:{name:"minecraft:magma",states:{},'
                 'version:17959425},time:120L,x:7,y:64,z:7}]}')
-            put_tick_record(tdb, 7, 7, 0x33,
+            put_tick_record(tdb, 7, 7, 0, 0x33,
                 '{currentTick:50,tickList:['
                 '{blockState:{name:"minecraft:gravel",states:{},'
                 'version:17959425},time:60L,x:113,y:64,z:113},'
@@ -970,10 +1090,62 @@ def main() -> int:
                 + (8).to_bytes(4, "little", signed=True)
                 + bytes([0x33]),
                 b"not NBT, only bytes")
-            put_biome_record(tdb, 0, 0, biome_record_chunk())
-            put_biome_record(tdb, 1, -2, biome_map_only_record())
+            put_biome_record(tdb, 0, 0, 0, biome_record_chunk())
+            put_biome_record(tdb, 1, -2, 0,
+                             biome_map_only_record())
             for cx, cz, payload in biome_records_orphans():
-                put_biome_record(tdb, cx, cz, payload)
+                put_biome_record(tdb, cx, cz, 0, payload)
+
+            # ---- D21's own half: the nether and the end, and
+            # the keys with nowhere to go -----------------------
+            # The nether record at (0,0): columns 0..255 sit inside
+            # the nether's own 256 and cross, its floor stratum
+            # lands in the section at Y0, the one above stands
+            # where no section exists (counted, never carried).
+            put_biome_record(tdb, 0, 0, 1, nether_biome_record())
+            # Two more subchunks from the fixture's own nether
+            # payload: the nether's chunk at (1,-2) and the end's
+            # at the same coordinates — the sort must hold three
+            # dimensions apart even where their chunks share a
+            # place.
+            parity = tdb.get(chunk_key(0, 0, 0, 1))
+            tdb.put(chunk_key(1, -2, 0, 1), parity)
+            tdb.put(chunk_key(1, -2, 0, 2), parity)
+            # One column at 300 — inside the overworld's 384, past
+            # the nether's 256 — so the map drops while the floor
+            # stratum's cells still cross (D20's halves per
+            # dimension).
+            put_biome_record(tdb, 1, -2, 1,
+                             nether_dropped_map_record())
+            # The nether orphan at (7,7): its cells and its valid
+            # map count, never carry.
+            put_biome_record(tdb, 7, 7, 1, nether_orphan_record())
+            # The nether's tick records: one on the chunk that
+            # converts, one orphan whose entries count.
+            put_tick_record(tdb, 0, 0, 1, 0x33,
+                '{currentTick:50,tickList:['
+                '{blockState:{name:"minecraft:magma",states:{},'
+                'version:17959425},time:110L,x:11,y:64,z:12}]}')
+            put_tick_record(tdb, 6, 6, 1, 0x33,
+                '{currentTick:20,tickList:['
+                '{blockState:{name:"minecraft:stone",states:{},'
+                'version:17959425},time:30L,x:101,y:64,z:101}]}')
+            # The nether's two block-entity documents: one whose
+            # chunk converts (carried), one whose chunk holds no
+            # subchunks (counted) — neither may reach the
+            # overworld's lists at the same coordinates.
+            put_be_record(tdb, 0, 0, 1,
+                          '{id: "minecraft:chest", x: 3, y: 70, z: 4}')
+            put_be_record(tdb, 6, 6, 1,
+                          '{id: "minecraft:chest", x: 99, y: 70, '
+                          'z: 100}')
+            # A dimension number beyond the game's three counts
+            # `other`; the entity list of a real dimension counts
+            # `entities` without being read; its chunk version key
+            # counts `chunk_data`.
+            tdb.put(chunk_key(99, 99, 0, 99), b"nowhere")
+            tdb.put(_record_key(0, 0, 1, 0x32), b"entities")
+            tdb.put(_record_key(0, 0, 1, 0x36), b"chunkver")
         finally:
             tdb.close()
 
@@ -999,17 +1171,20 @@ def main() -> int:
         ref = Reference()
         mismatches = []
         compared = 0
-        for cx, cz in CHUNKS:
-            region = os.path.join(
-                out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+        all_chunks = [(d, cx, cz) for d, cs in DIM_CHUNKS.items()
+                      for cx, cz in cs]
+        for dim, cx, cz in all_chunks:
+            region = region_path(out, dim, cx, cz)
             tag = walk_chunk(region, cx, cz)
             if tag is None:
-                raise AssertionError(f"no output chunk ({cx}, {cz})")
-            ok_cys = sorted(cy for (a, b, cy), (kind, _) in subs.items()
-                            if (a, b) == (cx, cz) and kind == "ok")
+                raise AssertionError(
+                    f"no output chunk (dim {dim}, {cx}, {cz})")
+            ok_cys = sorted(
+                cy for (d, a, b, cy), (kind, _) in subs.items()
+                if (d, a, b) == (dim, cx, cz) and kind == "ok")
             legacy_cys = sorted(
-                cy for (a, b, cy), (kind, _) in subs.items()
-                if (a, b) == (cx, cz) and kind == "legacy")
+                cy for (d, a, b, cy), (kind, _) in subs.items()
+                if (d, a, b) == (dim, cx, cz) and kind == "legacy")
             out_ys = sorted(s["Y"].py_data for s in tag["sections"])
             if out_ys != ok_cys:
                 raise AssertionError(
@@ -1017,7 +1192,7 @@ def main() -> int:
                     f"want the stored non-legacy subchunks {ok_cys}")
 
             for cy in ok_cys + legacy_cys:
-                kind, layers = subs[(cx, cz, cy)]
+                kind, layers = subs[(dim, cx, cz, cy)]
                 if kind == "legacy":
                     # A legacy subchunk writes no section — the
                     # sections list already proved it — and an
@@ -1088,10 +1263,10 @@ def main() -> int:
         # the reference's own name for the block, t = time −
         # currentTick (negative is legal, the record's own delay
         # past due), p 0, water and lava under fluid_ticks.
-        want_lists = tick_mirror(in_world, ref)
-        for cx, cz in CHUNKS:
-            region = os.path.join(
-                out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+        want_lists = {dim: tick_mirror(in_world, ref, dim)
+                      for dim in DIM_CHUNKS}
+        for dim, cx, cz in all_chunks:
+            region = region_path(out, dim, cx, cz)
             tag = walk_chunk(region, cx, cz)
             if tag is None:
                 raise AssertionError(
@@ -1105,10 +1280,10 @@ def main() -> int:
                     f"block_ticks {bt is not None})")
             got = {"fluid": [plain(e) for e in ft],
                    "block": [plain(e) for e in bt]}
-            if got != want_lists[(cx, cz)]:
+            if got != want_lists[dim][(cx, cz)]:
                 raise AssertionError(
                     f"chunk ({cx}, {cz}) tick lists are {got}, "
-                    f"want {want_lists[(cx, cz)]}")
+                    f"want {want_lists[dim][(cx, cz)]}")
         checks += 1
         _log("ok — both tick lists stand in every chunk and carry "
              "every record's entries with the reference's names, "
@@ -1125,18 +1300,18 @@ def main() -> int:
         # range, the chunk with no record) carries no key at all:
         # the reference's own shape for a store that held no biome
         # data there.
-        want_biomes = biome_mirror(in_world, ref)
+        want_biomes = {dim: biome_mirror(in_world, ref, dim)
+                       for dim in DIM_CHUNKS}
         cells_checked = 0
-        for cx, cz in CHUNKS:
-            region = os.path.join(
-                out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+        for dim, cx, cz in all_chunks:
+            region = region_path(out, dim, cx, cz)
             tag = walk_chunk(region, cx, cz)
             if tag is None:
                 raise AssertionError(
                     f"no biome output chunk ({cx}, {cz})")
             for sec in tag["sections"]:
                 cy = sec["Y"].py_data
-                want = want_biomes[(cx, cz)].get(cy)
+                want = want_biomes[dim][(cx, cz)].get(cy)
                 bio = sec.get("biomes")
                 if want is None:
                     if bio is not None:
@@ -1156,11 +1331,12 @@ def main() -> int:
                             f"chunk ({cx}, {cz}) section {cy} cell "
                             f"{i} reads {got[i]}, the reference says "
                             f"{want[i]}")
-        if cells_checked != 256:
+        if cells_checked != 384:
             raise AssertionError(
                 f"checked {cells_checked} biome cells across the "
-                f"sections the record reaches, want 256 (4 heights "
-                f"x 64)")
+                f"sections the records reach, want 384 (the "
+                f"overworld's 4 heights and the nether's 2 floors, "
+                f"64 each)")
         checks += 1
         _log("ok — every section the record reaches carries the "
              "reference's biome for each of its 64 cells, packed "
@@ -1173,41 +1349,83 @@ def main() -> int:
         # back empty — this pins mcme's own spec, not a mirror: the
         # 256 fabricated columns, 9 bits to a value, 7 to a long
         # (37 of them, none spanning two), under MOTION_BLOCKING.
-        want_hm = pack_heightmap([100 + i for i in range(256)])
-        for cx, cz in CHUNKS:
-            region = os.path.join(
-                out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+        # The two maps that cross, spelled from their own
+        # dimension's floor (D20, D21): the overworld's record
+        # spells 100 + i inside 384, the nether's i inside its own
+        # 256 — and no key stands where no map crossed: the refused
+        # maps (one column past each world's top) and the chunks
+        # holding no record at all.
+        want_hm = {
+            (0, 0, 0): pack_heightmap([100 + i for i in range(256)]),
+            (1, 0, 0): pack_heightmap([i for i in range(256)]),
+        }
+        for dim, cx, cz in all_chunks:
+            region = region_path(out, dim, cx, cz)
             tag = walk_chunk(region, cx, cz)
             if tag is None:
                 raise AssertionError(
-                    f"no heightmap output chunk ({cx}, {cz})")
+                    f"no heightmap output chunk (dim {dim}, {cx}, "
+                    f"{cz})")
             hmaps = tag.get("Heightmaps")
-            if (cx, cz) == (0, 0):
-                if hmaps is None:
+            want = want_hm.get((dim, cx, cz))
+            if want is None:
+                if hmaps is not None:
                     raise AssertionError(
-                        "chunk (0, 0) carries no Heightmaps")
-                mb = hmaps.get("MOTION_BLOCKING")
-                if mb is None:
-                    raise AssertionError(
-                        "Heightmaps holds no MOTION_BLOCKING")
-                got = [int(v) for v in mb.py_data]
-                if got != want_hm:
-                    at = (next((i for i in range(min(len(got),
-                                                     len(want_hm)))
-                               if got[i] != want_hm[i]), None)
-                          if len(got) == len(want_hm) else None)
-                    raise AssertionError(
-                        f"MOTION_BLOCKING has {len(got)} longs, "
-                        f"first divergence at {at}: {got} != "
-                        f"{want_hm}")
-            elif hmaps is not None:
+                        f"chunk (dim {dim}, {cx}, {cz}) carries a "
+                        f"Heightmaps for a map its dimension's "
+                        f"height could not spell or held none")
+                continue
+            if hmaps is None:
                 raise AssertionError(
-                    f"chunk ({cx}, {cz}) carries a Heightmaps for "
-                    f"the map the world's height could not spell")
+                    f"chunk (dim {dim}, {cx}, {cz}) carries no "
+                    f"Heightmaps")
+            mb = hmaps.get("MOTION_BLOCKING")
+            if mb is None:
+                raise AssertionError(
+                    "Heightmaps holds no MOTION_BLOCKING")
+            got = [int(v) for v in mb.py_data]
+            if got != want:
+                at = (next((i for i in range(min(len(got),
+                                                 len(want)))
+                           if got[i] != want[i]), None)
+                      if len(got) == len(want) else None)
+                raise AssertionError(
+                    f"MOTION_BLOCKING has {len(got)} longs, "
+                    f"first divergence at {at}: {got} != "
+                    f"{want}")
         checks += 1
-        _log("ok — the map half of the record crosses as 37 "
-             "non-straddling longs under MOTION_BLOCKING, and no "
-             "key stands where no map crossed")
+        _log("ok — each dimension's map half crosses as 37 "
+             "non-straddling longs under MOTION_BLOCKING, spelled "
+             "from its own floor, and no key stands where no map "
+             "crossed")
+
+        # ---- block entities of this world: the nether's own
+        # document, and the overworld's empty lists (D21) ----------
+        # The same coordinates in two dimensions are two chunks:
+        # the nether's document rides in DIM-1 with its mapping's
+        # fields, the overworld's lists at (0,0) stay empty, and
+        # the record whose chunk holds no subchunks is the report's
+        # count, never a list.
+        be_src = load_entity_docs(in_world)
+        for dim, cx, cz in all_chunks:
+            tag = walk_chunk(region_path(out, dim, cx, cz), cx, cz)
+            if tag is None:
+                raise AssertionError(
+                    f"no block-entity output chunk (dim {dim}, "
+                    f"{cx}, {cz})")
+            got = [plain(e)
+                   for e in (tag.get("block_entities") or [])]
+            want = [want_java_doc(d)
+                    for d in be_src.get((dim, cx, cz), [])
+                    if carries(d)]
+            if got != want:
+                raise AssertionError(
+                    f"chunk (dim {dim}, {cx}, {cz}) block_entities "
+                    f"is {got}, want {want}")
+        checks += 1
+        _log("ok — the nether's document arrives in DIM-1 with the "
+             "mapping's fields, and no list reaches across "
+             "dimensions at shared coordinates")
 
         # ---- block entities: the carry against the fixture's own
         # documents (D15) ------------------------------------------
@@ -1230,30 +1448,34 @@ def main() -> int:
                 f"entities report is {be_report}, want at least "
                 f"{WANT_ENTITIES_REPORT}")
         checks += 1
-        _log("ok — the entities fixture's report counts two carried "
-             "documents, the sign and the frame it drops, the nether "
-             "keys as other, and nothing skipped besides")
+        _log("ok — the entities fixture's report counts three "
+             "carried documents (the nether's own beside the "
+             "overworld's two), the sign and the frame it drops, "
+             "and nothing skipped besides")
 
         # And the output's list against the source's records: each
         # carried document with its mapping's fields spelled out,
         # and no document the verdict drops.
         src_docs = load_entity_docs(be_in)
-        for cx, cz in CHUNKS:
-            region = os.path.join(
-                be_out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+        # The store's own dimensions' chunks (D21): the nether's
+        # at (0,0), written to DIM-1 beside the overworld's two.
+        be_chunks = [(0, cx, cz) for cx, cz in CHUNKS] + [(1, 0, 0)]
+        for dim, cx, cz in be_chunks:
+            region = region_path(be_out, dim, cx, cz)
             tag = walk_chunk(region, cx, cz)
             if tag is None:
                 raise AssertionError(
-                    f"no entities output chunk ({cx}, {cz})")
+                    f"no entities output chunk (dim {dim}, {cx}, "
+                    f"{cz})")
             bel = tag.get("block_entities")
             got = [plain(e) for e in (bel or [])]
             want = [want_java_doc(d)
-                    for d in src_docs.get((0, cx, cz), [])
+                    for d in src_docs.get((dim, cx, cz), [])
                     if carries(d)]
             if got != want:
                 raise AssertionError(
-                    f"chunk ({cx}, {cz}) block_entities is {got}, "
-                    f"want {want}")
+                    f"chunk (dim {dim}, {cx}, {cz}) block_entities "
+                    f"is {got}, want {want}")
         checks += 1
         _log("ok — every carried document arrives with the mapping's "
              "fields (id, x/y/z, Items Slot/id/Count, the smelter "

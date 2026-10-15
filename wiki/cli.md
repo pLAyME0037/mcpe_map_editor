@@ -857,22 +857,26 @@ failure part-way, whatever `<out>` got is removed before the error stands —
 an output world is either whole or absent, never a directory someone could
 mistake for a finished conversion.
 
-Each overworld chunk of the store becomes one Java chunk: layer zero of every
+Each chunk of the store becomes one Java chunk, in the directory its own
+dimension reads from — `region/` overworld, `DIM-1/region/` nether,
+`DIM1/region/` end (see [decisions.md](decisions.md)#D21): layer zero of every
 subchunk through the block map — blocks and states both editions spell the
 same pass through, states Bedrock spells differently are renamed to Java's
 (`pillar_axis` to `axis`, `minecraft:sand` with red sand to
 `minecraft:red_sand`), and a state the map does not know takes Java's default,
 the same choice the Python reference makes (see
-[decisions.md](decisions.md)#D12). Sections are written in Y order with a
-plains biome and `Status: minecraft:full`; `Heightmaps` carries the chunk's
-own `MOTION_BLOCKING` map when its Data3D record spelled one inside the
-world's height (see [decisions.md](decisions.md)#D20), and is absent when it
-did not — never computed, never invented.
+[decisions.md](decisions.md)#D12). Sections are written in Y order on the
+dimension's own floor with a plains biome and `Status: minecraft:full`;
+`Heightmaps` carries the chunk's own `MOTION_BLOCKING` map when its Data3D
+record spelled one inside that dimension's height (see
+[decisions.md](decisions.md)#D20), and is absent when it did not — never
+computed, never invented.
 
 What the map cannot carry it drops **and reports**, never failing the run for
 it: block entities, entities, tick lists, the second (waterlogging) layer of a
 subchunk, subchunks whose payload this build does not decode (the pre-palette
-versions), chunks outside the overworld, and the store's own bookkeeping keys.
+versions), keys of a dimension beyond the game's three, and the store's own
+bookkeeping keys.
 A world full of chests converts; the report says what was left behind, and the
 blocks are air in the output where the input could not be carried.
 
@@ -892,12 +896,13 @@ The `--json` shape:
              "legacy_subchunks": 1, "other": 9, "water_layers": 1}}
 ```
 
-`chunks` is overworld chunks written, `subchunks` payloads read and decoded
+`chunks` is chunks written across the store's dimensions, `subchunks` payloads
+read and decoded
 (all-air markers included; the ones that failed are under `skipped`),
 `blocks` non-air positions the output holds. `skipped.chunk_data` counts
 chunk keys that are not subchunks — biome records, chunk versions, entity
 lists; `skipped.other` counts everything else in the store, level metadata
-and other dimensions among it.
+among it and any dimension number beyond the game's three.
 
 ### Reserved, not yet implemented
 

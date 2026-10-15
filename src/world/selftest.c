@@ -4426,11 +4426,19 @@ static void test_translate(void)
 
 /* The output chunk's tree, read back through the region layer. */
 static McmeTag *convert_chunk_root(McmeArena *arena, const char *out,
-                                   int cx, int cz, McmeNbtDoc *doc)
+                                   int32_t dim, int cx, int cz,
+                                   McmeNbtDoc *doc)
 {
     char file[512];
-    snprintf(file, sizeof file, "%s/region/r.%d.%d.mca", out,
-             cx >> 5, cz >> 5);
+    char dimpath[16] = "";
+    if (dim != 0) {
+        const char *dd = NULL;
+        if (mcme_java_dimension_dir(dim, &dd)) {
+            snprintf(dimpath, sizeof dimpath, "%s/", dd);
+        }
+    }
+    snprintf(file, sizeof file, "%s/%sregion/r.%d.%d.mca", out,
+             dimpath, cx >> 5, cz >> 5);
     McmeRegion reg;
     if (!mcme_region_open(&reg, file)) return NULL;
     McmeBuffer nbt;
@@ -4448,19 +4456,21 @@ static McmeTag *convert_chunk_root(McmeArena *arena, const char *out,
 }
 
 /* One fabricated tick record: SNBT in, little-endian bytes out, the
-   chunk's own 9-byte key. The fixture worlds ship no tick records —
+   chunk's own key in its own dimension (D21 — 13 bytes where the
+   dimension speaks). The fixture worlds ship no tick records —
    real ones are everywhere (the census counted 2,235), so D18's test
    writes them. */
 static bool put_tick(McmeArena *arena, McmeLevelDb *db, int32_t cx,
-                     int32_t cz, uint8_t tag, const char *snbt)
+                     int32_t cz, int32_t dim, uint8_t tag,
+                     const char *snbt)
 {
-    uint8_t key[9];
+    uint8_t key[13];
     size_t klen = 0;
     McmeTag *root = NULL;
     McmeBuffer bin;
     mcme_buffer_init(&bin);
     bool ok = db != NULL
-        && mcme_bedrock_key_build(key, sizeof key, &klen, cx, cz, 0,
+        && mcme_bedrock_key_build(key, sizeof key, &klen, cx, cz, dim,
                                   tag, false, 0)
         && mcme_nbt_parse_snbt(arena, snbt, strlen(snbt), &root)
         && root != NULL;
@@ -4504,11 +4514,11 @@ static void check_tick(const McmeTag *list, size_t i, const char *name,
    so D19's test writes them, as binary rather than SNBT because the
    record is not NBT: a heightmap, then the arrays, then padding. */
 static bool put_biome(McmeLevelDb *db, int32_t cx, int32_t cz,
-                      const void *payload, size_t len)
+                      int32_t dim, const void *payload, size_t len)
 {
-    uint8_t key[9];
+    uint8_t key[13];   /* the record's own dimension's key (D21)   */
     size_t klen = 0;
-    return mcme_bedrock_key_build(key, sizeof key, &klen, cx, cz, 0,
+    return mcme_bedrock_key_build(key, sizeof key, &klen, cx, cz, dim,
                                   MCME_BEDROCK_TAG_BIOME_3D, false, 0)
         && mcme_leveldb_put(db, key, klen, payload, len);
 }
@@ -4537,7 +4547,12 @@ static McmeTag *java_section(const McmeTag *root, int8_t y)
    columns: the packing pinned by hand — 7 values to a long, 9 bits
    to a value, none spanning two, 37 longs — and by formula, column i
    reading 100 + i under MOTION_BLOCKING (D20). */
-static void check_heightmap(const McmeTag *root)
+/* The record's map as the chunk packs it: column i reads base + i,
+   nine bits apart, seven to the long, none straddling — and the
+   literals pin the packing itself, whatever the base. The overworld's
+   own records spell 100 + i; the nether's, whose world starts at 0,
+   spells i (D21). */
+static void check_heightmap(const McmeTag *root, int32_t base)
 {
     const McmeTag *hm = root == NULL ? NULL
                                      : mcme_nbt_get(root, "Heightmaps");
@@ -4551,28 +4566,38 @@ static void check_heightmap(const McmeTag *root)
               mb->longs.len);
     if (mb->longs.len != 37) return;
     const int64_t *v = mb->longs.data;
-    /* word 0: columns 0..6 — 100..106, nine bits apart. */
-    CHECK(v[0] == (int64_t)(100ULL | 101ULL << 9 | 102ULL << 18
-                            | 103ULL << 27 | 104ULL << 36
-                            | 105ULL << 45 | 106ULL << 54));
+    /* word 0: columns 0..6, nine bits apart. */
+    CHECK(v[0] == (int64_t)((uint64_t)base
+                            | (uint64_t)(base + 1) << 9
+                            | (uint64_t)(base + 2) << 18
+                            | (uint64_t)(base + 3) << 27
+                            | (uint64_t)(base + 4) << 36
+                            | (uint64_t)(base + 5) << 45
+                            | (uint64_t)(base + 6) << 54));
     /* word 1 starts at column 7 — the wrap is the seven-per-long. */
-    CHECK(v[1] == (int64_t)(107ULL | 108ULL << 9 | 109ULL << 18
-                            | 110ULL << 27 | 111ULL << 36
-                            | 112ULL << 45 | 113ULL << 54));
-    /* word 36 holds the last four columns alone: 252..255. */
-    CHECK(v[36] == (int64_t)(352ULL | 353ULL << 9 | 354ULL << 18
-                             | 355ULL << 27));
+    CHECK(v[1] == (int64_t)((uint64_t)(base + 7)
+                            | (uint64_t)(base + 8) << 9
+                            | (uint64_t)(base + 9) << 18
+                            | (uint64_t)(base + 10) << 27
+                            | (uint64_t)(base + 11) << 36
+                            | (uint64_t)(base + 12) << 45
+                            | (uint64_t)(base + 13) << 54));
+    /* word 36 holds the last four columns alone. */
+    CHECK(v[36] == (int64_t)((uint64_t)(base + 252)
+                             | (uint64_t)(base + 253) << 9
+                             | (uint64_t)(base + 254) << 18
+                             | (uint64_t)(base + 255) << 27));
     for (size_t w = 0; w < 37; ++w) {
         for (size_t j = 0; j < 7; ++j) {
             size_t p = w * 7 + j;
             if (p >= 256) break;
             CHECK_MSG(((uint64_t)v[w] >> (j * 9) & 511)
-                          == (uint64_t)(100 + p),
+                          == (uint64_t)(base + (int32_t)p),
                       "column %zu of long %zu reads %llu, want %zu",
                       j, w,
                       (unsigned long long)((uint64_t)v[w] >> (j * 9)
                                            & 511),
-                      100 + p);
+                      (size_t)(base + (int32_t)p));
         }
     }
 }
@@ -4680,7 +4705,7 @@ static void test_convert(void)
         CHECK(ta != NULL);
         CHECK(ta != NULL && mcme_leveldb_open_rw(&tdb, dbdir));
         if (ta != NULL && tdb != NULL) {
-            CHECK(put_tick(ta, tdb, 0, 0,
+            CHECK(put_tick(ta, tdb, 0, 0, 0,
                 MCME_BEDROCK_TAG_PENDING_TICKS,
                 "{currentTick:100,tickList:["
                 "{blockState:{name:\"minecraft:flowing_water\","
@@ -4691,12 +4716,12 @@ static void test_convert(void)
                 "time:95L,x:6,y:64,z:6},"
                 "{blockState:{name:\"minecraft:stone\","
                 "states:{},version:17959425},time:100L,x:7,y:64}]}"));
-            CHECK(put_tick(ta, tdb, 0, 0,
+            CHECK(put_tick(ta, tdb, 0, 0, 0,
                 MCME_BEDROCK_TAG_RANDOM_TICKS,
                 "{currentTick:100,tickList:["
                 "{blockState:{name:\"minecraft:magma\",states:{},"
                 "version:17959425},time:120L,x:7,y:64,z:7}]}"));
-            CHECK(put_tick(ta, tdb, 5, 5,
+            CHECK(put_tick(ta, tdb, 5, 5, 0,
                 MCME_BEDROCK_TAG_PENDING_TICKS,
                 "{currentTick:50,tickList:["
                 "{blockState:{name:\"minecraft:gravel\",states:{},"
@@ -4742,7 +4767,7 @@ static void test_convert(void)
             q = pl + 16;
             bp[q] = 0x00; bp[q + 1] = 6; q += 5;   /* cy  1: id 6   */
             memset(bp + q, 0xff, 15); q += 15;     /* the game's tail */
-            CHECK(put_biome(tdb, 0, 0, bp, q));
+            CHECK(put_biome(tdb, 0, 0, 0, bp, q));
 
             /* The map the world's height cannot spell: chunk (1,-2)
                holds subchunks but no record, and this record holds
@@ -4759,7 +4784,7 @@ static void test_convert(void)
             }
             mp[(3 * 16 + 5) * 2] = (uint8_t)(400 & 0xff);
             mp[(3 * 16 + 5) * 2 + 1] = (uint8_t)(400 >> 8);
-            CHECK(put_biome(tdb, 1, -2, mp, sizeof mp));
+            CHECK(put_biome(tdb, 1, -2, 0, mp, sizeof mp));
 
             /* The orphan: two arrays for a chunk with no subchunks.
                */
@@ -4767,13 +4792,137 @@ static void test_convert(void)
             memset(op, 0, sizeof op);
             op[512] = 0x00; op[513] = 1;
             op[517] = 0x00; op[518] = 6;
-            CHECK(put_biome(tdb, 5, 5, op, sizeof op));
+            CHECK(put_biome(tdb, 5, 5, 0, op, sizeof op));
 
             /* A payload that is not a record: 24 bytes, no
                heightmap to even begin with. */
-            CHECK(put_biome(tdb, 6, 6, "not a record, only bytes",
+            CHECK(put_biome(tdb, 6, 6, 0, "not a record, only bytes",
                             sizeof "not a record, only bytes" - 1));
+
+            /* D21's own half of the store: the fixture's nether key
+               at (0,0) now converts, and beside it two fabricated
+               nether chunks, one end chunk, and the keys with
+               nowhere to go. The nether record at (0,0): columns
+               0..255 sit inside the nether's 256 and cross, its
+               floor stratum stands in the section at Y0, and the one
+               above stands where no section exists (counted, never
+               carried). */
+            static uint8_t np[512 + 10 + 15];
+            memset(np, 0, sizeof np);
+            for (size_t i = 0; i < 256; ++i) {
+                np[i * 2] = (uint8_t)i;   /* column i reads i       */
+            }
+            np[512] = 0x00; np[513] = 1;  /* cy 0: id 1             */
+            np[517] = 0x00; np[518] = 1;  /* cy 1: id 1             */
+            memset(np + 522, 0xff, 15);   /* the game's own tail    */
+            CHECK(put_biome(tdb, 0, 0, 1, np, sizeof np));
+
+            /* Two more subchunks from the fixture's own nether
+               payload: the nether's chunk at (1,-2) and the end's at
+               the same coordinates - the sort must hold three
+               dimensions apart even where their chunks share a
+               place. */
+            uint8_t skey[14];
+            size_t slen = 0;
+            McmeBuffer got;
+            mcme_buffer_init(&got);
+            bool was_del = false;
+            CHECK(mcme_bedrock_key_build(skey, sizeof skey, &slen,
+                                         0, 0, 1, 0x2f, true, 0));
+            CHECK(mcme_leveldb_get(tdb, skey, slen, &got, &was_del));
+            CHECK(!was_del && got.len > 0);
+            if (got.len > 0) {
+                CHECK(mcme_bedrock_key_build(skey, sizeof skey, &slen,
+                                             1, -2, 1, 0x2f, true, 0));
+                CHECK(mcme_leveldb_put(tdb, skey, slen, got.data,
+                                       got.len));
+                CHECK(mcme_bedrock_key_build(skey, sizeof skey, &slen,
+                                             1, -2, 2, 0x2f, true, 0));
+                CHECK(mcme_leveldb_put(tdb, skey, slen, got.data,
+                                       got.len));
+            }
+            mcme_buffer_free(&got);
+
+            /* The nether record whose one column 300 fits the
+               overworld's 384 and not the nether's 256 (D21's own
+               height): the map drops, its floor stratum's cells
+               still cross beside it (D20's halves, per dimension). */
+            static uint8_t rp[512 + 5];
+            memset(rp, 0, sizeof rp);
+            for (size_t i = 0; i < 256; ++i) {
+                rp[i * 2] = (uint8_t)i;
+            }
+            rp[(3 * 16 + 5) * 2] = (uint8_t)(300 & 0xff);
+            rp[(3 * 16 + 5) * 2 + 1] = (uint8_t)(300 >> 8);
+            rp[512] = 0x00; rp[513] = 1;  /* cy 0: id 1             */
+            CHECK(put_biome(tdb, 1, -2, 1, rp, sizeof rp));
+
+            /* The nether orphan at (7,7): a record whose chunk holds
+               no subchunks - its cells and its map count in their
+               own dimension's half of the report. */
+            static uint8_t nop[512 + 5];
+            memset(nop, 0, sizeof nop);
+            for (size_t i = 0; i < 256; ++i) {
+                nop[i * 2] = (uint8_t)i;
+            }
+            nop[512] = 0x00; nop[513] = 1;
+            CHECK(put_biome(tdb, 7, 7, 1, nop, sizeof nop));
+
+            /* The nether's tick records: one on the chunk that
+               converts (carried, its entries its own - the
+               overworld's records at the same coordinates must
+               never reach it), one orphan whose entries count. */
+            CHECK(put_tick(ta, tdb, 0, 0, 1,
+                MCME_BEDROCK_TAG_PENDING_TICKS,
+                "{currentTick:50,tickList:["
+                "{blockState:{name:\"minecraft:magma\",states:{},"
+                "version:17959425},time:110L,x:11,y:64,z:12}]}"));
+            CHECK(put_tick(ta, tdb, 6, 6, 1,
+                MCME_BEDROCK_TAG_PENDING_TICKS,
+                "{currentTick:20,tickList:["
+                "{blockState:{name:\"minecraft:stone\",states:{},"
+                "version:17959425},time:30L,x:101,y:64,z:101}]}"));
+
+            /* The keys with nowhere to go, by the rules their own
+               dimensions answer to (D21): a number beyond the
+               game's three counts `other`; the entity list of a
+               real dimension counts `entities` without ever being
+               read; its chunk version key counts `chunk_data`. */
+            uint8_t jkey[14];
+            size_t jl = 0;
+            CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
+                                         99, 99, 99, 0x2f, true, 0));
+            CHECK(mcme_leveldb_put(tdb, jkey, jl, "nowhere", 7));
+            CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
+                                         0, 0, 1, 0x32, false, 0));
+            CHECK(mcme_leveldb_put(tdb, jkey, jl, "entities", 8));
+            CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
+                                         0, 0, 1, 0x36, false, 0));
+            CHECK(mcme_leveldb_put(tdb, jkey, jl, "chunkver", 8));
             mcme_leveldb_close(tdb);
+
+            /* The nether's two block-entity documents, put through
+               the write API in dimension 1: one whose chunk
+               converts (carried into the nether's own list), one
+               whose chunk holds no subchunks (counted). The
+               overworld's lists at the same coordinates must stay
+               empty. */
+            McmeTag *chest = NULL;
+            McmeTag *away = NULL;
+            McmeWriteRefusal beref = MCME_WRITE_REFUSAL_NONE;
+            CHECK(mcme_nbt_parse_snbt(ta, "{id: \"minecraft:chest\"}",
+                                      strlen("{id: \"minecraft:chest\"}"),
+                                      &chest));
+            CHECK(mcme_nbt_parse_snbt(ta, "{id: \"minecraft:chest\"}",
+                                      strlen("{id: \"minecraft:chest\"}"),
+                                      &away));
+            CHECK(chest != NULL && away != NULL);
+            CHECK(mcme_bedrock_put_block_entity(dbdir, 3, 70, 4, 1,
+                                                chest, ta, &beref));
+            CHECK(beref == MCME_WRITE_REFUSAL_NONE);
+            CHECK(mcme_bedrock_put_block_entity(dbdir, 99, 70, 100, 1,
+                                                away, ta, &beref));
+            CHECK(beref == MCME_WRITE_REFUSAL_NONE);
         }
         mcme_arena_free(ta);
     }
@@ -4781,11 +4930,14 @@ static void test_convert(void)
     snprintf(out, sizeof out, "%s_java", in);
     CHECK(!mcme_fs_exists(out));
 
-    /* The fixture's own shape, counted: two overworld chunks; the v1
-       legacy subchunk dropped; the second layer's water over stone,
-       dirt and grass — none of them blocks Java gives a waterlogged
-       property — counted position by position (3280); the nether key
-       among the others. */
+    /* The fixture's own shape, counted: the two overworld chunks,
+       the fixture's nether key's chunk beside them (D21 - that key
+       counted `other` before the drop), and the nether and end
+       chunks fabricated beside it; the v1 legacy subchunk dropped;
+       the second layer's water over stone, dirt and grass - none of
+       them blocks Java gives a waterlogged property - counted
+       position by position (3280); the key of a dimension number
+       beyond the game's three among the keys with nowhere to go. */
     McmeConvertReport rep;
     McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
     if (!mcme_convert_bedrock_java(in, out, &rep, &refusal)) {
@@ -4796,43 +4948,51 @@ static void test_convert(void)
         return;
     }
     CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
-    CHECK(rep.chunks == 2);
-    CHECK(rep.subchunks == 7);
-    CHECK(rep.blocks == 24576);
+    CHECK(rep.chunks == 5);
+    CHECK(rep.subchunks == 10);
+    CHECK(rep.blocks == 36864);
     CHECK(rep.legacy_subchunks == 1);
     CHECK(rep.water_positions == 3280);
     CHECK(rep.other == 1);
-    CHECK(rep.block_entities == 0);
-    CHECK(rep.block_entities_carried == 0);
+    CHECK(rep.block_entities == 1);    /* the nether orphan        */
+    CHECK(rep.block_entities_carried == 1);
     CHECK(rep.items == 0);
-    CHECK(rep.entities == 0);
-    CHECK(rep.chunk_data == 0);
-    /* The fabricated records, counted their own way: three entries
-       carried, and four dropped — the entry with no z (1), the
-       orphan's two entries (2), the record that is not NBT (1, a
-       record counts once). */
-    CHECK(rep.ticks_carried == 3);
-    CHECK(rep.ticks == 4);
-    /* The fabricated biome records, counted their own way: four
-       sections' worth of named cells (4 × 64) minus the one cell
-       that took the plains fallback — 255 — and the drops: the two
-       strata with no section to stand in (128), the orphan's
-       arrays (128), the record that is not a record (1, once), and
-       the fallback cell itself (1). */
-    CHECK_MSG(rep.biomes_carried == 255,
-              "biomes_carried is %zu, want 255", rep.biomes_carried);
-    CHECK_MSG(rep.biomes == 258, "biomes is %zu, want 258",
+    CHECK(rep.entities == 1);          /* the nether entity list   */
+    CHECK(rep.chunk_data == 1);        /* its chunk version key    */
+    /* The fabricated records, counted their own way: four entries
+       carried - the overworld's three, the nether chunk's own
+       beside them - and five dropped - the entry with no z (1), the
+       overworld orphan's two entries (2), the record that is not
+       NBT (1, a record counts once), the nether orphan's entry (1)
+       read from its own dimension's key. */
+    CHECK(rep.ticks_carried == 4);
+    CHECK(rep.ticks == 5);
+    /* The fabricated biome records, counted their own way: the
+       overworld's four sections minus its fallback cell - 255 -
+       plus the nether floor strata the sections of their own
+       dimension took (2 x 64) - 383 - and the drops: the two
+       strata with no section (128), the overworld orphan's arrays
+       (128), the record that is not a record (1, once), the
+       fallback cell (1), the nether stratum above its floor with no
+       section (64), and the nether orphan's array (64) - 386. */
+    CHECK_MSG(rep.biomes_carried == 383,
+              "biomes_carried is %zu, want 383", rep.biomes_carried);
+    CHECK_MSG(rep.biomes == 386, "biomes is %zu, want 386",
               rep.biomes);
 
     /* The maps beside them (D20): (0,0)'s record spells every
        column inside the world's height and crosses; (1,-2)'s one
        column past the top drops its map; the orphan's and the
        unreadable record's maps are lost with the chunks they belong
-       to. */
-    CHECK_MSG(rep.heightmaps_carried == 1,
-              "heightmaps_carried is %zu, want 1",
+       to. The nether's half (D21): its record's columns 0..255 fit
+       the nether's own 256 and cross, the second record's one
+       column at 300 - inside the overworld's 384, past the nether's
+       256 - drops, the nether orphan's map counts, and the end's
+       chunk, which holds no record, counts its own. */
+    CHECK_MSG(rep.heightmaps_carried == 2,
+              "heightmaps_carried is %zu, want 2",
               rep.heightmaps_carried);
-    CHECK_MSG(rep.heightmaps == 3, "heightmaps is %zu, want 3",
+    CHECK_MSG(rep.heightmaps == 6, "heightmaps is %zu, want 6",
               rep.heightmaps);
 
     /* The output is a whole world: the scaffold, and the probe's
@@ -4841,6 +5001,15 @@ static void test_convert(void)
     snprintf(file, sizeof file, "%s/region/r.0.0.mca", out);
     CHECK(mcme_fs_exists(file));
     snprintf(file, sizeof file, "%s/region/r.0.-1.mca", out);
+    CHECK(mcme_fs_exists(file));
+    /* Each dimension arrives where Java reads it: the nether in
+       DIM-1, the end in DIM1 - the game's own layout, per
+       dimension (D21). */
+    snprintf(file, sizeof file, "%s/DIM-1/region/r.0.0.mca", out);
+    CHECK(mcme_fs_exists(file));
+    snprintf(file, sizeof file, "%s/DIM-1/region/r.0.-1.mca", out);
+    CHECK(mcme_fs_exists(file));
+    snprintf(file, sizeof file, "%s/DIM1/region/r.0.-1.mca", out);
     CHECK(mcme_fs_exists(file));
     snprintf(file, sizeof file, "%s/level.dat", out);
     CHECK(mcme_fs_exists(file));
@@ -4897,9 +5066,13 @@ static void test_convert(void)
 
         /* The blocks, through the map, section by section. */
         McmeNbtDoc chunk;
-        McmeTag *root = convert_chunk_root(arena, out, 0, 0, &chunk);
+        McmeTag *root = convert_chunk_root(arena, out, 0, 0, 0, &chunk);
         CHECK(root != NULL);
         if (root != NULL) {
+            /* The overworld keeps its own floor (D21): yPos is the
+               floor section, -4 for y -64. */
+            CHECK(mcme_nbt_int_or(mcme_nbt_get(root, "yPos"), 99)
+                  == -4);
             check_java_block(root, 0, 64, 0, "minecraft:stone");
             check_java_block(root, 0, 66, 0,
                 "minecraft:grass_block{snowy: \"false\"}");
@@ -4958,10 +5131,11 @@ static void test_convert(void)
                   && mcme_nbt_get(ground, "biomes") == NULL);
             /* And the record's other half stands beside the
                containers: the map, packed (D20). */
-            check_heightmap(root);
+            check_heightmap(root, 100);
         }
         McmeNbtDoc chunk2;
-        McmeTag *root2 = convert_chunk_root(arena, out, 1, -2, &chunk2);
+        McmeTag *root2 = convert_chunk_root(arena, out, 0, 1, -2,
+                                         &chunk2);
         CHECK(root2 != NULL);
         if (root2 != NULL) {
             check_java_block(root2, 16, 0, -17, "mcme:fixture_211");
@@ -4983,6 +5157,87 @@ static void test_convert(void)
             CHECK(s2 != NULL
                   && mcme_nbt_get(s2, "biomes") == NULL);
         }
+
+        /* The nether's chunk at (0,0): its floor is the
+           dimension's own - yPos 0, one section at Y0 where the
+           store held one subchunk, its own map (columns 0..255,
+           nine bits, seven per long), its own tick entry, its own
+           block entity - and none of the overworld's data at the
+           same coordinates, none of it reaching the overworld's
+           lists (the sort and the pairing hold dimensions apart). */
+        McmeNbtDoc nchunk;
+        McmeTag *nroot = convert_chunk_root(arena, out, 1, 0, 0,
+                                            &nchunk);
+        CHECK(nroot != NULL);
+        if (nroot != NULL) {
+            CHECK(mcme_nbt_int_or(mcme_nbt_get(nroot, "yPos"), 99)
+                  == 0);
+            CHECK(java_section(nroot, 0) != NULL);
+            CHECK(java_section(nroot, -1) == NULL);
+            CHECK(java_section(nroot, 1) == NULL);
+            /* The fixture's nether payload, parity: dirt where
+               (x+y+z) is even, stone where odd - every cell. */
+            check_java_block(nroot, 0, 0, 0, "minecraft:dirt");
+            check_java_block(nroot, 1, 0, 0, "minecraft:stone");
+            check_java_block(nroot, 0, 1, 0, "minecraft:stone");
+            check_java_block(nroot, 15, 15, 15, "minecraft:stone");
+            check_heightmap(nroot, 0);
+            const McmeTag *nfluid = mcme_nbt_get(nroot, "fluid_ticks");
+            const McmeTag *nblockt = mcme_nbt_get(nroot, "block_ticks");
+            CHECK(nfluid != NULL && nfluid->type == MCME_TAG_List
+                  && nfluid->list.len == 0);
+            CHECK(nblockt != NULL && nblockt->type == MCME_TAG_List
+                  && nblockt->list.len == 1);
+            if (nblockt != NULL && nblockt->type == MCME_TAG_List
+                    && nblockt->list.len == 1) {
+                /* its own entry, from its own record (D21) */
+                check_tick(nblockt, 0, "minecraft:magma_block", 60,
+                           11, 64, 12);
+            }
+            const McmeTag *nbe = mcme_nbt_get(nroot, "block_entities");
+            CHECK(nbe != NULL && nbe->type == MCME_TAG_List
+                  && nbe->list.len == 1);
+            /* The floor stratum's cells, plains like the id the map
+               answers with; the record's next stratum stands where
+               the nether holds no section. */
+            static const char *const nplains[] = {"minecraft:plains"};
+            check_biomes(nroot, 0, nplains, 1, NULL, 0);
+        }
+
+        /* The nether's other chunk: the refused map leaves no
+           Heightmaps, while its cells still cross into the floor
+           section (D20's halves, in the nether's own dimension). */
+        McmeNbtDoc n12chunk;
+        McmeTag *n12 = convert_chunk_root(arena, out, 1, 1, -2,
+                                          &n12chunk);
+        CHECK(n12 != NULL);
+        if (n12 != NULL) {
+            CHECK(mcme_nbt_int_or(mcme_nbt_get(n12, "yPos"), 99)
+                  == 0);
+            CHECK(mcme_nbt_get(n12, "Heightmaps") == NULL);
+            static const char *const n12plains[] =
+                {"minecraft:plains"};
+            check_biomes(n12, 0, n12plains, 1, NULL, 0);
+            check_java_block(n12, 0, 0, 0, "minecraft:dirt");
+        }
+
+        /* The end's chunk at the overworld's own coordinates: one
+           dimension's answer, in DIM1, with no record's map and no
+           invented containers. */
+        McmeNbtDoc echunk;
+        McmeTag *eroot = convert_chunk_root(arena, out, 2, 1, -2,
+                                            &echunk);
+        CHECK(eroot != NULL);
+        if (eroot != NULL) {
+            CHECK(mcme_nbt_int_or(mcme_nbt_get(eroot, "yPos"), 99)
+                  == 0);
+            CHECK(java_section(eroot, 0) != NULL);
+            McmeTag *es = java_section(eroot, 0);
+            CHECK(es != NULL
+                  && mcme_nbt_get(es, "biomes") == NULL);
+            CHECK(mcme_nbt_get(eroot, "Heightmaps") == NULL);
+            check_java_block(eroot, 0, 0, 0, "minecraft:dirt");
+        }
         mcme_arena_free(arena);
     }
 
@@ -5001,6 +5256,14 @@ static void test_convert(void)
 
     char region_dir[512];
     snprintf(region_dir, sizeof region_dir, "%s/region", out);
+    remove_store(region_dir);
+    snprintf(region_dir, sizeof region_dir, "%s/DIM-1/region", out);
+    remove_store(region_dir);
+    snprintf(region_dir, sizeof region_dir, "%s/DIM-1", out);
+    remove_store(region_dir);
+    snprintf(region_dir, sizeof region_dir, "%s/DIM1/region", out);
+    remove_store(region_dir);
+    snprintf(region_dir, sizeof region_dir, "%s/DIM1", out);
     remove_store(region_dir);
     snprintf(file, sizeof file, "%s/level.dat", out);
     remove(file);
@@ -5314,13 +5577,21 @@ static void test_convert_carry(void)
     CHECK(rep.heightmaps_carried == 0);
     CHECK(rep.heightmaps == 1);
 
+    /* The store holds no nether or end chunks, so their directories
+       are never made - an absent dimension stays absent (D21). */
+    char dimdir[512];
+    snprintf(dimdir, sizeof dimdir, "%s/DIM-1", out);
+    CHECK(!mcme_fs_exists(dimdir));
+    snprintf(dimdir, sizeof dimdir, "%s/DIM1", out);
+    CHECK(!mcme_fs_exists(dimdir));
+
     /* The output says what the carry said: the stair takes the
        property, the stone does not, the dry stair stays dry. */
     McmeArena *out_arena = mcme_arena_new();
     CHECK(out_arena != NULL);
     if (out_arena != NULL) {
         McmeNbtDoc chunk;
-        McmeTag *root = convert_chunk_root(out_arena, out, 3, 0,
+        McmeTag *root = convert_chunk_root(out_arena, out, 0, 3, 0,
                                            &chunk);
         CHECK(root != NULL);
         if (root != NULL) {

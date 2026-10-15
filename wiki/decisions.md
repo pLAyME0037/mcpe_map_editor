@@ -1037,3 +1037,119 @@ never existed.
 can honestly spell, or refusing `MOTION_BLOCKING` standing alone —
 the compound narrows or widens to what the game takes, and the pin
 follows.
+
+## D21 — Convert carries the nether and the end: keys, floors and directories the game's own
+
+**What crosses.** The game's three dimensions keep every chunk key
+the same way: x, z, the dimension's own number, the tag, the section
+index — the dimension spoken at offset 8 when it is not overworld
+and omitted when it is (len 13/14 against 9/10, the two spellings
+`mcme_bedrock_key_parse` has always taken). Each dimension's chunks
+are written where Java reads them: `region/`, `DIM-1/region/`,
+`DIM1/region/` — the layout the editing verbs' `--dimension`
+documents name, through the same function
+(`mcme_java_dimension_dir`), so the tool's two halves cannot drift
+on where a dimension lives. Nothing inside the chunks changes: the
+payloads, records, documents, ticks and maps convert through
+D15–D20's rules untouched; what they gain is a floor and a height
+of their own. The section list stands on the dimension's floor —
+overworld −64 → yPos −4, nether and end 0 → yPos 0 — the biome
+strata count from that floor, and a heightmap's columns must sit
+inside that dimension's own height: 384 overworld, 256 nether and
+end (D20's `heightmap_fits`, asked per dimension — the fixture's
+nether record spells columns 0..255 and crosses; one column at 300
+sits inside the overworld's 384 and past the nether's 256, so that
+map counts while its cells beside it still cross). No map, no key;
+no record, no containers — D19's shape rules, unchanged.
+
+**Dimensions held apart.** The sort's first key is the dimension:
+(dim, cx, cz, cy). The store's own coordinates collide happily —
+the fixture's end chunk sits at the overworld's own (1,−2), and
+both fixtures hold a nether (0,0) beside an overworld (0,0) — and a
+group walk that did not read the dimension would merge three chunks
+into one and write whichever payload sorted first. Pairing keeps
+the same law: a block-entity, tick or biome record belongs to its
+own dimension's chunk — the nether record at (0,0) never reaches
+the overworld chunk at the same coordinates, the overworld's lists
+stay empty beside the nether's full ones. The output directory is
+made only for a dimension that has chunks: a store with no end
+chunks leaves no `DIM1` at all, the absent-is-the-answer rule the
+containers keep, extended to a whole dimension.
+
+**Counts (D12).** No new report fields: `chunks`, `subchunks`,
+`entities` and `chunk_data` stop being overworld-only, and
+`skipped.other` keeps exactly the keys with nowhere to go — the
+unparseable lengths, and now the dimension numbers beyond the
+game's three (any dword outside 0/1/2), counted like level
+metadata instead of written to a path Java would never open. The
+real store, release, rc=0: `other` 885,435 → 780,267 (780,266
+unparseable + 1 dimension beyond the three); `chunks` 36,849 →
+46,291; `subchunks` 340,599 → 392,032 (+31,938 nether, +19,495
+end); `blocks` 1,395,093,504 → 1,605,763,072; `entities` 10,745 →
+15,501; `chunk_data` 180,969 → 219,867. The records answer their
+own halves: `heightmaps_carried` 36,848 → 46,290 — one per new
+chunk, every nether and end record whose chunk converts has its
+map inside its own height, none refused — and the 236 records whose
+chunks hold no subchunks count their maps beside the one that
+already did (`skipped.heightmaps` 1 → 237); `ticks_carried` 74,361
+→ 107,855, every entry of the 235 nether and end records arriving
+(`skipped.ticks` stays 0); `biomes_carried` 21,696,544 →
+24,977,632 with `skipped.biomes` 102,688 → 628,064 — the same
+rules, the store's own strata and orphans deciding each cell;
+`block_entities_carried` 4,023 → 4,194 and `skipped.block_entities`
+20,723 → 21,214 — the 168 records hold 662 documents, D15's rules
+sending 171 across and 491 to the count (`items` 842 → 896).
+`water_positions` (1,455,655) and `legacy_subchunks` (0) do not
+move: the other dimensions' payloads hold no second layer and no
+pre-palette versions.
+
+**Pinned.** The fixture supplies one nether key; the selftest
+fabricates the rest on its copy, byte for byte what ref_convert
+puts on its own: a nether record whose columns spell their own
+coordinates with two strata from the nether's floor, subchunk
+copies at nether (1,−2) and end (1,−2) — three dimensions one sort
+away from merging — the column-300 record (refused under 256,
+crossing under 384 — the pin on the per-dimension height), an
+orphan, tick records on a converting and an orphan nether chunk,
+two chest documents through mcme's own write API (one carried, one
+counted), and the three keys with nowhere to go. The report is
+exact: 5 chunks, 10 subchunks, 36,864 blocks, 1 `other`,
+block entities 1 carried / 1 counted, 1 entity list, 1 chunk
+version, ticks 4/5, biomes 383/386, heightmaps 2/6, legacy 1,
+water 3,280 — `DIM-1/region/r.0.0.mca`, `DIM-1/region/r.0.-1.mca`
+and `DIM1/region/r.0.-1.mca` present with the parity cells position
+for position, overworld yPos −4 beside nether and end yPos 0, the
+nether's tick and document in the nether's lists and the
+overworld's empty at the same coordinates, and the carry test's
+store — no nether, no end — leaving no `DIM-1` and no `DIM1`.
+ref_convert counts the same world through its own mirrors, now
+asking each dimension for its records from its own floor: 12
+checks (was 11), the twelfth the nether document read back in
+DIM-1 against the fixture's record.
+
+**Rejected.**
+- *Re-zeroing the other dimensions' y onto the overworld's floor*:
+  the store's coordinates are the game's own; the floor belongs to
+  the dimension's section list, not to a translation of every cell
+  — and a heightmap re-zeroed stops answering the world it claims.
+- *Keeping the old rule — len 9/10 only, dims 1 and 2 as `other`*:
+  105,168 keys the game has words for, a nether that converts as a
+  hole, and `other` naming data the report can no longer honestly
+  call unreachable.
+- *A directory for every dimension number a key mentions*: a
+  garbage dword would write a path Java never opens; the number
+  beyond the three counts, like every other key with nowhere to go.
+- *Probing which dimensions have chunks to decide the layout*: the
+  mapping is the game's fixed three — probing would let a stray key
+  invent a directory the game has no name for.
+
+**Cost accepted.** The report stays one set of totals across
+dimensions: a question asked of the nether alone is answered by
+rerunning the store the dimension names. Three dimensions are the
+game's own set; a fourth arrives as `other` until a decision names
+its directory, floor and height together.
+
+**Reverses if:** a load test shows Java reading these dimensions
+somewhere else, or the game grows a fourth whose layout is measured —
+the fixed three become one more row in the table, and the pin
+follows the directory, the floor and the height together.

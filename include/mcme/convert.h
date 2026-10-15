@@ -22,7 +22,7 @@
    count is a named gap (D12); the carried counts exist so "zero
    dropped" can be told apart from "the input had none". */
 typedef struct {
-    size_t chunks;            /* overworld chunks written                */
+    size_t chunks;            /* chunks written, all three dimensions    */
     size_t subchunks;         /* payloads read and decoded                */
     size_t blocks;            /* non-air positions the output holds       */
     size_t block_entities_carried;
@@ -45,7 +45,8 @@ typedef struct {
                                  does not decode, or palettes carrying
                                  legacy (pre-1.9) entries                 */
     size_t other;             /* keys that are neither: level metadata,
-                                 other dimensions, anything unparseable   */
+                                 a number beyond the game's three
+                                 dimensions, anything unparseable         */
     size_t water_positions;   /* second-layer positions not carried —
                                  water beside a block the Java half has
                                  no waterlogged property for, or a layer

@@ -9,6 +9,94 @@ Status vocabulary:
 
 ---
 
+## 2026-10-15 — The other dimensions: 9,442 chunks in DIM-1 and DIM1, 105,168 keys out of `other`
+
+### Built
+
+- Convert answers the game's three dimensions (D21): a key's own
+  dimension is read at its parse (len 9/10 omits it — overworld;
+  len 13/14 speaks it at offset 8), and a number outside 0/1/2
+  counts `other` like any key with nowhere to go. The scan carries
+  the dimension on every reference, the sort's first key is the
+  dimension (dim, cx, cz, cy), and the pairing of block-entity,
+  tick and biome records to their chunks compares it before the
+  coordinates — the fixtures hold nether and overworld chunks at
+  the same (0,0), and an end chunk at the overworld's own (1,−2).
+- Each dimension's chunks are written where Java reads them:
+  `region/`, `DIM-1/region/`, `DIM1/region/`, through the same
+  `mcme_java_dimension_dir` the editing verbs name, and the
+  directory is made only for a dimension that has chunks — a store
+  with no end chunks leaves no `DIM1`, absent as a container list.
+  The chunk root gains its dimension's floor and height: yPos is
+  −4 overworld and 0 nether/end (384 against 256), heightmap
+  columns must sit inside that dimension's height, biome strata
+  count from that floor.
+- Counts: no new report fields. `chunks`, `subchunks`, `entities`
+  and `chunk_data` simply stop being overworld-only; `other`
+  becomes precisely "unparseable, or a dimension beyond the
+  game's three".
+
+### Measured
+
+- The real store, release: rc=0, 1m57, two runs byte-identical
+  JSON. The five moving fields were predicted before the run by
+  passing the store's keys through `scan_key`'s own rules in python
+  (the predictor's numbers, then the run): `other` 885,435 → **780,267**
+  (780,266 unparseable + 1 dimension beyond the three), `chunks`
+  36,849 → **46,291**, `subchunks` 340,599 → **392,032** (+31,938
+  nether, +19,495 end), `entities` 10,745 → **15,501**,
+  `chunk_data` 180,969 → **219,867** — all five exact. The record
+  halves follow their own rules into the same run:
+  `heightmaps_carried` +9,442 (one per new chunk, none refused) to
+  46,290 with the 236 records on chunks without subchunks counted
+  beside D20's one (1 → 237); `ticks_carried` +33,494 from all 235
+  nether and end records, `skipped.ticks` still 0; `biomes_carried`
+  24,977,632 with 628,064 counted; `block_entities_carried` 4,194
+  with 21,214 counted — 662 documents across the 168 records, D15
+  sending 171 across; `items` 896. `water_positions` and
+  `legacy_subchunks` did not move: no second layer and no
+  pre-palette version stands in the other dimensions' payloads.
+- The fixture pins the halves a report cannot show: `DIM-1/region`
+  and `DIM1/region` files with the parity payload's cells position
+  for position, overworld yPos −4 beside nether and end yPos 0,
+  the nether's own tick in `block_ticks` and its chest in
+  `block_entities` with the overworld's lists empty at the same
+  coordinates, the column-300 map refused under the nether's 256
+  while its cells cross, and the carry test's store leaving neither
+  directory behind. The report sits at 5 chunks / 10 subchunks /
+  36,864 blocks / 1 `other`, ticks 4/5, biomes 383/386,
+  heightmaps 2/6. The entities fixture's own nether keys convert
+  now — chunks 2 → 3, three documents carried, `other` 2 → 0 —
+  which is D21 working on a store nobody fabricated.
+- Gates: 5 suites PASS under rebuild.sh, nob, and `rebuild.sh
+  release`; battery 11/11 rc=0, ref_convert 12 checks (the new
+  twelfth: the nether document read back from `DIM-1` against the
+  fixture's record); `tests/` clean.
+
+### Method notes
+
+- The fixture ships exactly one nether subchunk key; it became the
+  seed — both the selftest and ref_convert copy its payload to the
+  fabricated nether and end chunks, so the parity cells in the
+  output are the fixture's own bytes read through two independent
+  walkers.
+- One fabricated record pins both heights: a column at 300 sits
+  inside the overworld's 384 and past the nether's 256 — the same
+  bytes cross or count depending only on the dimension answering.
+- The dimension-first sort is the bug class this drop was built to
+  starve: the fabricated nether (1,−2) and end (1,−2) sit adjacent
+  in key order, and the pairing is caught from both sides — the
+  nether's lists must hold its records, the overworld's must stay
+  empty at the same coordinates.
+- `rebuild.sh` and `nob` compile into the same `build/obj`: run
+  the gates one at a time — a concurrent pair tore an lz4 object
+  mid-link and produced a phantom `undefined reference` that no
+  source contained.
+
+### Next
+
+- Non-container block entities, entities, legacy v1 palettes.
+
 ## 2026-10-15 — The heightmap carry: 36,848 maps, 1 counted instead
 
 ### Built
