@@ -15,8 +15,20 @@
  *      spelling mcme knows. It is refused; the caller reports and
  *      carries air.
  *
- *   2. A handful of names change wholesale: `minecraft:sand` with red
- *      sand is `minecraft:red_sand`, states and all.
+ *   2. The name half is a table. Java spells some of these blocks
+ *      differently, and the spelling can hang off one state value
+ *      (`minecraft:sand` with red sand is `minecraft:red_sand`, a
+ *      log's `old_log_type`, a torch's wall direction) or off a
+ *      pair of values (a dead coral's colour, a cauldron's liquid
+ *      at a fill level). The rows between the GENERATED NAME MAP
+ *      markers in translate.c were enumerated against
+ *      PyMCTranslate for every block name a real world holds, and
+ *      every combination the world contains plus every small state
+ *      product was checked against the reference before the table
+ *      was written (decisions.md D17); tools/ref_convert.py
+ *      re-pins it on every battery run. A name the table does not
+ *      answer keeps its own spelling — the reference's answer for
+ *      a block it does not rename.
  *
  *   3. States pass through under Java's names where the two editions
  *      agree: `pillar_axis` is `axis` on every log, wood, stem and

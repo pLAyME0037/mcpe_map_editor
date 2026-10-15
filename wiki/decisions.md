@@ -696,3 +696,74 @@ re-serialization added `BlockEntityVersion: 0` and dropped
 is the game's format, not the id's fate. The reversal clause does
 not fire: the rule stands, and mcme's earlier namespaced writes
 need no repair — the game canonicalises them itself.
+
+## D17 — The block map learns the names real worlds hold, from the reference that knows them
+
+Before D17 `mcme_translate_block` passed block names through unchanged, and
+the pass-through was wrong: real worlds hold Bedrock names Java 1.20 does
+not have. The full census of one real store — every subchunk payload in
+all three dimensions (392,032 subchunks, 0 decode failures) plus every
+tick record — counted 828 distinct names and 4,011 distinct (name,
+states) combinations, and among them `flowing_water`, `magma`,
+`snow_layer`, `double_plant`, `log`/`log2`, `bed`, coral families: names
+the map handed to Java verbatim, so convert wrote Java worlds the Java
+chunk parser cannot read.
+
+**The table.** The name half is now one table between the GENERATED NAME
+MAP markers in translate.c — 309 rows in three shapes: 132 wholesale
+renames (a name changes under any states), 177 value rules (one state
+value decides: `log`+spruce, `sand`+red, `torch`+west), and 33
+two-condition rows where no single value decides (a dead coral's colour
+times `dead_bit`, a cauldron's liquid times a nonzero `fill_level`).
+Lookup: binary search to the name, rows most-specific first, the first
+row whose conditions all hold wins, else the name's default row, else
+the name unchanged — the reference's own answer for a block it does not
+rename.
+
+**Generated, then checked, then pinned.** Rows are enumerated against
+PyMCTranslate at the versions ref_convert pins (Bedrock 1.20.80 → Java
+1.20.0): every state product up to 64 combinations for names the spec
+table knows, and the world's own combinations for the 163 names the spec
+table has never heard of but the translation answers anyway (the two
+tables are separate — `get_specification` raising says nothing about
+whether the reference can translate). The learner takes the smallest set
+of one- and two-condition rows that reproduces every answer; before the
+table was written, all 4,011 real combinations and 3,753 product
+combinations were checked against the reference: 0 mismatches, 0
+combinations no flat rule could carry. The pinning stays: ref_convert
+reads the markers back out of translate.c on every battery run and
+re-answers every row against the reference, and refuses a table not
+sorted in the byte order the lookup's binary search walks.
+
+**Why the reference decides.** The map is not a wiki transcription:
+Amulet converts with PyMCTranslate, so mcme's answers must match the
+answers the reference gives for the same entry, including where the
+reference keeps a name mcme's judgement would change (parity, D12). Two
+reference facts the enumeration proved: it answers tag-type-sensitively —
+`Byte` 10 and `Int` 10 for `huge_mushroom_bits` are different answers,
+and the pin must ask with the spec's own spelling — and for a name it
+does not know at all it keeps the name, which is what the table does
+too: unknown names carry no rows and the residue is names, not rules.
+
+**Cost accepted — names only.** The state-width gap does not shrink:
+mcme still drops every state except the kept handful, so a renamed water
+block arrives as `minecraft:water` with no `level` — the flooding risk
+D15 named, now with the *name* right. The reference's own
+`liquid_depth` → `level` keeps is a map decision for when the state map
+grows; D17 fixes spellings, not states.
+
+**Rejected.**
+- *Hand-curating the renames the census showed*: the census names a
+  floor — the next world holds the next name — and a hand table rots
+  against a reference that is the actual acceptance test.
+- *Renaming everything at a newer Bedrock bank*: the pin is
+  (1.20.80 → 1.20.0) because that is the pair translate.h documents and
+  ref_convert compares against; moving the bank moves every answer in
+  the battery at once and belongs to a version-pair decision of its own.
+- *Inventing Java-side renames the reference does not answer*: the table
+  records the reference's answers, not Java's ideal.
+
+**Reverses if:** the battery's position-by-position comparison starts
+diverging from the reference on fixture blocks — then the enumeration,
+not the reference, is wrong, and ref_convert's first failing row names
+it.

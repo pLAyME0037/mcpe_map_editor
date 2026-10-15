@@ -4177,6 +4177,75 @@ static void test_translate(void)
         "{name:\"minecraft:sand\",states:{},version:1}",
         "{Name: \"minecraft:sand\"}");
 
+    /* The name table's wholesale renames: names the real world holds
+       that Java spells apart, with no state deciding anything. The
+       water's liquid_depth is an unknown state like any other, so
+       the name changes and the state goes to the Java default. */
+    check_translate(arena,
+        "{name:\"minecraft:flowing_water\","
+        "states:{liquid_depth:3},version:1}",
+        "{Name: \"minecraft:water\"}");
+    check_translate(arena,
+        "{name:\"minecraft:magma\",states:{},version:1}",
+        "{Name: \"minecraft:magma_block\"}");
+    check_translate(arena,
+        "{name:\"minecraft:snow_layer\",states:{height:4},version:1}",
+        "{Name: \"minecraft:snow\"}");
+    /* The blocks Java 1.20 does not have answer as air. */
+    check_translate(arena,
+        "{name:\"minecraft:trial_spawner\",states:{},version:1}",
+        "{Name: \"minecraft:air\"}");
+
+    /* A rename that hangs off one state value: a log's species, a
+       plant's kind, a torch against a wall. The axis family is
+       keyed on the Java name, so spruce_log still carries axis. */
+    check_translate(arena,
+        "{name:\"minecraft:log\","
+        "states:{old_log_type:\"spruce\",pillar_axis:\"x\"},version:1}",
+        "{Name: \"minecraft:spruce_log\", Properties: {axis: \"x\"}}");
+    check_translate(arena,
+        "{name:\"minecraft:log\",states:{},version:1}",
+        "{Name: \"minecraft:oak_log\"}");
+    check_translate(arena,
+        "{name:\"minecraft:double_plant\","
+        "states:{double_plant_type:\"fern\"},version:1}",
+        "{Name: \"minecraft:large_fern\"}");
+    check_translate(arena,
+        "{name:\"minecraft:double_plant\",states:{},version:1}",
+        "{Name: \"minecraft:sunflower\"}");
+    check_translate(arena,
+        "{name:\"minecraft:torch\","
+        "states:{torch_facing_direction:\"west\"},version:1}",
+        "{Name: \"minecraft:wall_torch\"}");
+    /* Numeric conditions take any numeric tag. */
+    check_translate(arena,
+        "{name:\"minecraft:brown_mushroom_block\","
+        "states:{huge_mushroom_bits:10},version:1}",
+        "{Name: \"minecraft:mushroom_stem\"}");
+
+    /* Renames that hang off a pair: a dead coral's colour, and a
+       cauldron's liquid only once it holds something. */
+    check_translate(arena,
+        "{name:\"minecraft:coral_block\","
+        "states:{coral_color:\"red\",dead_bit:0b},version:1}",
+        "{Name: \"minecraft:fire_coral_block\"}");
+    check_translate(arena,
+        "{name:\"minecraft:coral_block\","
+        "states:{coral_color:\"red\",dead_bit:1b},version:1}",
+        "{Name: \"minecraft:dead_fire_coral_block\"}");
+    check_translate(arena,
+        "{name:\"minecraft:cauldron\","
+        "states:{cauldron_liquid:\"lava\",fill_level:0},version:1}",
+        "{Name: \"minecraft:cauldron\"}");
+    check_translate(arena,
+        "{name:\"minecraft:cauldron\","
+        "states:{cauldron_liquid:\"lava\",fill_level:3},version:1}",
+        "{Name: \"minecraft:lava_cauldron\"}");
+    check_translate(arena,
+        "{name:\"minecraft:cauldron\","
+        "states:{cauldron_liquid:\"water\",fill_level:6},version:1}",
+        "{Name: \"minecraft:water_cauldron\"}");
+
     /* The reference answers every Bedrock wire the same — four side
        connections and power 0 — and so does the map. */
     check_translate(arena,

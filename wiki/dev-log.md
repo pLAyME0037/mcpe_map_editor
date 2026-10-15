@@ -9,6 +9,106 @@ Status vocabulary:
 
 ---
 
+## 2026-10-15 — The block map's name half: 309 rows, and the reference answers them all
+
+### Built
+
+- `mcme_translate_block` no longer passes block names through. A
+  generated table — 309 rows between the GENERATED NAME MAP markers
+  in translate.c — says which Java spelling each Bedrock name takes,
+  in three shapes: 132 wholesale renames (`flowing_water` → `water`,
+  `magma` → `magma_block`, `snow_layer` → `snow`, and the blocks
+  Java 1.20 does not have → `air`), 177 rules on one state value
+  (`log` + spruce → `spruce_log`, `sand` + red, `torch` + west →
+  `wall_torch`, a mushroom's bit count → `mushroom_stem`), and 33
+  rules on a *pair* of values where no single value decides — a dead
+  coral's colour times `dead_bit`, a cauldron's liquid only once
+  `fill_level` is nonzero. Lookup: binary search to the name's
+  first row, rows most-specific first, first row whose conditions
+  all hold wins, else the name's default row, else the name
+  unchanged — the reference's answer for a block it does not rename.
+- Integration: the axis-suffix family and the mushroom-stem
+  exception are keyed on the *Java* name (`spruce_log` ends in
+  `_log`), the reference-forced wire states stay keyed on the
+  Bedrock one, and the hand-written red-sand special case is gone —
+  the table covers it, so one mechanism answers every name.
+  decisions.md D17.
+- `tools/ref_convert.py` grew a seventh check: it reads the markers
+  back out of translate.c, re-answers every row against
+  PyMCTranslate at the pinned versions, and refuses a table not
+  sorted in the byte order the binary search walks. The check also
+  shook out a latent bug in the tool itself: the answer cache keyed
+  on values alone, so `Byte` 10 and `Int` 10 — which the reference
+  answers *differently* — shared one entry; the key now carries the
+  tag type.
+- selftest `test_translate` grew 15 cases across the table's shapes
+  (wholesale, one-state, two-condition, numeric values, the →air
+  blocks), including `spruce_log` keeping `axis` and an empty
+  cauldron staying `cauldron`.
+
+### Measured
+
+- Census of the closed Oct-14 snapshot, all three dimensions:
+  392,032 subchunk payloads (0 decode failures) and 2,235 tick
+  records → **828 distinct names**, 4,011 distinct (name, states)
+  combinations. Java 1.20 has 602 of the names; **226 it does not**,
+  and before this entry every one of those passed through the map
+  verbatim.
+- Generation: all 4,011 real combinations and 3,753 state-product
+  combinations checked against the reference — 0 mismatches,
+  0 combinations no flat rule could carry, 0 names the reference
+  cannot answer. 163 of the names have no `get_specification`
+  entry although the translation answers them fine (the spec table
+  and the map are separate tables); their rules come from the
+  world's own states.
+- Gates: 5 suites PASS under rebuild.sh and nob; battery 11/11
+  rc=0 (ref_convert now prints 7 checks); goldens untouched.
+- Real world, `--json convert` to java/1.20: rc=0, 36,849 chunks,
+  340,599 subchunks, 1,395,093,504 blocks;
+  `block_entities_carried` 4,023; `skipped.block_entities` 20,723;
+  `skipped.items` 842; `water_positions` 1,455,655;
+  `skipped.chunk_data` 219,817; `entities` 10,745; `other` 885,435;
+  `legacy` 0.
+- Residue, counted by walking every output chunk's decompressed
+  palettes (742 distinct names): of the 226 java-invalid input
+  names, **134 are renamed away** and **92 survive — every one of
+  them because the reference itself keeps the name**: spot checks
+  through the pinned pair give `planks`+birch → `minecraft:planks`,
+  `red_flower`+poppy → `minecraft:red_flower`, `wool`+red →
+  `minecraft:wool`, `short_grass` → itself (with the properties
+  dropped, `props={}`), while `log`+birch → `minecraft:birch_log`
+  and `bed`+red → `minecraft:red_bed` — the table matches those
+  answers row for row. The 92 are 83 `minecraft:` names (1.21-era
+  content the 1.20.80 bank predates — pale_oak, poplar, resin,
+  leaf_litter, wildflowers — plus legacy aliases `leaves`,
+  `leaves2`, `planks`, `wool`, `wood`, `red_flower`…) covering
+  77,591 positions, and 9 `fxnt:` names the census found in the
+  bedrock palettes (61 positions), outside the map's namespace
+  entirely. Java/1.20 cannot read those — the bank-version gap,
+  named in D17's cost, fixed only by moving the version pair.
+
+### Method notes
+
+- The reference is tag-type sensitive and the world agrees with the
+  spec about types: `huge_mushroom_bits` `Int` 10 is
+  `mushroom_stem`, `Byte` 10 falls to the default
+  `brown_mushroom_block`. Enumeration, the pin, and the selftest all
+  ask with the spec's own spelling; the C lookup stays
+  type-insensitive because real palettes carry the spec's types.
+- Region chunks are zlib-compressed inside the `.mca`, so grepping
+  the output for names sees nothing — the first residue scan
+  reported a false green (empty name set, "0 residue"). The scan
+  that counts walks all 36,849 chunks through the reference tool's
+  own decompressing `walk_chunk`; residue claims come from it.
+
+### Next
+
+- D18: the tick carry — pending-tick records (0x33) and random
+  ticks (0x3a) split into Java's `fluid_ticks` and `block_ticks`,
+  translated through the same table. Then the rest of Phase 4 in
+  order: biomes (Data3D), heightmaps, other dimensions,
+  non-container block entities, entities, legacy palettes.
+
 ## 2026-10-14 — Load test: the game keeps the documents and rewrites the id to its own spelling
 
 ### Built

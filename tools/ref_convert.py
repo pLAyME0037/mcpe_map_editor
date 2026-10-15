@@ -69,6 +69,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -225,7 +226,9 @@ class Reference:
         pass-through states are set aside."""
         if states is None:      # legacy: no Java spelling at all
             return AIR, {}, {}
-        key = (name, repr(sorted((k, py(v)) for k, v in states.items())))
+        key = (name,
+               repr(sorted((k, type(v).__name__, py(v))
+                           for k, v in states.items())))
         if key not in self._cache:
             out_name, props, unknown = self._translate(name, states)
             if unknown:
@@ -505,6 +508,125 @@ def load_level(path: str, little_endian: bool, skip_header: bool):
     return data
 
 
+# The generated table read back out of src/translate/translate.c:
+# rows are {"from", state, sval, ival, state2, sval2, ival2, "to"},
+# NULL where a condition does not exist.
+ROW_RE = re.compile(
+    r'\{"([^"]+)",'
+    r'\s+(?:"([^"]+)"|NULL),'
+    r'\s+(?:"([^"]+)"|NULL),'
+    r'\s+(-?\d+),'
+    r'\s+(?:"([^"]+)"|NULL),'
+    r'\s+(?:"([^"]+)"|NULL),'
+    r'\s+(-?\d+),'
+    r'\s+"([^"]+)"\},')
+NUMERIC = (amulet_nbt.ByteTag, amulet_nbt.IntTag, amulet_nbt.ShortTag,
+           amulet_nbt.LongTag)
+
+
+def sv(snbt: str):
+    """A spec value in its SNBT spelling, back as a tag — the
+    reference is tag-type sensitive, so the spelling matters."""
+    s = snbt.strip()
+    if s.startswith('"'):
+        return amulet_nbt.StringTag(s[1:-1])
+    if s[-1:] in ("b", "B"):
+        return amulet_nbt.ByteTag(int(s[:-1]))
+    if s[-1:] in ("s", "S"):
+        return amulet_nbt.ShortTag(int(s[:-1]))
+    if s[-1:] in ("l", "L"):
+        return amulet_nbt.LongTag(int(s[:-1]))
+    try:
+        return amulet_nbt.IntTag(int(s))
+    except ValueError:
+        return amulet_nbt.FloatTag(float(s))
+
+
+def spec_of(ref, name):
+    """The bedrock spec's (properties, defaults), or (None, {}) for
+    a name the spec table has never heard of — the translation can
+    still answer it, and the world's own states are the pin then."""
+    ns, base = name.split(":", 1)
+    try:
+        d = dict(ref._bed.block.get_specification(ns, base))
+    except Exception:
+        return None, {}
+    return (d.get("properties") or None), (d.get("defaults") or {})
+
+
+def state_spellings(spec_props, conds):
+    """Every tag spelling a condition might carry: the spec's own
+    where it knows the value (what the state products were checked
+    with), and both plausible numeric tags otherwise."""
+    per = []
+    for state, sval, ival in conds:
+        if sval is not None:
+            per.append([(state, amulet_nbt.StringTag(sval))])
+            continue
+        tag = None
+        if spec_props and state in spec_props:
+            for snbt in spec_props[state]:
+                t = sv(snbt)
+                if isinstance(t, NUMERIC) and int(t.py_data) == ival:
+                    tag = t
+                    break
+        if tag is not None:
+            per.append([(state, tag)])
+        else:
+            per.append([(state, amulet_nbt.ByteTag(ival)),
+                        (state, amulet_nbt.IntTag(ival))])
+    out = [{}]
+    for opts in per:
+        out = [dict(list(d.items()) + [o]) for d in out for o in opts]
+    return out
+
+
+def pin_name_map(ref) -> int:
+    """The generated name table re-pinned against the reference:
+    every row's conditions answer the row's Java name the way the
+    reference answers, and the groups stay in the byte order
+    resolve_java_name's binary search walks (decisions.md#D17)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        os.pardir, "src", "translate", "translate.c")
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    if "---- BEGIN GENERATED NAME MAP ----" not in src \
+            or "---- END GENERATED NAME MAP ----" not in src:
+        raise AssertionError(
+            "the generated name map's markers are missing from "
+            "translate.c")
+    body = src.split("---- BEGIN GENERATED NAME MAP ----", 1)[1]\
+        .split("---- END GENERATED NAME MAP ----", 1)[0]
+    rows = ROW_RE.findall(body)
+    if not rows:
+        raise AssertionError("the generated name map holds no rows")
+    order = [r[0] for r in rows]
+    if order != sorted(order):
+        raise AssertionError(
+            "the name map is not sorted by name; the lookup's binary "
+            "search walks byte order")
+    for from_name, st1, sv1, iv1, st2, sv2, iv2, to in rows:
+        # findall hands back '' for the NULL branches of a row.
+        st1, sv1 = st1 or None, sv1 or None
+        st2, sv2 = st2 or None, sv2 or None
+        spec_props, defaults = spec_of(ref, from_name)
+        base_states = {k: sv(v) for k, v in defaults.items()}
+        conds = [] if st1 is None else [(st1, sv1, int(iv1))]
+        if st2 is not None:
+            conds.append((st2, sv2, int(iv2)))
+        answers = set()
+        for extra in state_spellings(spec_props, conds):
+            states = dict(base_states)
+            states.update(extra)
+            answers.add(ref.answer(from_name, states)[0])
+        if to not in answers:
+            raise AssertionError(
+                f"{from_name} {tuple(c[0] for c in conds)}: the "
+                f"reference answers {sorted(answers)}, the table "
+                f"says {to}")
+    return len(rows)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mcme", required=True)
@@ -704,6 +826,12 @@ def main() -> int:
         _log("ok — level.dat carries the name, the seed under "
              "WorldGenSettings, the spawn under SpawnX/Y/Z, and "
              "DataVersion 3463")
+
+        # ---- the generated name map, against the reference ----------
+        pinned = pin_name_map(ref)
+        checks += 1
+        _log(f"ok — the name map's {pinned} rows all answer the way "
+             "the reference answers, in the order the lookup walks")
 
         # ---- the documented refusals -------------------------------
         # a --to that names no edition: usage
