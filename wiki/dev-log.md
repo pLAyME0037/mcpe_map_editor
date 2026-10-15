@@ -9,6 +9,89 @@ Status vocabulary:
 
 ---
 
+## 2026-10-15 — The heightmap carry: 36,848 maps, 1 counted instead
+
+### Built
+
+- Convert writes the record's other half: the Data3D record's 512-byte
+  int16[256] heightmap, already Java's numbers (first air above the
+  floor) and already Java's order (x + 16z), packed the way 1.16+
+  spells a map — 9 bits to a value, 7 values to a long, none spanning
+  two, 37 longs — as the chunk's `Heightmaps` compound with one
+  entry, `MOTION_BLOCKING`. A map crosses when the record decodes
+  and every column sits inside the world's 0..384 (`heightmap_fits`);
+  otherwise that half counts while the cells beside it still cross.
+  No map → no key: the store's own shape, D19's rule applied to the
+  record's other half.
+- Counts (D12): root `heightmaps_carried` per map written;
+  `skipped.heightmaps` for a converted chunk whose store holds no
+  record, a record that will not decode (its map lost with it), a
+  column outside the height, an orphan record's map; a tombstone
+  counts neither half. The drops line grows `heightmaps`, the JSON
+  grows `heightmaps_carried` and `skipped.heightmaps`, the carried
+  sentence reports the total.
+- New constant `MCME_BEDROCK_HEIGHTMAP_COLS` (256) beside the biome
+  cells' 64: the first build packed through the cells constant and
+  the pin caught columns 64..255 reading zero.
+
+### Measured
+
+- The semantics, against the reference's own read: 2,560 columns
+  across ten chunks of one real store — 2,188 exactly top + 65 (the
+  value is the first air, relative to the floor at −64); the 372
+  that differ all have something that does not block motion on top
+  (short grass, vines, ferns, torches, flowers, snow layers — 23
+  names) or top one of 29 columns the game's own bookkeeping still
+  counts below (crimson stairs, trapdoors, a fence, a chain, a
+  path) — and every differing value points at a real block below,
+  none at nothing. Water, ice and leaves tops never differ: fluids
+  and leaves count. That is `MOTION_BLOCKING` — not
+  `WORLD_SURFACE` (would count the grass), not
+  `MOTION_BLOCKING_NO_LEAVES` (would drop the canopy), not
+  `OCEAN_FLOOR` (the store's dominant value, 127 on 4,475,483
+  columns, sits at y62 — sea level, not the floor).
+- mcme's own verb agrees with the record end to end: `chunk height
+  (0,0)` reports surface y112 moss — the record's value 177;
+  `chunk height (13,0)` reports a poppy at y63 — the record's
+  value 127 counts the y62 ground under it, the plant left out.
+- Real world, `--json convert` to java/1.20 (release): rc=0, 1m56 —
+  the same 36,849 chunks / 340,599 subchunks / 1,395,093,504 blocks,
+  **`heightmaps_carried` 36,848, `skipped.heightmaps` 1**, and
+  36,848 + 1 = 36,849 = the chunks exactly (the one chunk whose
+  record the store never held; no orphan, no refusal — every
+  column sat inside 10..309). Every other count byte-identical to
+  D19's run: the two reports differ in exactly the two new fields.
+- Gates: 5 suites PASS under rebuild.sh, nob, and
+  `rebuild.sh release`; battery 11/11 rc=0, ref_convert 11 checks;
+  `tests/` clean.
+
+### Method notes
+
+- Nothing to mirror: amulet's Bedrock reader parks the columns in
+  `misc["height"]`, its Java writer packs `misc["height_mapC"]`, and
+  nothing bridges them — the golden java fixture's ten chunks each
+  hold an empty `Heightmaps` compound. ref_convert pins mcme's own
+  spec instead (D18's pattern): its independent packer lays the
+  fabricated columns over all 37 longs, and the selftest pins word
+  0, word 1's wrap, word 36's four, and the formula everywhere. The
+  fabricated columns spell their own coordinates — column i reads
+  100 + i — so an order slip in either packing shows as a wrong
+  number.
+- The fixture's new record is map-only: no arrays (a record may
+  hold none — the containers keep their no-key shape) and one
+  column at 400, past the world's 384, dropping only the map. The
+  reports pin 1/3 (bad map, orphan, junk) and 0/2 (entities
+  fixture: both chunks record-less).
+- The `chunk height` verb's earlier timeouts were the ASan build's
+  speed opening a 258MB store, not a hang: release answers in
+  10.8s, and the measurements above went through the reference's
+  own decoder in a single process.
+
+### Next
+
+- Other dimensions, non-container block entities, entities,
+  legacy v1 palettes.
+
 ## 2026-10-15 — The biome carry: 21,696,544 cells, 102,688 counted instead
 
 ### Built

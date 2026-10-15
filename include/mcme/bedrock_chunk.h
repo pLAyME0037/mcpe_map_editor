@@ -171,6 +171,7 @@ bool mcme_bedrock_subchunk_set(McmeBedrockSubchunk *sc,
                               const McmeNbtDoc *block);
 
 #define MCME_BEDROCK_BIOME_CELLS      64u /* one 4x4x4 cell block      */
+#define MCME_BEDROCK_HEIGHTMAP_COLS  256u /* the record's column heights */
 #define MCME_BEDROCK_BIOME_MAX_ARRAYS 24u /* one world height of them  */
 
 /*

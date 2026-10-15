@@ -2890,6 +2890,7 @@ static void print_convert_drops(const McmeConvertReport *r)
         { r->water_positions,  "water position",
                                "water positions" },
         { r->biomes,           "biome cell",     "biome cells" },
+        { r->heightmaps,       "heightmap",      "heightmaps" },
         { r->block_entities,   "block entity",   "block entities" },
         { r->items,            "item stack",     "item stacks" },
         { r->ticks,            "tick entry",     "tick entries" },
@@ -3003,6 +3004,8 @@ static int cmd_convert(int argc, char **argv)
                                 (double)rep.ticks_carried);
         cJSON_AddNumberToObject(root, "biomes_carried",
                                 (double)rep.biomes_carried);
+        cJSON_AddNumberToObject(root, "heightmaps_carried",
+                                (double)rep.heightmaps_carried);
         cJSON_AddNumberToObject(skipped, "biomes",
                                 (double)rep.biomes);
         cJSON_AddNumberToObject(skipped, "block_entities",
@@ -3011,6 +3014,8 @@ static int cmd_convert(int argc, char **argv)
                                 (double)rep.chunk_data);
         cJSON_AddNumberToObject(skipped, "entities",
                                 (double)rep.entities);
+        cJSON_AddNumberToObject(skipped, "heightmaps",
+                                (double)rep.heightmaps);
         cJSON_AddNumberToObject(skipped, "items",
                                 (double)rep.items);
         cJSON_AddNumberToObject(skipped, "legacy_subchunks",
@@ -3033,6 +3038,10 @@ static int cmd_convert(int argc, char **argv)
         }
         if (rep.biomes_carried > 0) {
             printf(" — %zu biome cells carried", rep.biomes_carried);
+        }
+        if (rep.heightmaps_carried > 0) {
+            printf(" — %zu heightmaps carried",
+                   rep.heightmaps_carried);
         }
         putchar('\n');
         print_convert_drops(&rep);

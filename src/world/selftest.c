@@ -4533,6 +4533,50 @@ static McmeTag *java_section(const McmeTag *root, int8_t y)
 /* The section's biomes container held to its content: the palette's
    names in order, and the packed data — absent, as the format's
    one-name shorthand, when the caller passes none. */
+/* The converted chunk's heightmap, held to the fabricated record's
+   columns: the packing pinned by hand — 7 values to a long, 9 bits
+   to a value, none spanning two, 37 longs — and by formula, column i
+   reading 100 + i under MOTION_BLOCKING (D20). */
+static void check_heightmap(const McmeTag *root)
+{
+    const McmeTag *hm = root == NULL ? NULL
+                                     : mcme_nbt_get(root, "Heightmaps");
+    CHECK_MSG(hm != NULL, "the chunk holds no Heightmaps");
+    if (hm == NULL || hm->type != MCME_TAG_Compound) return;
+    const McmeTag *mb = mcme_nbt_get(hm, "MOTION_BLOCKING");
+    CHECK_MSG(mb != NULL, "Heightmaps holds no MOTION_BLOCKING");
+    if (mb == NULL || mb->type != MCME_TAG_Long_Array) return;
+    CHECK_MSG(mb->longs.len == 37,
+              "MOTION_BLOCKING spells %zu longs, want 37",
+              mb->longs.len);
+    if (mb->longs.len != 37) return;
+    const int64_t *v = mb->longs.data;
+    /* word 0: columns 0..6 — 100..106, nine bits apart. */
+    CHECK(v[0] == (int64_t)(100ULL | 101ULL << 9 | 102ULL << 18
+                            | 103ULL << 27 | 104ULL << 36
+                            | 105ULL << 45 | 106ULL << 54));
+    /* word 1 starts at column 7 — the wrap is the seven-per-long. */
+    CHECK(v[1] == (int64_t)(107ULL | 108ULL << 9 | 109ULL << 18
+                            | 110ULL << 27 | 111ULL << 36
+                            | 112ULL << 45 | 113ULL << 54));
+    /* word 36 holds the last four columns alone: 252..255. */
+    CHECK(v[36] == (int64_t)(352ULL | 353ULL << 9 | 354ULL << 18
+                             | 355ULL << 27));
+    for (size_t w = 0; w < 37; ++w) {
+        for (size_t j = 0; j < 7; ++j) {
+            size_t p = w * 7 + j;
+            if (p >= 256) break;
+            CHECK_MSG(((uint64_t)v[w] >> (j * 9) & 511)
+                          == (uint64_t)(100 + p),
+                      "column %zu of long %zu reads %llu, want %zu",
+                      j, w,
+                      (unsigned long long)((uint64_t)v[w] >> (j * 9)
+                                           & 511),
+                      100 + p);
+        }
+    }
+}
+
 static void check_biomes(const McmeTag *root, int8_t y,
                          const char *const *names, size_t nnames,
                          const int64_t *data, size_t ndata)
@@ -4611,7 +4655,7 @@ static void test_convert(void)
     CHECK(mcme_fs_write(lvl, raw, raw_len));
     free(raw);
 
-    /* Four tick records and three Data3D records, fabricated on the
+    /* Four tick records and four Data3D records, fabricated on the
        copy — the fixture ships none of either. The ticks: a
        scheduled record whose entries go through the same map the
        palettes use and split Java's two lists by content (with one
@@ -4625,7 +4669,9 @@ static void test_convert(void)
        mixed array whose third id the map does not know (the cell
        holding it becomes the reference's plains fallback and
        counts), and the uniform id 6 on top — ending in the game's
-       0xFF tail; an
+       0xFF tail; chunk (1,-2)'s map-only record (no arrays, and one
+       column past the world's top, so its map drops and counts while
+       the chunk keeps no invented containers); an
        orphan's two arrays (counted, never carried); and a payload
        that is not a record (it counts once). */
     {
@@ -4666,11 +4712,18 @@ static void test_convert(void)
             CHECK(mcme_leveldb_put(tdb, gkey, gklen,
                                    "not NBT, only bytes", 19));
 
-            /* The Data3D records: a zeroed heightmap (the fixture
-               column measures nothing; the map is carried but not
-               written yet), then the arrays byte by byte. */
+            /* The Data3D records: a heightmap whose columns spell
+               their own coordinates — column i (i = z*16 + x) reads
+               100 + i, inside the world's height — so any slip in
+               the record's order or Java's packing shows as a wrong
+               number; then the arrays byte by byte. */
             static uint8_t bp[512 + 25 + 1041 + 5 + 15];
             memset(bp, 0, sizeof bp);
+            for (size_t i = 0; i < 256; ++i) {
+                int32_t v = 100 + (int32_t)i;
+                bp[i * 2] = (uint8_t)(v & 0xff);
+                bp[i * 2 + 1] = (uint8_t)(v >> 8);
+            }
             size_t q = 512;
             bp[q] = 0x00; bp[q + 1] = 3; q += 5;   /* cy -4: id 3   */
             bp[q] = 0x00; bp[q + 1] = 1; q += 5;   /* cy -3: id 1   */
@@ -4690,6 +4743,23 @@ static void test_convert(void)
             bp[q] = 0x00; bp[q + 1] = 6; q += 5;   /* cy  1: id 6   */
             memset(bp + q, 0xff, 15); q += 15;     /* the game's tail */
             CHECK(put_biome(tdb, 0, 0, bp, q));
+
+            /* The map the world's height cannot spell: chunk (1,-2)
+               holds subchunks but no record, and this record holds
+               no arrays (a record may hold none) and one column past
+               the world's top — 400 above the floor, where the
+               overworld's 384 ends. The map drops and counts; the
+               chunk's containers keep the shape of no biome data
+               (D20). */
+            static uint8_t mp[512];
+            for (size_t i = 0; i < 256; ++i) {
+                int32_t v = 100 + (int32_t)i;
+                mp[i * 2] = (uint8_t)(v & 0xff);
+                mp[i * 2 + 1] = (uint8_t)(v >> 8);
+            }
+            mp[(3 * 16 + 5) * 2] = (uint8_t)(400 & 0xff);
+            mp[(3 * 16 + 5) * 2 + 1] = (uint8_t)(400 >> 8);
+            CHECK(put_biome(tdb, 1, -2, mp, sizeof mp));
 
             /* The orphan: two arrays for a chunk with no subchunks.
                */
@@ -4753,6 +4823,17 @@ static void test_convert(void)
               "biomes_carried is %zu, want 255", rep.biomes_carried);
     CHECK_MSG(rep.biomes == 258, "biomes is %zu, want 258",
               rep.biomes);
+
+    /* The maps beside them (D20): (0,0)'s record spells every
+       column inside the world's height and crosses; (1,-2)'s one
+       column past the top drops its map; the orphan's and the
+       unreadable record's maps are lost with the chunks they belong
+       to. */
+    CHECK_MSG(rep.heightmaps_carried == 1,
+              "heightmaps_carried is %zu, want 1",
+              rep.heightmaps_carried);
+    CHECK_MSG(rep.heightmaps == 3, "heightmaps is %zu, want 3",
+              rep.heightmaps);
 
     /* The output is a whole world: the scaffold, and the probe's
        verdict on it. */
@@ -4875,21 +4956,26 @@ static void test_convert(void)
             CHECK(ground != NULL);
             CHECK(ground != NULL
                   && mcme_nbt_get(ground, "biomes") == NULL);
+            /* And the record's other half stands beside the
+               containers: the map, packed (D20). */
+            check_heightmap(root);
         }
         McmeNbtDoc chunk2;
         McmeTag *root2 = convert_chunk_root(arena, out, 1, -2, &chunk2);
         CHECK(root2 != NULL);
         if (root2 != NULL) {
             check_java_block(root2, 16, 0, -17, "mcme:fixture_211");
-            /* The chunk no record touched still spells both tick
-               lists — empty, never absent. */
+            /* The chunk whose record spelled no map the world could
+               hold gets no Heightmaps at all (D20), while both tick
+               lists still stand — empty, never absent. */
+            CHECK(mcme_nbt_get(root2, "Heightmaps") == NULL);
             const McmeTag *ft2 = mcme_nbt_get(root2, "fluid_ticks");
             const McmeTag *bt2 = mcme_nbt_get(root2, "block_ticks");
             CHECK(ft2 != NULL && ft2->type == MCME_TAG_List
                   && ft2->list.len == 0);
             CHECK(bt2 != NULL && bt2->type == MCME_TAG_List
                   && bt2->list.len == 0);
-            /* And the chunk no biome record touched keeps no
+            /* And the chunk whose record held no arrays keeps no
                invented container — the reference's own shape for
                a store that held no biome data here. */
             McmeTag *s2 = java_section(root2, 0);
@@ -5223,6 +5309,10 @@ static void test_convert_carry(void)
     CHECK(rep.entities == 0);
     CHECK(rep.chunk_data == 0);
     CHECK(rep.other == 0);
+    /* A converted chunk the store holds no record for: no map
+       crosses, and the drop counts (D20). */
+    CHECK(rep.heightmaps_carried == 0);
+    CHECK(rep.heightmaps == 1);
 
     /* The output says what the carry said: the stair takes the
        property, the stone does not, the dry stair stays dry. */

@@ -864,8 +864,10 @@ same pass through, states Bedrock spells differently are renamed to Java's
 `minecraft:red_sand`), and a state the map does not know takes Java's default,
 the same choice the Python reference makes (see
 [decisions.md](decisions.md)#D12). Sections are written in Y order with a
-plains biome and `Status: minecraft:full`; `Heightmaps` is not computed yet
-(the gap is logged in [dev-log.md](dev-log.md)).
+plains biome and `Status: minecraft:full`; `Heightmaps` carries the chunk's
+own `MOTION_BLOCKING` map when its Data3D record spelled one inside the
+world's height (see [decisions.md](decisions.md)#D20), and is absent when it
+did not — never computed, never invented.
 
 What the map cannot carry it drops **and reports**, never failing the run for
 it: block entities, entities, tick lists, the second (waterlogging) layer of a

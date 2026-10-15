@@ -111,11 +111,13 @@ WANT_REPORT = {
     "block_entities_carried": 0,
     "ticks_carried": 3,
     "biomes_carried": 255,
+    "heightmaps_carried": 1,
     "skipped": {
         "biomes": 258,
         "block_entities": 0,
         "chunk_data": 0,
         "entities": 0,
+        "heightmaps": 3,
         "items": 0,
         "legacy_subchunks": 1,
         "other": 1,
@@ -134,11 +136,13 @@ WANT_ENTITIES_REPORT = {
     "block_entities_carried": 2,
     "ticks_carried": 0,
     "biomes_carried": 0,
+    "heightmaps_carried": 0,
     "skipped": {
         "biomes": 0,
         "block_entities": 2,
         "chunk_data": 0,
         "entities": 0,
+        "heightmaps": 2,
         "items": 0,
         "legacy_subchunks": 0,
         "other": 2,
@@ -413,14 +417,18 @@ def put_biome_record(db, cx: int, cz: int, payload: bytes) -> None:
 
 def biome_record_chunk() -> bytes:
     """Chunk (0,0)'s record, byte for byte what the selftest writes:
-    a zeroed heightmap, then six arrays from the world floor — the
+    a heightmap whose columns spell their own coordinates — column i
+    (i = z*16 + x) reads 100 + i, inside the world's height — then
+    six arrays from the world floor — the
     id-3 rename in the single form, two strata with no subchunk to
     stand in (their cells count, never carry), the uniform id 1, a
     mixed width-2 array whose third id the map does not know (the
     cell holding it becomes the reference's plains fallback and
     counts), and the uniform id 6 on top — then the game's 0xFF
     tail, which both decoders walk off a byte at a time."""
-    rec = bytearray(512)                      # heightmap: zeros
+    rec = bytearray(512)                      # heightmap: 100 + i
+    for i in range(256):
+        rec[i * 2:i * 2 + 2] = (100 + i).to_bytes(2, "little")
     rec += bytes([0x00, 3, 0, 0, 0])          # cy -4: one id 3
     rec += bytes([0x00, 1, 0, 0, 0])          # cy -3: one id 1
     rec += bytes([0x00, 1, 0, 0, 0])          # cy -2: one id 1
@@ -453,6 +461,30 @@ def biome_records_orphans() -> list:
         (5, 5, bytes(orphan)),
         (6, 6, b"not a record, only bytes"),
     ]
+
+
+def biome_map_only_record() -> bytes:
+    """Chunk (1,-2)'s record, byte for byte what the selftest
+    writes: no arrays at all (a record may hold none) and one column
+    past the world's top — 400 above the floor, where the
+    overworld's 384 ends — so the map drops and counts while the
+    chunk keeps no invented containers (D20)."""
+    rec = bytearray(512)
+    for i in range(256):
+        rec[i * 2:i * 2 + 2] = (100 + i).to_bytes(2, "little")
+    bad = 3 * 16 + 5                          # column (x=5, z=3)
+    rec[bad * 2:bad * 2 + 2] = (400).to_bytes(2, "little")
+    return bytes(rec)
+
+
+def pack_heightmap(values) -> list:
+    """Java's own packing of a 256-column map, as 1.16+ spells it:
+    9 bits to a value, 7 values to a long, none spanning two — 37
+    longs (decisions.md#D20)."""
+    longs = [0] * 37
+    for p, v in enumerate(values):
+        longs[p // 7] |= (v & 0x1FF) << ((p % 7) * 9)
+    return longs
 
 
 def tick_mirror(world: str, ref) -> dict:
@@ -939,6 +971,7 @@ def main() -> int:
                 + bytes([0x33]),
                 b"not NBT, only bytes")
             put_biome_record(tdb, 0, 0, biome_record_chunk())
+            put_biome_record(tdb, 1, -2, biome_map_only_record())
             for cx, cz, payload in biome_records_orphans():
                 put_biome_record(tdb, cx, cz, payload)
         finally:
@@ -1132,6 +1165,49 @@ def main() -> int:
         _log("ok — every section the record reaches carries the "
              "reference's biome for each of its 64 cells, packed "
              "cell by cell, and every other section keeps no key")
+
+        # ---- heightmaps: the record's other half, packed Java's
+        # way under the one name it can honestly answer (D20). The
+        # reference reads Bedrock's columns into misc["height"] and
+        # writes no height_mapC from them, so its own compound comes
+        # back empty — this pins mcme's own spec, not a mirror: the
+        # 256 fabricated columns, 9 bits to a value, 7 to a long
+        # (37 of them, none spanning two), under MOTION_BLOCKING.
+        want_hm = pack_heightmap([100 + i for i in range(256)])
+        for cx, cz in CHUNKS:
+            region = os.path.join(
+                out, "region", f"r.{cx >> 5}.{cz >> 5}.mca")
+            tag = walk_chunk(region, cx, cz)
+            if tag is None:
+                raise AssertionError(
+                    f"no heightmap output chunk ({cx}, {cz})")
+            hmaps = tag.get("Heightmaps")
+            if (cx, cz) == (0, 0):
+                if hmaps is None:
+                    raise AssertionError(
+                        "chunk (0, 0) carries no Heightmaps")
+                mb = hmaps.get("MOTION_BLOCKING")
+                if mb is None:
+                    raise AssertionError(
+                        "Heightmaps holds no MOTION_BLOCKING")
+                got = [int(v) for v in mb.py_data]
+                if got != want_hm:
+                    at = (next((i for i in range(min(len(got),
+                                                     len(want_hm)))
+                               if got[i] != want_hm[i]), None)
+                          if len(got) == len(want_hm) else None)
+                    raise AssertionError(
+                        f"MOTION_BLOCKING has {len(got)} longs, "
+                        f"first divergence at {at}: {got} != "
+                        f"{want_hm}")
+            elif hmaps is not None:
+                raise AssertionError(
+                    f"chunk ({cx}, {cz}) carries a Heightmaps for "
+                    f"the map the world's height could not spell")
+        checks += 1
+        _log("ok — the map half of the record crosses as 37 "
+             "non-straddling longs under MOTION_BLOCKING, and no "
+             "key stands where no map crossed")
 
         # ---- block entities: the carry against the fixture's own
         # documents (D15) ------------------------------------------

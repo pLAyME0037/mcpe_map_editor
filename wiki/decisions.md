@@ -948,3 +948,92 @@ refusing a biome container mcme wrote — a bits count, a palette
 placement, or a key where the game expects none — then the shape
 narrows to what the game takes and ref_convert's mirror narrows
 with it.
+
+## D20 — Convert carries the heightmap: the record's own columns, under `MOTION_BLOCKING`
+
+**What crosses.** The chunk's Data3D record opens with its other half:
+512 bytes, 256 little-endian int16 column heights. Java wants the
+same columns under a `Heightmaps` compound — 9 bits to a value,
+7 values to a long, none spanning two (37 longs, the 1.16+ shape),
+the value counting blocks above the world's bottom. The measured
+store answers that spec with no arithmetic at all: its columns read
+10..309, inside the 0..384 the overworld's height spells, and each
+value is the first air above the floor — mcme's own `chunk height`
+verb and the record agree column for column (y112 moss under value
+177; a poppy at y63 over the y62 ground that value 127 counts).
+Only the packing changes; the order is the record's own (x + 16z =
+Java's index), so nothing moves.
+
+**Which name.** One name: `MOTION_BLOCKING`, and the semantics were
+measured, not assumed — 2,560 columns across ten chunks of one real
+store, blocks read through the reference, record values beside them.
+2,188 columns agree with top + 65 exactly; the 372 that differ all
+have something that does not block motion on top (short grass, vines,
+ferns, torches, flowers, snow layers — 23 names) or top one of 29
+columns the game's own bookkeeping still counts below (crimson
+stairs, trapdoors, a fence, a chain, a path), and every differing
+value points at a real block below — none at nothing. Water, ice and
+leaves tops never differ: fluids and leaves count. That is
+`MOTION_BLOCKING` and none of its fellows — `WORLD_SURFACE` would
+count the grass (measured out), `MOTION_BLOCKING_NO_LEAVES` would
+drop the canopy (measured in), `OCEAN_FLOOR` would read the sea
+floor where the store's dominant value, 127 on 4,475,483 columns,
+sits at y62 — sea level — and the `_WG` pair is worldgen-era. The
+29 exotic columns carry the store's own bookkeeping unchanged: the
+same stance ticks and biomes take, the store's words.
+
+**Counts (D12).** Root `heightmaps_carried`, one per map that
+crosses; `skipped.heightmaps` one per map that does not: a converted
+chunk whose store holds no record, a record that will not decode (its
+map is lost with the record, counted beside its cells), a column
+outside the world's height (that half refused, the cells beside it
+still cross), an orphan record's map (counted where its cells
+count). A tombstone counts neither half. The real store: 36,848 + 1
+= 36,849, its converted chunks exactly.
+
+**Absent when the store is.** No map crossed → no `Heightmaps` key —
+D19's "no array → no key" rule applied to the record's other half,
+the store's own shape, and absent is the game's answer to compute.
+
+**Pinned on the reference itself.** The reference writes nothing to
+pin against: amulet's Bedrock reader parks the columns in
+`misc["height"]`, its Java writer packs `misc["height_mapC"]`, and
+nothing bridges the two — the golden java fixture's ten chunks each
+hold an empty `Heightmaps` compound. So, as in D18, mcme pins its
+own spec: ref_convert packs the fabricated columns through its own
+implementation and compares all 37 longs against the output's
+`MOTION_BLOCKING`; the selftest pins word 0's seven values nine bits
+apart, word 1's wrap, word 36's four, and the formula over every
+column. The fabricated columns spell their own coordinates (column i
+reads 100 + i), so an order slip in either packing shows as a wrong
+number. Both reports stay exact: 1 carried / 3 counted on the
+fixture (the bad map, the orphan, the junk record) and 0 / 2 on the
+entities fixture (both chunks record-less).
+
+**Rejected.**
+- *Computing the map from the payloads mcme already reads*: it would
+  mean inventing Java's motion-blocking set — which the game's own
+  columns show is not quite any documented one — where the store
+  already answers.
+- *Writing all six names with the one value*: `OCEAN_FLOOR` over the
+  store's sea-surface columns would be a lie the record itself
+  contradicts.
+- *The empty compound, beside the reference's shape*: two spellings
+  of nothing, and absent is the one the store speaks.
+- *Clamping a column outside the world, or widening the value's
+  range*: a column the world's height cannot spell is a record that
+  does not answer the world it claims; that half counts, the cells
+  beside it still cross.
+
+**Cost accepted.** mcme's editing verbs never write a heightmap —
+`chunk height` derives its answer from payloads for the same reason —
+so a store mcme has edited carries the map the game last wrote for
+those chunks: stale by design, like every other record convert
+faithfully translates. 29 columns ride the game's own bookkeeping
+unexamined; one map counts on the real store, the chunk whose record
+never existed.
+
+**Reverses if:** a load test shows Java wanting a second map mcme
+can honestly spell, or refusing `MOTION_BLOCKING` standing alone —
+the compound narrows or widens to what the game takes, and the pin
+follows.

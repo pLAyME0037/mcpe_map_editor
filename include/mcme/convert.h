@@ -65,6 +65,15 @@ typedef struct {
                                  whose section mcme does not write, or a
                                  record that will not decode (counted
                                  once — half a record is not a count)   */
+    size_t heightmaps_carried;/* the chunk's heightmap — the Data3D
+                                 record's 256 columns, already Java's
+                                 own numbers — written as the chunk's
+                                 MOTION_BLOCKING map (D20)              */
+    size_t heightmaps;        /* maps not carried: a converted chunk
+                                 whose store held no record, a record
+                                 that will not decode (its map is lost
+                                 with it), a column the world's height
+                                 cannot spell, an orphan record's map  */
 } McmeConvertReport;
 
 /*

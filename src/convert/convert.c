@@ -1295,6 +1295,56 @@ static bool count_unconverted_biomes(McmeLevelDb *db,
                                      McmeConvertReport *rep,
                                      McmeWriteRefusal *refusal);
 
+/* The largest value a heightmap column can spell: the overworld's
+   384 blocks above the floor, both ends included — the range Java's
+   9-bit maps hold, and the one the measured store's columns sat in
+   (10..309, over 36,848 records). */
+enum { kJavaHeightMax = 384 };
+
+/* The record's heightmap, every column inside the world Java
+   spells. One column outside is not a map mcme writes: that half is
+   refused and counted, the cells beside it still cross (D20). */
+static bool heightmap_fits(const int16_t *hm)
+{
+    for (size_t i = 0; i < MCME_BEDROCK_HEIGHTMAP_COLS; ++i) {
+        if (hm[i] < 0 || hm[i] > kJavaHeightMax) return false;
+    }
+    return true;
+}
+
+/* One Java heightmap: the record's 256 columns packed the way 1.16+
+   spells them — 9 bits to a value, 7 values to a long, none
+   spanning two, 37 longs — under the one name the record can
+   honestly answer. The columns are already Java's values (first air
+   above the floor, collidables and fluids counted) and already
+   Java's order (x + 16z): the record and the map speak the same
+   numbers, and only the packing changes. */
+static bool make_heightmap(McmeArena *arena, const int16_t *hm,
+                           McmeTag **out)
+{
+    enum { kBits = 9, kPerLong = 7, kLongs = 37 };
+    *out = NULL;
+    int64_t *longs = mcme_arena_alloc(arena, kLongs * sizeof *longs);
+    if (longs == NULL) return false;
+    memset(longs, 0, kLongs * sizeof *longs);
+    for (size_t p = 0; p < MCME_BEDROCK_HEIGHTMAP_COLS; ++p) {
+        size_t word = p / kPerLong;
+        size_t bit = (p % kPerLong) * kBits;
+        longs[word] |= (int64_t)((uint64_t)(uint16_t)hm[p] << bit);
+    }
+    McmeTag *data = mcme_nbt_new(arena, MCME_TAG_Long_Array);
+    McmeTag *maps = mcme_nbt_new(arena, MCME_TAG_Compound);
+    if (data == NULL || maps == NULL
+        || !mcme_nbt_set_longs(arena, data, longs, kLongs)
+        || !mcme_nbt_compound_init(arena, maps, 1)
+        || !mcme_nbt_compound_put(arena, maps, "MOTION_BLOCKING", 15,
+                                  data)) {
+        return false;
+    }
+    *out = maps;
+    return true;
+}
+
 static bool convert_chunk(McmeLevelDb *db, const char *out,
                           const SubRef *subs, size_t n,
                           const BeRef *bes, size_t nb,
@@ -1334,9 +1384,13 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
        game means, and its cells count as not carried like any other
        record the chunk gets no use from. A record that will not
        decode drops every cell it would have held, counted once; a
-       tombstone held nothing to drop. */
+       tombstone held nothing to drop. The record's other half — its
+       heightmap — rides the same verdicts and counts for itself:
+       it crosses when the record decodes and every column spells
+       inside the world's height (D20). */
     McmeBedrockBiomes bis;
     bool has_biomes = false;
+    bool has_heightmap = false;
     memset(&bis, 0, sizeof bis);
     if (nbi > 1
             && !count_unconverted_biomes(db, biomes + 1, nbi - 1, arena,
@@ -1359,16 +1413,28 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         }
         if (deleted) {
             mcme_buffer_free(&val);
+            /* A tombstone held no map either — nothing to drop. */
         } else if (!mcme_bedrock_biome_decode(&bis, arena, val.data,
                                               val.len,
                                               kBedrockFloorCy)) {
             mcme_buffer_free(&val);
             mcme_clear_error();
-            rep->biomes += 1;   /* the record counts once */
+            rep->biomes += 1;      /* the record counts once    */
+            rep->heightmaps += 1;  /* its map is lost with it   */
         } else {
             mcme_buffer_free(&val);
             has_biomes = true;
+            /* The map crosses when every column is one the world's
+               height spells; the cells cross regardless (D20). */
+            has_heightmap = heightmap_fits(bis.heightmap);
+            if (has_heightmap) rep->heightmaps_carried++;
+            else rep->heightmaps += 1;
         }
+    } else {
+        /* A converted chunk whose store held no record: nothing for
+           the cells to come from, nothing for the map either — and
+           the map counts, the drop it is (D20). */
+        rep->heightmaps += 1;
     }
     uint8_t taken[MCME_BEDROCK_BIOME_MAX_ARRAYS] = {0};
 
@@ -1582,6 +1648,19 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
                                  fluid_list)
         && mcme_nbt_compound_put(arena, root, "block_ticks", 11,
                                  block_list);
+    /* MOTION_BLOCKING: the chunk's own heightmap, the other half of
+       the same Data3D record the biomes came from, its columns
+       already Java's numbers (D20). A chunk whose record held no
+       writable map gets no key at all — the shape the store speaks,
+       and absent is the game's own answer to compute. */
+    McmeTag *hmaps = NULL;
+    if (has_heightmap
+            && !make_heightmap(arena, bis.heightmap, &hmaps)) {
+        ok = false;
+    }
+    ok = ok && (hmaps == NULL
+                || mcme_nbt_compound_put(arena, root, "Heightmaps",
+                                         10, hmaps));
     if (!ok) {
         mcme_set_error("out of memory building the chunk at "
                        "(%d, %d)", cx, cz);
@@ -1738,11 +1817,15 @@ static bool count_unconverted_biomes(McmeLevelDb *db,
                                        kBedrockFloorCy)) {
             mcme_buffer_free(&val);
             mcme_clear_error();
-            rep->biomes += 1;   /* the record counts once */
+            rep->biomes += 1;      /* the record counts once   */
+            rep->heightmaps += 1;  /* its map is lost with it  */
             continue;
         }
         mcme_buffer_free(&val);
         rep->biomes += biomes.count * MCME_BEDROCK_BIOME_CELLS;
+        /* The map of a record no chunk gets: counted, never carried
+           (D20) — the same rule its cells already follow. */
+        rep->heightmaps += 1;
     }
     return true;
 }
