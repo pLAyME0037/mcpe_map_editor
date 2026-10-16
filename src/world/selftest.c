@@ -4479,36 +4479,49 @@ static void test_translate(void)
     CHECK(arena != NULL);
     if (arena == NULL) return;
 
-    /* Both editions spell it the same: through, value tag untouched. */
+    /* The state map's rule (D27): a state carries over only where
+       the reference's answer differs from the default an absent
+       property stands for. Stone has nothing to carry; grass_block's
+       snowy answers the default at every value, so it stays absent. */
     check_translate(arena,
         "{name:\"minecraft:stone\",states:{},version:1}",
         "{Name: \"minecraft:stone\"}");
     check_translate(arena,
         "{name:\"minecraft:grass_block\","
         "states:{snowy:\"false\"},version:1}",
-        "{Name: \"minecraft:grass_block\", "
-        "Properties: {snowy: \"false\"}}");
+        "{Name: \"minecraft:grass_block\"}");
+    check_translate(arena,
+        "{name:\"minecraft:grass_block\","
+        "states:{snowy:\"true\"},version:1}",
+        "{Name: \"minecraft:grass_block\"}");
 
-    /* The axis rename every log, wood, stem and hyphae spells. */
+    /* The axis rename: x carries over, y is the reference's default
+       answer and stays absent. */
     check_translate(arena,
         "{name:\"minecraft:oak_log\",states:{pillar_axis:\"x\"},version:1}",
         "{Name: \"minecraft:oak_log\", Properties: {axis: \"x\"}}");
     check_translate(arena,
         "{name:\"minecraft:birch_log\",states:{pillar_axis:\"y\"},version:1}",
-        "{Name: \"minecraft:birch_log\", Properties: {axis: \"y\"}}");
-    /* Java's mushroom stem takes no properties at all, so its
-       pillar_axis is an unknown state like any other. */
+        "{Name: \"minecraft:birch_log\"}");
+    /* The bedrock 1.20.80 spec does not register mushroom_stem, so
+       its pillar_axis is an unknown state like any other — no rows,
+       no properties (the brown mushroom block's bits are what carry
+       the stem's Java properties). */
     check_translate(arena,
         "{name:\"minecraft:mushroom_stem\","
         "states:{pillar_axis:\"z\"},version:1}",
         "{Name: \"minecraft:mushroom_stem\"}");
 
-    /* A kept state with a byte value keeps the byte; a dropped one
-       takes the Java default. */
+    /* Furnace's facing_direction is not its 1.20.80 state either,
+       and lit answers the default at every value — byte or not. */
     check_translate(arena,
         "{name:\"minecraft:furnace\","
         "states:{facing_direction:2,lit:0b},version:1}",
-        "{Name: \"minecraft:furnace\", Properties: {lit: 0b}}");
+        "{Name: \"minecraft:furnace\"}");
+    check_translate(arena,
+        "{name:\"minecraft:furnace\","
+        "states:{facing_direction:2,lit:1b},version:1}",
+        "{Name: \"minecraft:furnace\"}");
 
     /* Red sand is a name, not a state, on the Java side. */
     check_translate(arena,
@@ -4520,18 +4533,19 @@ static void test_translate(void)
 
     /* The name table's wholesale renames: names the real world holds
        that Java spells apart, with no state deciding anything. The
-       water's liquid_depth is an unknown state like any other, so
-       the name changes and the state goes to the Java default. */
+       renamed block's own states still answer through the state map:
+       water's liquid_depth is its level, snow layer's height is one
+       less than its layers. */
     check_translate(arena,
         "{name:\"minecraft:flowing_water\","
         "states:{liquid_depth:3},version:1}",
-        "{Name: \"minecraft:water\"}");
+        "{Name: \"minecraft:water\", Properties: {level: \"3\"}}");
     check_translate(arena,
         "{name:\"minecraft:magma\",states:{},version:1}",
         "{Name: \"minecraft:magma_block\"}");
     check_translate(arena,
         "{name:\"minecraft:snow_layer\",states:{height:4},version:1}",
-        "{Name: \"minecraft:snow\"}");
+        "{Name: \"minecraft:snow\", Properties: {layers: \"5\"}}");
     /* The blocks Java 1.20 does not have answer as air. */
     check_translate(arena,
         "{name:\"minecraft:trial_spawner\",states:{},version:1}",
@@ -4557,12 +4571,15 @@ static void test_translate(void)
     check_translate(arena,
         "{name:\"minecraft:torch\","
         "states:{torch_facing_direction:\"west\"},version:1}",
-        "{Name: \"minecraft:wall_torch\"}");
+        "{Name: \"minecraft:wall_torch\", "
+        "Properties: {facing: \"east\"}}");
     /* Numeric conditions take any numeric tag. */
     check_translate(arena,
         "{name:\"minecraft:brown_mushroom_block\","
         "states:{huge_mushroom_bits:10},version:1}",
-        "{Name: \"minecraft:mushroom_stem\"}");
+        "{Name: \"minecraft:mushroom_stem\", "
+        "Properties: {east: \"true\", north: \"true\", "
+        "south: \"true\", west: \"true\"}}");
 
     /* Renames that hang off a pair: a dead coral's colour, and a
        cauldron's liquid only once it holds something. */
@@ -4581,20 +4598,27 @@ static void test_translate(void)
     check_translate(arena,
         "{name:\"minecraft:cauldron\","
         "states:{cauldron_liquid:\"lava\",fill_level:3},version:1}",
-        "{Name: \"minecraft:lava_cauldron\"}");
+        "{Name: \"minecraft:lava_cauldron\", "
+        "Properties: {level: \"false\"}}");
     check_translate(arena,
         "{name:\"minecraft:cauldron\","
         "states:{cauldron_liquid:\"water\",fill_level:6},version:1}",
-        "{Name: \"minecraft:water_cauldron\"}");
+        "{Name: \"minecraft:water_cauldron\", "
+        "Properties: {level: \"3\"}}");
 
-    /* The reference answers every Bedrock wire the same — four side
-       connections and power 0 — and so does the map. */
+    /* The wire: its connection and powered states change nothing —
+       the sides and power the reference's empty-cell answer carries
+       are the defaults an absent property stands for — and its
+       redstone_signal carries the signal itself, raw (D27). */
     check_translate(arena,
         "{name:\"minecraft:redstone_wire\","
         "states:{north:\"side\",south:\"side\",powered:1b},version:1}",
+        "{Name: \"minecraft:redstone_wire\"}");
+    check_translate(arena,
+        "{name:\"minecraft:redstone_wire\","
+        "states:{redstone_signal:7},version:1}",
         "{Name: \"minecraft:redstone_wire\", "
-        "Properties: {east: \"side\", north: \"side\", power: \"0\", "
-        "south: \"side\", west: \"side\"}}");
+        "Properties: {power: \"7\"}}");
 
     /* States the map does not know take the Java default — the
        reference's own answer — and a val-only entry answers through
@@ -5384,17 +5408,12 @@ static void test_convert(void)
             CHECK(mcme_nbt_int_or(mcme_nbt_get(root, "yPos"), 99)
                   == -4);
             check_java_block(root, 0, 64, 0, "minecraft:stone");
-            check_java_block(root, 0, 66, 0,
-                "minecraft:grass_block{snowy: \"false\"}");
+            check_java_block(root, 0, 66, 0, "minecraft:grass_block");
             check_java_block(root, 0, 67, 0,
                 "minecraft:oak_log{axis: \"x\"}");
-            check_java_block(root, 0, -60, 0,
-                "minecraft:furnace{lit: 0b}");
+            check_java_block(root, 0, -60, 0, "minecraft:furnace");
             check_java_block(root, 0, -50, 0, "minecraft:red_sand");
-            check_java_block(root, 0, 0, 0,
-                "minecraft:redstone_wire{east: \"side\", "
-                "north: \"side\", power: \"0\", south: \"side\", "
-                "west: \"side\"}");
+            check_java_block(root, 0, 0, 0, "minecraft:redstone_wire");
             check_java_block(root, 0, 10, 0, "minecraft:water");
             /* The v1 legacy subchunk's blocks (D24): the log row —
                val 4 is oak, axis x — and the stone, grass and dirt

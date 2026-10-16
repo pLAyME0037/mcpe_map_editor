@@ -523,6 +523,15 @@ def canon(props: dict) -> dict:
     return out
 
 
+def raw_str(v) -> str:
+    """A reference property value in the NBT string mcme writes:
+    bools need their java spelling (str(True) would be "True"), and
+    everything else str()s the way the table records it raw."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
 def props_match(got: dict, want: dict, default: dict):
     """The two sides agree when every property agrees, a property
     only the reference has is the Java default (mcme left it where
@@ -1365,6 +1374,17 @@ FLAT_ROW_RE = re.compile(
 FLAT_ID_RE = re.compile(r'"([^"]+)",')
 LEGACY_DEF_RE = re.compile(r'\{"([^"]+)", "([^"]+)", (\d+), \{(.*)\}\},')
 LEGACY_PROP_RE = re.compile(r'\{"([^"]*)","([^"]*)"\}')
+STATE_ROW_RE = re.compile(
+    r'\{"([^"]+)", "([^"]+)", (\d+), (-?\d+), (?:"([^"]+)"|NULL), '
+    r'"([^"]+)", "([^"]+)"\},')
+RESCUE_ROW_RE = re.compile(
+    r'\{"([^"]+)", "([^"]+)", (\d+), (-?\d+), (?:"([^"]+)"|NULL), '
+    r'"([^"]+)", (\d+), (-?\d+), (?:"([^"]+)"|NULL), '
+    r'"([^"]+)", "([^"]+)"\},')
+TAG_CODE = {amulet_nbt.ByteTag: 1, amulet_nbt.ShortTag: 2,
+            amulet_nbt.IntTag: 3, amulet_nbt.LongTag: 4,
+            amulet_nbt.FloatTag: 5, amulet_nbt.DoubleTag: 6,
+            amulet_nbt.StringTag: 8}
 NUMERIC = (amulet_nbt.ByteTag, amulet_nbt.IntTag, amulet_nbt.ShortTag,
            amulet_nbt.LongTag)
 
@@ -1754,6 +1774,180 @@ def pin_flat_map(ref) -> int:
                 f"flat {era:#x}/{nm}/{val}: a row the cap chain "
                 f"already says — deltas only")
     return len(rows)
+
+
+def pin_state_map(ref) -> int:
+    """The generated state tables re-pinned against the reference
+    (decisions.md#D27). Every single row is re-asked at its own cell
+    — the block's spec defaults plus the condition's value in the
+    spec's own tag spelling — and must hold three ways: the row's
+    property is the reference's own RAW answer for it (the pin
+    re-derives the spelling `power`'s "1" needs, not the canon
+    "true"), a value the delta rules say carries no row, and the
+    walk's composition — every matching row in table order, then
+    the first matching rescue — satisfies props_match the way the
+    pin judges every position. Every rescue row's cell is composed
+    the same way and must pass. The singles stay grouped by block
+    in the byte order the lookup's binary search walks, and a
+    rescue's rows stay contiguous."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        os.pardir, "src", "translate", "translate.c")
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    for marker in ("---- BEGIN GENERATED STATE MAP ----",
+                   "---- END GENERATED STATE MAP ----",
+                   "---- BEGIN GENERATED STATE RESCUE ----",
+                   "---- END GENERATED STATE RESCUE ----"):
+        if marker not in src:
+            raise AssertionError(
+                "the generated state map's markers are missing from "
+                f"translate.c: {marker}")
+    map_body = src.split("---- BEGIN GENERATED STATE MAP ----", 1)[1] \
+        .split("---- END GENERATED STATE MAP ----", 1)[0]
+    rescue_body = src.split("---- BEGIN GENERATED STATE RESCUE ----", 1)[1] \
+        .split("---- END GENERATED STATE RESCUE ----", 1)[0]
+    singles = [(r[0], r[1], int(r[2]), int(r[3]), r[4] or None,
+                r[5], r[6]) for r in STATE_ROW_RE.findall(map_body)]
+    if not singles:
+        raise AssertionError("the generated state map holds no rows")
+    rescues = [(r[0], r[1], int(r[2]), int(r[3]), r[4] or None,
+                r[5], int(r[6]), int(r[7]), r[8] or None,
+                r[9], r[10]) for r in RESCUE_ROW_RE.findall(rescue_body)]
+
+    seen = []
+    for blk, *_ in singles:
+        if not seen or seen[-1] != blk:
+            if blk in seen:
+                raise AssertionError(
+                    f"{blk}: the state map's rows for one block are "
+                    "not contiguous; the lookup's binary search "
+                    "needs grouped rows")
+            seen.append(blk)
+    if seen != sorted(seen):
+        raise AssertionError(
+            "the state map is not sorted by block; the lookup's "
+            "binary search walks byte order")
+    done, prev = set(), None
+    for r in rescues:
+        if r[:9] != prev:
+            if r[:9] in done:
+                raise AssertionError(
+                    f"{r[0]}: the rescue rows for one answer are not "
+                    "contiguous")
+            if prev is not None:
+                done.add(prev)
+            prev = r[:9]
+
+    cache = {}
+
+    def raw_answer(name, states):
+        key = (name, repr(sorted((k, type(v).__name__, py(v))
+                                 for k, v in states.items())))
+        if key not in cache:
+            jn, props, unknown = ref._translate(name, states)
+            cache[key] = (jn, {} if unknown else props)
+        return cache[key]
+
+    def cond_holds(vt, ival, sval, tag):
+        if tag is None or TAG_CODE.get(type(tag)) != vt:
+            return False
+        if vt == 8:
+            return str(tag.py_data) == str(sval)
+        return int(tag.py_data) == ival
+
+    def walk(name, states):
+        props = {}
+        for blk, st, vt, ival, sval, to, val in singles:
+            if blk == name and cond_holds(vt, ival, sval,
+                                          states.get(st)):
+                props[to] = val
+        for i, r in enumerate(rescues):
+            blk, s1, t1, i1, sv1, s2, t2, i2, sv2, _, _ = r
+            if blk != name:
+                continue
+            if not cond_holds(t1, i1, sv1, states.get(s1)):
+                continue
+            if not cond_holds(t2, i2, sv2, states.get(s2)):
+                continue
+            j = i
+            while j < len(rescues) and rescues[j][:9] == r[:9]:
+                props[rescues[j][9]] = rescues[j][10]
+                j += 1
+            break
+        return props
+
+    def cell_states(name, conds):
+        """The block's spec defaults plus the conditions, in the
+        spec's own tag spellings — the cells the table was measured
+        at, re-derived from the spec rather than trusted."""
+        spec_props, defaults = spec_of(ref, name)
+        states = {k: sv(v) for k, v in defaults.items()}
+        for st, vt, ival, sval in conds:
+            tag = None
+            if sval is not None:
+                tag = amulet_nbt.StringTag(sval)
+            elif spec_props and st in spec_props:
+                for snbt in spec_props[st]:
+                    t = sv(snbt)
+                    if isinstance(t, NUMERIC) and int(t.py_data) == ival:
+                        tag = t
+                        break
+            if tag is None:
+                num = {1: amulet_nbt.ByteTag, 3: amulet_nbt.IntTag}
+                if vt not in num:
+                    raise AssertionError(
+                        f"{name} {st}: no spec spelling for the "
+                        f"row's value {ival}")
+                tag = num[vt](ival)
+            if TAG_CODE.get(type(tag)) != vt:
+                raise AssertionError(
+                    f"{name} {st}: the spec spells the value a "
+                    f"{type(tag).__name__}, the row says tag type "
+                    f"{vt} — the condition would never fire")
+            states[st] = tag
+        return states
+
+    for blk, st, vt, ival, sval, to, val in singles:
+        states = cell_states(blk, [(st, vt, ival, sval)])
+        _, raw_want = raw_answer(blk, states)
+        _, raw_def = raw_answer(blk, {})
+        cwant, cdef = canon(raw_want), canon(raw_def)
+        if to not in cwant:
+            raise AssertionError(
+                f"{blk} {st}={sval if sval is not None else ival}: "
+                f"the reference's answer has no {to}, the row "
+                "writes it")
+        if raw_str(raw_want[to]) != val:
+            raise AssertionError(
+                f"{blk} {st}={sval if sval is not None else ival}: "
+                f"the reference's raw {to} is "
+                f"{raw_str(raw_want[to])!r}, the row says {val!r}")
+        if cwant[to] == cdef.get(to) or cwant[to] == "false":
+            raise AssertionError(
+                f"{blk} {st}={sval if sval is not None else ival}: "
+                f"{to}={val} is a value the delta rules say carries "
+                "no row")
+        got = canon(walk(blk, states))
+        ok, key = props_match(got, cwant, cdef)
+        if not ok:
+            raise AssertionError(
+                f"{blk} {st}={sval if sval is not None else ival}: "
+                f"the walk composes {got} against the reference "
+                f"{cwant} at {key}")
+
+    for r in rescues:
+        blk, s1, t1, i1, sv1, s2, t2, i2, sv2, _, _ = r
+        states = cell_states(blk, [(s1, t1, i1, sv1),
+                                   (s2, t2, i2, sv2)])
+        _, raw_want = raw_answer(blk, states)
+        _, raw_def = raw_answer(blk, {})
+        got = canon(walk(blk, states))
+        ok, key = props_match(got, canon(raw_want), canon(raw_def))
+        if not ok:
+            raise AssertionError(
+                f"{blk} {s1}/{s2} rescue: the walk composes {got} "
+                f"against the reference {canon(raw_want)} at {key}")
+    return len(singles) + len(rescues)
 
 
 def main() -> int:
@@ -2337,6 +2531,13 @@ def main() -> int:
         checks += 1
         _log(f"ok — the name map's {pinned} rows all answer the way "
              "the reference answers, in the order the lookup walks")
+
+        # ---- the generated state map, against the reference -----
+        pinned_state = pin_state_map(ref)
+        checks += 1
+        _log(f"ok — the state map's {pinned_state} rows all answer "
+             "the way the reference answers at the cells they fire "
+             "at, raw spellings included")
 
         # ---- the generated biome map, against the reference ---------
         pinned_biomes = pin_biome_map(ref)

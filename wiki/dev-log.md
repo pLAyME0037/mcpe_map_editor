@@ -9,6 +9,88 @@ Status vocabulary:
 
 ---
 
+## 2026-10-16 — The state map: 3,174 generated rows answer what the keeps guessed
+
+### Built
+
+- translate.c's kKeep, kAxisSuffixes/kMushroom and the
+  redstone-wire branch retire into the GENERATED STATE MAP and
+  GENERATED STATE RESCUE tables (2,752 single rows + 422 rescue
+  rows, emitted by the v3 generator): one row per (block, state,
+  value) whose Java answer differs from the default an absent
+  property stands for, carrying the reference's own raw value —
+  `power` carries `"1"` at signal 1, never the canon `"true"`.
+  Rows compose in table order, later puts overwriting earlier
+  ones on a shared key; a two-condition rescue row answers the
+  cells whose composition alone cannot — first match overwrites
+  and stops. The walk binary-searches the block group and scans
+  it linearly, conditions tag-type strict (mcme's tag enum is
+  amulet's own numbering).
+- translate.h's rules 3 and 4 rewritten: the state half is the
+  table (raw values, default-fill and false-escape), and a state
+  no row answers drops to the default an absent property stands
+  for — the reference's own empty-cell answer.
+- selftest.c's translate assertions move to the delta model, with
+  new cases pinning what the fixture never held: grass_block
+  snowy true and furnace lit 1b now name-only answers, the wire
+  at redstone_signal 7 writes `power "7"`.
+- ref_convert grows `pin_state_map` (check 15 of the battery):
+  every row re-asked at its own cell with the spec's own tag
+  spellings, the raw spelling compared raw, the delta rules
+  re-derived, the walk's composition re-run per row and per
+  rescue cell, and the block-group contiguity and byte order the
+  binary search needs checked.
+
+### Measured
+
+- The keeps diverged exactly where the fixture never looked:
+  snowy and lit answer constant `'false'` whatever tag type and
+  value they carry, so kKeep's pass-through wrote `snowy:"true"`
+  against the reference's `'false'`; the wire branch hardcoded
+  `power "0"` at every signal while the reference answers the
+  signal itself, and hardcoded the four sides the reference's own
+  empty answer already stands for. The delta model retires all of
+  it: 2,207 (block, state, value) cells carry values beyond the
+  default, and everything else — equal-to-default and
+  canon-`'false'` — collapses to absence, which props_match
+  answers the same.
+- The bedrock 1.20.80 furnace's state is the namespaced
+  `minecraft:cardinal_direction` (string), not an int
+  `facing_direction`: east/north/west carry `facing`, the default
+  south is absence. mushroom_stem is not registered by the spec
+  at all — its pillar_axis was always an unknown state — while
+  the stem's Java properties arrive through
+  brown_mushroom_block's huge_mushroom_bits, bits 10 → the four
+  sides true.
+- The 63 name-skip blocks (6,077 probe cells) are D17's name-map
+  gaps, counted not fixed: the wood hanging/standing signs where
+  the map only has bamboo, the →air families, copper
+  doors/trapdoors → oak, tuff, double_slab, the legacy spellings
+  (tripWire, light_block, pistonArmCollision,
+  lit_blast_furnace, end_brick_stairs, darkoak_wall_sign). The
+  fixture never holds any of them.
+
+### Cross-check
+
+- The generator's probe: 1,087 blocks through base cells, every
+  single state value, every base-minus-one-state cell and every
+  pair — 12,252 cells, 0 fails under props_match, the pin's own
+  acceptance function.
+- `./rebuild.sh test`: PASS — 5 suites, 0 failures (the
+  translate and convert-block assertions rewritten to the delta
+  model, ASan+UBSan clean).
+- Battery 11/11 rc=0, ref_convert reporting 15 checks — the new
+  pin re-asks all 3,174 rows against the reference, raw
+  spellings included.
+- Eight cells fabricated on a /tmp copy of the fixture store
+  (the golden store itself never opened) — wire signal 7,
+  furnace cardinal east, snow height 4, water depth 3, mushroom
+  bits 10, both door halves, grass snowy true — convert to
+  exactly the reference's answers through the full CLI pipeline,
+  cross-checked through props_match against ref.answer. No
+  census, same as D26: fixture-verified by the user's own call,
+  and a restored world can re-run the real-store check.
+
 ## 2026-10-16 — The older biome record: the 768-byte table crosses
 
 ### Built

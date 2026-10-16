@@ -1681,3 +1681,95 @@ range or sampling, the biome id table grows a rename instead of
 an append, or the game grows a third biome spelling — the pin
 re-asks the reference's cells and fallback every battery run, and
 the mirror decodes both records from the loader's own lines.
+
+## D27 — The state map grows: the keeps, the axis suffixes and the wire branch retire into one generated delta table
+
+**What the reference does, measured from its own answers.** Every
+(block, states) cell's Java answer runs through `ref.answer` — the
+two-leg translation with the unknown-block strip — and its third
+element is the reference's own empty-cell answer, the value
+props_match judges an absent property by. Measuring every block
+the 1.20.80 spec registers against that default splits the states
+three ways: values the answer carries BEYOND the default (the
+wire's power at each signal, a door's hinge at its bits, snow's
+layers at its height, water's level at its liquid_depth — 2,207
+(block, state, value) cells); values that EQUAL the default (a
+furnace's lit, grass's snowy at both values, the wire's four
+sides, axis "y" — absence answers them the same); and
+canon-`'false'` values props_match's false-escape also lets stand
+absent. Booleans answer constant `'false'` whatever tag type and
+value they carry — the pass-through kKeep shipped wrote
+`snowy:"true"` where the reference answers `'false'`, divergent
+at every truthy value the fixture never held. The wire's branch
+hardcoded `power "0"` at every signal while the reference answers
+the signal itself, and hardcoded the four sides the reference's
+own empty answer already stands for. The row conditions are
+tag-type strict the reference's own way — the value must carry
+the spec's tag type and the row's value, no other spelling (the
+name map's numeric path is looser; D17 shipped it so, and this
+does not inherit it).
+
+**The rule in mcme.** kKeep, kAxisSuffixes/kMushroom and the wire
+branch are gone. In their place the generated tables between the
+GENERATED STATE MAP and STATE RESCUE markers: one row per
+(block, state, value) whose Java answer differs from the default
+an absent property stands for, carrying the reference's own RAW
+value — `power` carries `"1"` at signal 1, never the canon
+`"true"` — and rows sharing a key compose, all matching rows
+applying in table order, later puts overwriting earlier ones.
+A two-condition rescue row answers the cells whose composition
+alone cannot (hanging signs, doors, stems, walls): fired after
+every single row, the first match overwrites and stops. The walk
+binary-searches the block's group and scans it linearly, the name
+map's own lookup shape. A state no row fires on is dropped: the
+block takes the default an absent property stands for — the
+reference's own empty-cell answer, which is what props_match
+judges absence by, and what translate.h's rewritten rules 3 and
+4 now say. (Where that answer differs from the Java spec's own
+default — the wire's sides answer `'side'` against a spec
+`'none'`, a furnace's empty cell answers `'south'` against
+`'north'` — the absence still answers the reference's way: the
+doctrine props_match has shipped since D17, unchanged here and
+recorded as measured.)
+
+**Fixture truth.** The generator measured 1,087 blocks — the name
+map's own plus everything the 1.20.80 spec registers — through
+base cells, every single state value, every base-minus-one-state
+cell and every pair: 12,252 probe cells, 0 fails under
+props_match, the pin's own acceptance function. The tables
+(2,752 single rows, 422 rescue rows) were spliced into
+translate.c; the selftest's translate assertions move to the
+delta model, with new cases pinning what the fixture never held
+(grass snowy true, furnace lit 1b → name only; the wire at
+signal 7 → `power "7"`). Eight cells fabricated on a /tmp copy
+of the fixture store — wire signal 7, furnace cardinal east,
+snow height 4, water depth 3, mushroom bits 10, both door
+halves, grass snowy true — convert to exactly the reference's
+answers, cross-checked through props_match against ref.answer.
+The 63 name-skip blocks (6,077 probe cells) are D17's name-map
+gaps, counted not fixed: the wood hanging/standing signs where
+the map only has bamboo, the →air families (border_block,
+chemistry_table, glow_frame, copper_bulb, colored_torch,
+underwater_torch), copper doors/trapdoors → oak, tuff →
+cobblestone/oak/stone, double_slab → slab, the legacy spellings
+(tripWire, light_block, pistonArmCollision, lit_blast_furnace,
+end_brick_stairs, darkoak_wall_sign). The fixture never holds
+any of them — the battery is green on that ground today.
+
+**Cost accepted.** ~3,200 lines of generated table replace ~90
+lines of hand-kept rules; the walk is one binary search plus a
+linear scan per palette entry, and the pin checks the group
+contiguity and byte order the binary search needs. mushroom_stem
+keeps its own no-rows answer — the 1.20.80 spec does not
+register the name, its pillar_axis is an unknown state like any
+other — while the stem's Java properties arrive through
+brown_mushroom_block's huge_mushroom_bits, as the reference
+answers them. No census: the drop is fixture-verified by the
+user's own call, like D26.
+
+**Reverses if:** PyMCTranslate's answers move (the pin re-asks
+every row at its own cell, raw spellings compared raw, every
+battery run), the tag-type strictness proves too strict for a
+real-world palette the fixture never held, or the rescue families
+outgrow the two-condition rows — the probe's pair enumeration is
+the measure, and it is re-runnable from the generator.

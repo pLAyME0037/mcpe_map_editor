@@ -42,21 +42,33 @@
  *      answer keeps its own spelling — the reference's answer for
  *      a block it does not rename.
  *
- *   3. States pass through under Java's names where the two editions
- *      agree: `pillar_axis` is `axis` on every log, wood, stem and
- *      hyphae; `snowy`, `lit` and the rest are spelled the same and
- *      keep their tag types (Bedrock and Java store both editions of
- *      boolean and enum states the same way).
+ *   3. The states half is a table too (decisions.md D27): the rows
+ *      between the GENERATED STATE MAP markers answer (block, state,
+ *      value) — which Java property the state carries and with what
+ *      value, measured through PyMCTranslate's own answers —
+ *      tag-type strict the way the reference is (the value must
+ *      carry the spec's own tag type). Every matching row applies,
+ *      in table order, later rows overwriting earlier ones on a
+ *      shared key. A row carries only values that differ from the
+ *      default an absent property stands for — the reference's own
+ *      empty-cell answer — so `axis` "y", a furnace's `lit` and a
+ *      wire's sides all stay absent, which is the same answer.
+ *      Values are the reference's raw ones: the wire's `power` at
+ *      signal 1 is "1", never a canon "true". A two-condition row
+ *      between the GENERATED STATE RESCUE markers answers the cells
+ *      whose composition alone cannot (hanging signs, doors, stems,
+ *      walls): first match overwrites and stops.
  *
- *   4. A state the map does not list is DROPPED, and the block takes
- *      its Java default — the choice PyMCTranslate makes with the same
- *      inputs (a furnace's `facing_direction`, a torch's
- *      `torch_facing_direction`, farmland's `moisture` all become the
- *      default state on both sides). This is what keeps mcme's output
- *      in agreement with the reference rather than inventing mappings
- *      the reference does not have. There is no block registry here on
- *      purpose: the map is exactly the cases real worlds have needed,
- *      and tools/ref_convert.py pins every one of them against
+ *   4. A state no row answers is DROPPED, and the block takes the
+ *      default an absent property stands for — the reference's own
+ *      empty-cell answer, what props_match judges absence by (a
+ *      furnace's `facing_direction` is not its 1.20.80 state and
+ *      stays absent; farmland's `moisture` answers the default at
+ *      every value). This is what keeps mcme's output in agreement
+ *      with the reference rather than inventing mappings the
+ *      reference does not have. There is no block registry here on
+ *      purpose: the map is exactly the cases the reference has been
+ *      asked for, and tools/ref_convert.py pins the rows against
  *      PyMCTranslate itself.
  *
  * The output entry is new memory in `arena`; the input is untouched.
