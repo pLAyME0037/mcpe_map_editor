@@ -718,8 +718,9 @@ static bool make_section(McmeArena *arena, int8_t cy,
         }
         McmeTag *je = mcme_translate_block(arena, src);
         if (je == NULL) {
-            /* A legacy entry the map refuses: its positions are air,
-               and the subchunk is counted once (D12). */
+            /* An entry the map refuses — nameless, or a `val` that
+               is not a number: its positions are air, and the
+               subchunk is counted once (D12). */
             mcme_clear_error();
             dropped = true;
             mcme_buffer_free(&snbt);
@@ -1797,7 +1798,7 @@ static bool carry_tick_record(McmeLevelDb *db, const TickRef *ref,
         const McmeTag *nm = jn != NULL ? mcme_nbt_get(jn, "Name") : NULL;
         if (jn == NULL || nm == NULL || nm->type != MCME_TAG_String) {
             mcme_clear_error();
-            rep->ticks++;      /* legacy or nameless: dropped, named */
+            rep->ticks++;      /* a blockState the map refuses: dropped */
             continue;
         }
         McmeTag *ent = mcme_nbt_new(arena, MCME_TAG_Compound);

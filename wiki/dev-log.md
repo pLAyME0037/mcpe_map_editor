@@ -9,6 +9,86 @@ Status vocabulary:
 
 ---
 
+## 2026-10-16 — The `{name, val}` carry: 2,330 rows, five defaults, a section written where air stood
+
+### Built
+
+- translate.c grows the GENERATED LEGACY MAP: 2,330 explicit rows
+  plus five default rows, generated one-off by re-enumerating the
+  reference (D17's precedent — the pin re-asks every row, so the
+  generator needs no repo home), with `legacy_lookup` beside it:
+  an (name, val) composite-key binary search over the rows, then
+  the defaults by name, then name-alone. The file's top comment,
+  translate.h's rule 1 and its docstrings are rewritten around the
+  loader's own branch.
+- `mcme_translate_block` trades its version gate for that branch:
+  `states` present or neither field is modern and the entry's
+  `version` is never read; no `states` plus a `val` is legacy — a
+  numeric val answers row, default, or name-alone in turn (a val
+  no int32 reaches never truncates: defaults only), and a
+  non-numeric val is refused and counted once (D12). The tick
+  path's blockStates answer through the same function, so a
+  legacy tick state now carries instead of dropping.
+- convert.c and convert.h comments follow the new semantics: the
+  dropped-subchunk path counts what the map still refuses, and the
+  `legacy_subchunks` field documents both of its causes.
+- ref_convert mirrors the branch everywhere: `entry_of` returns
+  (name, states, val) the loader's way; the blocks walk no longer
+  skips legacy sections — the fixture's cy2 writes and compares
+  like any other, `out_ys` asserting every stored subchunk has a
+  section; `tick_mirror` branches the same; `Reference.answer`
+  grows the cap rule (a `_cap` version and its own cache) and
+  drops its legacy-means-air assumption; and the new
+  `pin_legacy_map` re-pins all 2,330 rows against the reference,
+  each default at every unclaimed byte val plus the extremes, and
+  the name-alone rule for each plain name — every battery run.
+- Tests: the translate unit flips `{name:"minecraft:log",val:4}`
+  from refusal to `minecraft:oak_log{axis: "x"}` and adds the
+  name-alone fallback (stone val 99), the formula default
+  (noteblock val 200), a val past int32, an entry with neither
+  field, and a non-numeric val refusal; the convert pins move
+  `blocks` 36,864 → 40,960 and `legacy_subchunks` 1 → 0, and the
+  fixture's four v1 positions pin the log row beside the three
+  name-alone answers where air stood.
+
+### Measured
+
+- The loader's own rule: `if "states" in block or "val" not in
+  block` → modern (states or {}); else `{block_data: IntTag(val)}`
+  through `min(world, (1,12,999))` → bedrock (1,12,0) → java
+  (1,20,0). `version` gates nothing on either side, and the
+  signedness agrees both ways (`ByteTag(200)` is −56; mcme's tag
+  is `int8_t`).
+- The reference is deterministic — the grass puzzle resolved: val
+  0 is grass's only answered value (`grass_block{snowy:false}`),
+  every other val passes through, and what looked like two
+  processes disagreeing was one run's val 0 versus the other's
+  val 1 (an internal translate error returns the input block).
+- The enumeration: 328 names × the byte domain −128..255 → 2,330
+  rows across 279 names differ from name-alone; the five formula
+  names (kelp's age, sapling's type/stage, tnt's unstable,
+  noteblock's constant, lava_cauldron's) hold the five defaults,
+  proven over the int32 range, and the other 323 names answer
+  name-alone outside the byte domain — the domain is complete. All
+  row properties are strings, sorted, at most seven.
+- The fixture's v1 payload decodes to four entries [stone/0,
+  dirt/0, log/4, grass/1] over 4096 non-air cells, so its section
+  joins the other nine: 10 subchunks written, none dropped.
+
+### Cross-check
+
+- 5 suites PASS under all three gates (`./rebuild.sh test`,
+  `./nob test`, `./rebuild.sh release test`); battery 11/11 rc=0
+  with ref_convert reporting "the legacy map's 2330 rows and their
+  five defaults all answer the way the reference answers" (13
+  checks); goldens untouched (`git status tests/` empty).
+- Real world (the census snapshot, whose 0 legacy subchunks make
+  D24 inert there by construction): two release runs, rc=0, each
+  byte-identical to D23's run — every file's bytes equal and the
+  JSON reports byte-identical — so the branch changes nothing
+  where the store holds no legacy entry, and no cross-entry delta
+  is claimed.
+
 ## 2026-10-16 — Entities counted whole: 777 documents, 740,591 actor records, an index that counts nowhere
 
 ### Built

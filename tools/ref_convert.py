@@ -19,8 +19,11 @@ What is compared:
              answer for the block's empty states; and a block
              neither edition knows keeps its name and loses its
              states, where PyMCTranslate passes the states
-             through untouched. The v1 legacy subchunk writes no
-             section and reads back air; the second layer carries
+             through untouched. A v1 legacy entry — no `states`,
+             a `val` — answers the loader's own `block_data` rule
+             at the 1.12 cap (D24): its section is written
+             beside the others and every position compares like
+             any other. The second layer carries
              as the Java `waterlogged` property only where the
              reference gives the block that property
              (decisions.md#D15) — the fixture's water stands over
@@ -31,9 +34,9 @@ What is compared:
              differently over the same NBT meaning.
 
   REPORT   — the JSON counts, exact: five chunks across three
-             dimensions, ten subchunks, 36864 blocks, the nether's
+             dimensions, ten subchunks, 40960 blocks, the nether's
              own document carried, and the skips the fixture
-             carries (the legacy subchunk, the key of a dimension
+             carries (the key of a dimension
              beyond the game's three, the 3280 water positions) —
              plus the tick records this tool fabricates on the
              copy: four entries carried, five dropped
@@ -140,10 +143,11 @@ WANT_REPORT = {
     # two, the fixture's nether key at (0,0), the nether and end
     # chunks fabricated at (1,-2); ten subchunks; the two extra
     # parity payloads of 4096 cells apiece over the fixture's
-    # 28672.
+    # 24576, plus the v1 legacy subchunk's own 4096 (D24 — it
+    # writes its section now).
     "chunks": 5,
     "subchunks": 10,
-    "blocks": 36864,
+    "blocks": 40960,
     # the nether's own documents (D22): the container beside the
     # sign, spawner, campfire, gateway, lectern and jukebox the
     # check fabricates there
@@ -166,7 +170,8 @@ WANT_REPORT = {
         "entities": 3,
         "heightmaps": 6,
         "items": 0,
-        "legacy_subchunks": 1,
+        # the v1 subchunk's `{name, val}` palette carries now (D24)
+        "legacy_subchunks": 0,
         "other": 1,                # the dimension beyond the three
         "ticks": 5,
         "water_positions": 3280,
@@ -319,15 +324,20 @@ class Reference:
         tm = PyMCTranslate.new_translation_manager()
         self._bed = tm.get_version("bedrock", (1, 20, 80))
         self._java = tm.get_version("java", (1, 20, 0))
+        # The loader's cap for a block_data entry: min(world,
+        # (1, 12, 999)) — mcme's input is bedrock 1.20.80, and
+        # PyMCTranslate resolves the cap to bedrock (1, 12, 0) (D24).
+        self._cap = tm.get_version("bedrock", (1, 12, 999))
         self._cache: dict = {}
+        self._legacy: dict = {}
         self._defaults: dict = {}
         self._waterlog: dict = {}
 
-    def _translate(self, name: str, states: dict):
+    def _translate(self, name: str, states: dict, bed=None):
         ns, base = name.split(":", 1)
         block = self._Block(ns, base, dict(states))
         start = self._unknown.hits
-        universal, _, _ = self._bed.block.to_universal(block)
+        universal, _, _ = (bed or self._bed).block.to_universal(block)
         java, _, _ = self._java.block.from_universal(universal)
         unknown = self._unknown.hits > start
         if not isinstance(java, self._Block):
@@ -338,13 +348,28 @@ class Reference:
                  if java.properties else {})
         return out_name, props, unknown
 
-    def answer(self, name: str, states: dict | None):
+    def answer(self, name: str, states: dict | None,
+               val: int | None = None):
         """(java name, properties, default properties) for a bedrock
         block, canonically spelled. An unknown block loses its
         states on mcme's side of the comparison, so the reference's
-        pass-through states are set aside."""
-        if states is None:      # legacy: no Java spelling at all
-            return AIR, {}, {}
+        pass-through states are set aside. `val` names a legacy
+        entry (D24): the loader spells it `block_data` and caps the
+        spec at 1.12, and what that rule leaves untranslated passes
+        through — kept name, `block_data` set aside the same way."""
+        if val is not None:
+            key = (name, val)
+            if key not in self._legacy:
+                out_name, props, unknown = self._translate(
+                    name, {"block_data": amulet_nbt.IntTag(val)},
+                    bed=self._cap)
+                if unknown or "block_data" in props:
+                    self._legacy[key] = (name, {}, {})
+                else:
+                    self._legacy[key] = (out_name, canon(props), {})
+            return self._legacy[key]
+        if states is None:      # neither `states` nor `val`: no states
+            states = {}
         key = (name,
                repr(sorted((k, type(v).__name__, py(v))
                            for k, v in states.items())))
@@ -451,23 +476,30 @@ def read_block(tag, x: int, y: int, z: int):
 
 
 def entry_of(entry):
-    """(name, states) of a Bedrock palette entry; states is None
-    for a legacy entry, which has no version to carry."""
+    """(name, states, val) of a Bedrock palette entry. `val` is set
+    for a legacy entry — no `states` to carry, the loader's own
+    `block_data` rule (D24) — and `states` is a dict otherwise,
+    empty when the entry carries neither field (the loader's other
+    branch)."""
     comp = entry.tag if hasattr(entry, "tag") else entry.value
     name = str(py(comp["name"]))
     if "states" in comp:
-        return name, dict(comp["states"])
-    return name, None
+        return name, dict(comp["states"]), None
+    if "val" in comp:
+        return name, None, int(py(comp["val"]))
+    return name, {}, None
 
 
 def load_input(world: str):
     """The fixture's stored subchunks, read from the COPIED store:
-    (dim, cx, cz, cy) -> (kind, layers) where kind is 'ok' or
-    'legacy' and layers is the subchunk's full list of (blocks,
-    palette) pairs — the second layer is the waterlogging half D15
-    folds into the Java property. The key speaks its own dimension
-    (D21): the three dimensions keep separate chunks even where
-    they share coordinates."""
+    (dim, cx, cz, cy) -> (kind, layers) where kind is 'ok', or
+    'legacy' for a version-1 payload whose `{name, val}` entries
+    answer through the loader's rule (D24) — its layers compare
+    like any other's — and layers is the subchunk's full list of
+    (blocks, palette) pairs — the second layer is the waterlogging
+    half D15 folds into the Java property. The key speaks its own
+    dimension (D21): the three dimensions keep separate chunks even
+    where they share coordinates."""
     from amulet.libs.leveldb import LevelDB
     from amulet.level.formats.leveldb_world.interface.chunk.leveldb_8 import (
         LevelDB8Interface,
@@ -486,7 +518,7 @@ def load_input(world: str):
                         continue
                     version, layers = decode_payload(iface, payload)
                     if version == 1:
-                        subs[(dim, cx, cz, cy)] = ("legacy", None)
+                        subs[(dim, cx, cz, cy)] = ("legacy", layers)
                     else:
                         subs[(dim, cx, cz, cy)] = ("ok", layers)
     finally:
@@ -715,8 +747,15 @@ def tick_mirror(world: str, ref, dim: int = 0) -> dict:
                 continue      # an entry without the fields drops
             bs = e["blockState"]
             name = str(py(bs["name"]))
-            states = dict(bs["states"]) if "states" in bs else {}
-            want, _, _ = ref.answer(name, states)
+            # the loader's own branch, mirrored (D24): `states`
+            # present or no `val` is modern, else the block_data
+            # rule at the 1.12 cap
+            if "states" in bs or "val" not in bs:
+                want, _, _ = ref.answer(
+                    name, dict(bs["states"]) if "states" in bs else {})
+            else:
+                want, _, _ = ref.answer(name, None,
+                                        val=int(py(bs["val"])))
             entry = {"i": want, "p": 0, "t": t, "x": x, "y": y, "z": z}
             if want in ("minecraft:water", "minecraft:lava"):
                 bucket["fluid"].append(entry)
@@ -1083,6 +1122,10 @@ ROW_RE = re.compile(
     r'\s+(-?\d+),'
     r'\s+"([^"]+)"\},')
 BIOME_ROW_RE = re.compile(r'\{\s*(-?\d+),\s*"([^"]+)"\s*\}')
+LEGACY_ROW_RE = re.compile(
+    r'\{"([^"]+)", (-?\d+), "([^"]+)", (\d+), \{(.*)\}\},')
+LEGACY_DEF_RE = re.compile(r'\{"([^"]+)", "([^"]+)", (\d+), \{(.*)\}\},')
+LEGACY_PROP_RE = re.compile(r'\{"([^"]*)","([^"]*)"\}')
 NUMERIC = (amulet_nbt.ByteTag, amulet_nbt.IntTag, amulet_nbt.ShortTag,
            amulet_nbt.LongTag)
 
@@ -1230,6 +1273,91 @@ def pin_biome_map(ref) -> int:
             raise AssertionError(
                 f"biome {i}: the reference answers {want}, the table "
                 f"says {name}")
+    return len(rows)
+
+
+def pin_legacy_map(ref) -> int:
+    """The generated legacy table re-pinned against the reference:
+    every row is the loader-cap rule's own answer for its (name, val),
+    every default holds at each byte-domain val its name's rows do
+    not claim plus the extremes, a plain name's unclaimed val keeps
+    name and no properties, and both tables stay in the (name, val)
+    order the lookup's binary search walks (decisions.md#D24)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        os.pardir, "src", "translate", "translate.c")
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    if "---- BEGIN GENERATED LEGACY MAP ----" not in src \
+            or "---- END GENERATED LEGACY MAP ----" not in src:
+        raise AssertionError(
+            "the generated legacy map's markers are missing from "
+            "translate.c")
+    body = src.split("---- BEGIN GENERATED LEGACY MAP ----", 1)[1] \
+        .split("---- END GENERATED LEGACY MAP ----", 1)[0]
+    rows_part = body.split("kLegacyMap[] = {", 1)[1].split("\n};", 1)[0]
+    defs_part = body.split("kLegacyDefaults[] = {", 1)[1] \
+        .split("\n};", 1)[0]
+    rows = LEGACY_ROW_RE.findall(rows_part)
+    if not rows:
+        raise AssertionError("the generated legacy map holds no rows")
+    order = [(r[0], int(r[1])) for r in rows]
+    if order != sorted(order):
+        raise AssertionError(
+            "the legacy map is not sorted by (name, val); the "
+            "lookup's binary search walks that order")
+    claimed = {}
+    for nm, v, to, n, props in rows:
+        pr = dict(LEGACY_PROP_RE.findall(props))
+        if len(pr) != int(n):
+            raise AssertionError(
+                f"legacy row {nm}/{v}: {n} properties claimed, "
+                f"{len(pr)} written")
+        want = ref.answer(nm, None, val=int(v))
+        if (want[0], want[1]) != (to, canon(pr)):
+            raise AssertionError(
+                f"legacy {nm}/{v}: the reference answers "
+                f"{(want[0], want[1])}, the table says "
+                f"{(to, canon(pr))}")
+        claimed.setdefault(nm, set()).add(int(v))
+    defaults = LEGACY_DEF_RE.findall(defs_part)
+    if not defaults:
+        raise AssertionError("the legacy map's default table is empty")
+    dorder = [d[0] for d in defaults]
+    if dorder != sorted(dorder):
+        raise AssertionError(
+            "the legacy defaults are not sorted by name; the "
+            "lookup's binary search walks that order")
+    dnames = set(dorder)
+    for nm, to, n, props in defaults:
+        pr = dict(LEGACY_PROP_RE.findall(props))
+        if len(pr) != int(n):
+            raise AssertionError(
+                f"legacy default {nm}: {n} properties claimed, "
+                f"{len(pr)} written")
+        want_for = (to, canon(pr))
+        unclaimed = [v for v in range(-300, 300)
+                     if v not in claimed.get(nm, set())] \
+            + [1000, -1000, 65535, -65536, 2**31 - 1, -2**31]
+        for v in unclaimed:
+            want = ref.answer(nm, None, val=v)
+            if (want[0], want[1]) != want_for:
+                raise AssertionError(
+                    f"legacy default {nm} at {v}: the reference "
+                    f"answers {(want[0], want[1])}, the default "
+                    f"says {want_for}")
+    # a plain name's unclaimed val keeps its name and no properties
+    for nm in sorted(claimed):
+        if nm in dnames:
+            continue
+        for v in (1000, -1000, 2**31 - 1, -2**31):
+            if v in claimed[nm]:
+                continue
+            want = ref.answer(nm, None, val=v)
+            if (want[0], want[1]) != (nm, {}):
+                raise AssertionError(
+                    f"legacy {nm}/{v}: the reference answers "
+                    f"{(want[0], want[1])}, mcme keeps name and no "
+                    f"properties")
     return len(rows)
 
 
@@ -1438,19 +1566,17 @@ def main() -> int:
                 cy for (d, a, b, cy), (kind, _) in subs.items()
                 if (d, a, b) == (dim, cx, cz) and kind == "legacy")
             out_ys = sorted(s["Y"].py_data for s in tag["sections"])
-            if out_ys != ok_cys:
+            # Every stored subchunk has a position the map answers
+            # with a block — the v1 legacy one since D24 — so all of
+            # them store a section; an all-air one would not.
+            stored_cys = sorted(ok_cys + legacy_cys)
+            if out_ys != stored_cys:
                 raise AssertionError(
                     f"chunk ({cx}, {cz}) stores sections {out_ys}, "
-                    f"want the stored non-legacy subchunks {ok_cys}")
+                    f"want every stored subchunk {stored_cys}")
 
-            for cy in ok_cys + legacy_cys:
-                kind, layers = subs[(dim, cx, cz, cy)]
-                if kind == "legacy":
-                    # A legacy subchunk writes no section — the
-                    # sections list already proved it — and an
-                    # absent section reads back air. The selftest
-                    # pins mcme's own reader to the same answer.
-                    continue
+            for cy in stored_cys:
+                layers = subs[(dim, cx, cz, cy)][1]
                 blocks, palette = layers[0]
                 arr = numpy.asarray(blocks).reshape(16, 16, 16)
                 # The second layer, when the subchunk stores one: a
@@ -1467,10 +1593,10 @@ def main() -> int:
                 for lx in range(16):
                     for ly in range(16):
                         for lz in range(16):
-                            name, states = entry_of(
+                            name, states, val = entry_of(
                                 palette[int(arr[lx][ly][lz])])
                             want_name, want, default = ref.answer(
-                                name, states)
+                                name, states, val)
                             if (l1_arr is not None
                                     and entry_of(l1_palette[int(
                                         l1_arr[lx][ly][lz])])[0]
@@ -1780,6 +1906,13 @@ def main() -> int:
         _log(f"ok — the biome map's {pinned_biomes} ids all answer "
              "the way the reference answers, in the order the "
              "lookup walks")
+
+        # ---- the generated legacy map, against the reference -------
+        pinned_legacy = pin_legacy_map(ref)
+        checks += 1
+        _log(f"ok — the legacy map's {pinned_legacy} rows and their "
+             "five defaults all answer the way the reference "
+             "answers, in the order the lookup walks")
 
         # ---- the documented refusals -------------------------------
         # a --to that names no edition: usage

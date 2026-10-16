@@ -10,10 +10,22 @@
  *
  * The rules, in the order they apply:
  *
- *   1. An entry without a `version` field is a legacy palette entry —
- *      a pre-1.9 block, often `{name, val}` — and has no Java 1.20
- *      spelling mcme knows. It is refused; the caller reports and
- *      carries air.
+ *   1. The entry's shape decides first, the way amulet's loader
+ *      branches: `states` present — or neither field — is a modern
+ *      entry (`version` is never read), walked by the rules below.
+ *      No `states` and a `val` is a legacy pre-1.9 entry: the loader
+ *      spells it `block_data` and answers it through the last
+ *      pre-1.13 spec (the world's version capped at 1.12.x). The
+ *      rows between the GENERATED LEGACY MAP markers hold that
+ *      spec's answers — one per (name, val), plus a default row for
+ *      each of the five names that decode by formula rather than
+ *      table, covering every val their rows do not claim
+ *      (decisions.md D24); tools/ref_convert.py re-pins them on
+ *      every battery run. An entry neither table holds keeps its
+ *      name and no properties — the reference's own pass-through
+ *      with `block_data` dropped by the unknown-block policy. A
+ *      `val` that is not a number is refused; the caller reports
+ *      and carries air.
  *
  *   2. The name half is a table. Java spells some of these blocks
  *      differently, and the spelling can hang off one state value
@@ -59,7 +71,7 @@
  * One Bedrock palette entry as the Java 1.20 palette entry.
  *
  * Returns NULL when the entry is not a compound, has no string `name`,
- * or is a legacy entry without `version` — mcme_last_error() says which.
+ * or carries a `val` that is not a number — mcme_last_error() says which.
  * A caller converting a whole layer reports the drop rather than
  * failing the run (decisions.md#D12).
  */

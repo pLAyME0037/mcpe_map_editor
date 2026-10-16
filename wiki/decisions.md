@@ -1429,3 +1429,75 @@ translation (a `entity` database or `entity_support = True`), a Java
 load test shows a document form mcme could carry whole for some
 entity id, or a reader-facing use for the `digp` index appears — the
 count becomes a carry, and the pins follow the documents.
+
+## D24 — Convert answers the pre-1.9 `{name, val}` palette: the loader's own rule, 2,330 rows and five defaults
+
+**What the reference does, measured from the loader down.** Amulet's
+block-storage loader branches on the entry's shape
+(`base_leveldb_interface.py`): `if "states" in block or "val" not in
+block` — a modern entry, states present or absent-empty — else the
+entry becomes `{block_data: IntTag(val)}` and translates through
+`min(world_version, (1,12,999))`. mcme's declared input is bedrock
+1.20.80, so the cap is (1,12,999), which PyMCTranslate resolves to
+bedrock (1,12,0), then universal, then java (1,20,0). `version` is
+read by nothing on either side and never gates anything. The
+signedness agrees both ways (`ByteTag(200).py_int` is −56; mcme's
+byte tag is `int8_t`), and the reference is deterministic end to
+end: an internal translate error returns the input block, and the
+grass puzzle that looked like nondeterminism was two runs' val 0
+versus val 1 confusion — grass's only answered value is 0
+(`grass_block{snowy:false}`), every other val passes through.
+
+**The table, enumerated whole.** Every one of the 328 names the 1.12
+to_universal tables hold × the byte domain −128..255 — the domain a
+byte or short tag spells — answers through that exact pipeline, and
+**2,330 rows across 279 names** differ from the plain fallback
+(name, no properties). Five names decode by formula rather than
+table — kelp's age, sapling's type and stage, tnt's `unstable`,
+noteblock's constant answer, lava_cauldron's — and each carries one
+default row answering every val its rows do not claim; the defaults
+hold across the int32 range (a full-range sweep: the five answer
+the default at every sampled val outside their rows, the other 323
+names answer name-alone everywhere outside the byte domain, so the
+byte domain is complete). Row properties are all strings — Java
+blockstate properties are `TAG_String` — sorted alphabetically, at
+most seven per row.
+
+**The rule in mcme.** `mcme_translate_block` replaces its version
+gate with the loader's own branch: `states` present or neither
+field is modern (walked by the rules below, `version` ignored); no
+`states` and a `val` is legacy — a numeric val answers an explicit
+row, else the name's default row, else the name alone and no
+properties (the reference's own pass-through with `block_data`
+dropped by the unknown-block policy); a val no int32 reaches never
+truncates — defaults only; a `val` that is not a number is refused
+and counted once, positions air (D12). Rows sort by name (byte
+order) then val, the lookup binary searches, then the defaults by
+name. The tick path answers its `blockState` through the same
+function, so a legacy tick state carries the same way.
+
+**Fixture truth.** The v1 payload the golden chunks fixture holds —
+chunk (0,0), cy 2, four entries [stone/0, dirt/0, log/4, grass/1],
+all 4096 cells non-air — now writes its section where air stood:
+`blocks` 36,864 → 40,960, `legacy_subchunks` 1 → 0, and (0,34,0)
+reads `minecraft:oak_log{axis: "x"}` while stone, grass and dirt
+read name-alone. The report field keeps its name and its CLI label
+("subchunk mcme cannot read") and now counts what is still unread:
+payloads whose version this build does not decode, and palettes
+holding an entry with no string name or a non-numeric val.
+
+**Cost accepted.** ~255 KB of generated rows in translate.c; the
+generator is a one-off in /tmp like D17's (the pin re-asks the
+reference for every row it emitted, so the generator needs no repo
+home), and the new `pin_legacy_map` re-asks the reference for all
+2,330 rows, each default at every unclaimed byte val plus the
+extremes, and each plain name's unclaimed val — name-alone — on
+every battery run. The real store holds no v1 subchunks (legacy 0),
+so both release runs are byte-identical to D23's, file for file and
+report for report, and no cross-entry delta is claimed.
+
+**Reverses if:** amulet's loader branch changes shape,
+PyMCTranslate's bedrock 1.12 tables change their answers, or the
+game grows a new val-bearing entry shape — the pin re-measures all
+three every battery run, and the table regenerates from the same
+enumeration.

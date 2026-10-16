@@ -4244,7 +4244,8 @@ static void test_bedrock_entity_write(void)
  * ======================================================================== */
 
 /* The translation of one palette entry, as SNBT both ways. `want`
-   NULL means the map must refuse the entry (legacy, or nameless). */
+   NULL means the map must refuse the entry (nameless, or a `val`
+   that is not a number). */
 static void check_translate(McmeArena *arena, const char *in,
                             const char *want)
 {
@@ -4400,8 +4401,9 @@ static void test_translate(void)
         "south: \"side\", west: \"side\"}}");
 
     /* States the map does not know take the Java default — the
-       reference's own answer — and a legacy entry has no Java
-       spelling at all. */
+       reference's own answer — and a val-only entry answers through
+       the loader's own branch: the table's rows, its five defaults,
+       or the name alone (D24). */
     check_translate(arena,
         "{name:\"minecraft:torch\","
         "states:{torch_facing_direction:1},version:1}",
@@ -4412,7 +4414,29 @@ static void test_translate(void)
     check_translate(arena,
         "{name:\"minecraft:air\",states:{},version:1}",
         "{Name: \"minecraft:air\"}");
-    check_translate(arena, "{name:\"minecraft:log\",val:4}", NULL);
+    /* The legacy table: a row (log val 4 is oak, axis x), the
+       name-alone answer for a val no row and no default claims
+       (stone val 99), a formula default (noteblock answers the
+       same at every val), and a val no int32 reaches — the
+       defaults' whole domain — where the same stone keeps its name. */
+    check_translate(arena, "{name:\"minecraft:log\",val:4}",
+        "{Name: \"minecraft:oak_log\", Properties: {axis: \"x\"}}");
+    check_translate(arena, "{name:\"minecraft:stone\",val:99}",
+        "{Name: \"minecraft:stone\"}");
+    check_translate(arena, "{name:\"minecraft:noteblock\",val:200}",
+        "{Name: \"minecraft:note_block\", "
+        "Properties: {instrument: \"harp\", note: \"0\", "
+        "powered: \"false\"}}");
+    check_translate(arena,
+        "{name:\"minecraft:stone\",val:2147483648L}",
+        "{Name: \"minecraft:stone\"}");
+    /* An entry with neither field is modern — no states to carry —
+       and its `version` never gated it. */
+    check_translate(arena, "{name:\"minecraft:stone\",states:{}}",
+        "{Name: \"minecraft:stone\"}");
+    /* A `val` that is not a number has no answer. */
+    check_translate(arena, "{name:\"minecraft:stone\",val:\"4\"}",
+        NULL);
     check_translate(arena, "{states:{},version:1}", NULL);
     check_translate(arena, "\"minecraft:stone\"", NULL);
 
@@ -4987,11 +5011,13 @@ static void test_convert(void)
     /* The fixture's own shape, counted: the two overworld chunks,
        the fixture's nether key's chunk beside them (D21 - that key
        counted `other` before the drop), and the nether and end
-       chunks fabricated beside it; the v1 legacy subchunk dropped;
-       the second layer's water over stone, dirt and grass - none of
-       them blocks Java gives a waterlogged property - counted
-       position by position (3280); the key of a dimension number
-       beyond the game's three among the keys with nowhere to go. */
+       chunks fabricated beside it; the v1 legacy subchunk's
+       `{name, val}` palette carried, its 4096 blocks counted with
+       the rest (D24); the second layer's water over stone, dirt
+       and grass - none of them blocks Java gives a waterlogged
+       property - counted position by position (3280); the key of
+       a dimension number beyond the game's three among the keys
+       with nowhere to go. */
     McmeConvertReport rep;
     McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
     if (!mcme_convert_bedrock_java(in, out, &rep, &refusal)) {
@@ -5004,8 +5030,8 @@ static void test_convert(void)
     CHECK(refusal == MCME_WRITE_REFUSAL_NONE);
     CHECK(rep.chunks == 5);
     CHECK(rep.subchunks == 10);
-    CHECK(rep.blocks == 36864);
-    CHECK(rep.legacy_subchunks == 1);
+    CHECK(rep.blocks == 40960);
+    CHECK(rep.legacy_subchunks == 0);   /* the v1 palette carries */
     CHECK(rep.water_positions == 3280);
     CHECK(rep.other == 1);
     CHECK(rep.block_entities == 1);    /* the nether orphan        */
@@ -5148,8 +5174,14 @@ static void test_convert(void)
                 "north: \"side\", power: \"0\", south: \"side\", "
                 "west: \"side\"}");
             check_java_block(root, 0, 10, 0, "minecraft:water");
-            /* The v1 legacy subchunk's blocks: air, counted. */
-            check_java_block(root, 0, 34, 0, "minecraft:air");
+            /* The v1 legacy subchunk's blocks (D24): the log row —
+               val 4 is oak, axis x — and the stone, grass and dirt
+               entries the map answers name-alone. */
+            check_java_block(root, 0, 34, 0,
+                "minecraft:oak_log{axis: \"x\"}");
+            check_java_block(root, 0, 32, 0, "minecraft:stone");
+            check_java_block(root, 1, 32, 0, "minecraft:grass");
+            check_java_block(root, 3, 32, 0, "minecraft:dirt");
 
             /* The tick lists, both keys standing in this chunk: the
                water the map answered as `water` under fluid_ticks
@@ -5427,9 +5459,9 @@ static void test_convert_carry(void)
     idx1[256] = 0;      /* water over the stone */
 
     McmeNbtDoc pal0[3];
-    /* A palette entry the map accepts needs its `version`: without it
-       the entry is the pre-1.9 legacy spelling (decisions.md#D12) and
-       has no Java answer. */
+    /* Modern-shaped entries: `states` present, so the loader's own
+       branch walks them and their written `version` is never read
+       (D24). */
     pal0[0] = palette_doc(arena, "{name: \"minecraft:oak_stairs\", "
                                   "states: {}, version: 1L}");
     pal0[1] = palette_doc(arena, "{name: \"minecraft:stone\", "

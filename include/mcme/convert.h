@@ -59,8 +59,12 @@ typedef struct {
                                  nowhere, their documents count here
                                  (D23)                                 */
     size_t legacy_subchunks;  /* subchunks dropped: payloads this build
-                                 does not decode, or palettes carrying
-                                 legacy (pre-1.9) entries                 */
+                                 does not decode (the pre-palette
+                                 versions), or palettes holding an
+                                 entry the map still refuses — no
+                                 string `name`, or a `val` that is
+                                 not a number (the `{name, val}`
+                                 answers themselves carry, D24)     */
     size_t other;             /* keys that are neither: level metadata,
                                  a number beyond the game's three
                                  dimensions, anything unparseable         */
