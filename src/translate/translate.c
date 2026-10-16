@@ -30,8 +30,8 @@ struct Keep {
 };
 
 static const struct Keep kKeep[] = {
-    {"minecraft:grass_block", "snowy",     "snowy"},
-    {"minecraft:furnace",     "lit",       "lit"},
+    { "minecraft:grass_block", "snowy", "snowy" },
+    { "minecraft:furnace",     "lit",   "lit" },
 };
 
 /* Java names the axis rename applies to. A log, its wood form, and the
@@ -71,21 +71,17 @@ static McmeTag *named_entry(McmeArena *arena, const char *name, size_t len)
 }
 
 /* ---- BEGIN GENERATED NAME MAP ----
- * Every Bedrock block name the real world holds that
- * Java 1.20 spells differently, enumerated against
- * PyMCTranslate (Bedrock 1.20.80 -> Java 1.20.0): no conditions is a wholesale rename, one
- * condition fires on a state value, two conditions on
- * a pair (a dead coral's colour, a cauldron's liquid
- * at a fill level). Rows are ordered most-specific
- * first within a name; the first row whose
- * conditions all match wins, else the name keeps its
- * own spelling (or the name's default row when it
- * has one). Every combination the world contains and
- * every small state product was checked against the
- * reference before this table was written --
- * decisions.md D17. tools/ref_convert.py re-pins it
- * against the reference on every battery run.
- * ---- */
+ * Every Bedrock block name the real world holds that Java 1.20 spells
+ * differently, enumerated against PyMCTranslate
+ * (Bedrock 1.20.80 -> Java 1.20.0): no conditions is a wholesale rename, one
+ * condition fires on a state value, two conditions on a pair
+ * (a dead coral's colour, a cauldron's liquid at a fill level).
+ * Rows are ordered most-specific first within a name;
+ * the first row whose conditions all match wins, else the name keeps its
+ * own spelling (or the name's default row when it has one). Every combination
+ * the world contains and every small state product was checked against the
+ * reference before this table was written -- decisions.md D17.
+ * tools/ref_convert.py re-pins it against the reference on every battery run. */
 struct NameMapRow {
     const char *from;
     const char *state;   /* NULL: no conditions, a wholesale rename */
@@ -3221,10 +3217,8 @@ McmeTag *mcme_translate_block(McmeArena *arena, const McmeTag *entry)
             if (sv == NULL
                     || !mcme_nbt_set_string(arena, sv, ans.props[i].val,
                                             strlen(ans.props[i].val))
-                    || !mcme_nbt_compound_put(arena, props,
-                                              ans.props[i].key,
-                                              strlen(ans.props[i].key),
-                                              sv)) {
+                    || !mcme_nbt_compound_put(arena, props, ans.props[i].key,
+                                              strlen(ans.props[i].key), sv)) {
                 return NULL;
             }
         }
@@ -3334,8 +3328,7 @@ McmeTag *mcme_translate_block(McmeArena *arena, const McmeTag *entry)
     }
 
     if (kept > 0
-            && !mcme_nbt_compound_put(arena, out, "Properties", 10,
-                                      props)) {
+        && !mcme_nbt_compound_put(arena, out, "Properties", 10, props)) {
         return NULL;
     }
     return out;

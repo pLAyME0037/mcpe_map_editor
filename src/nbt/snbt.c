@@ -44,8 +44,15 @@ static void skip_ws(SnbtParser *p)
     }
 }
 
-static bool at_end(SnbtParser *p) { return p->pos >= p->len; }
-static char peek(SnbtParser *p)   { return p->pos < p->len ? p->text[p->pos] : '\0'; }
+static bool at_end(SnbtParser *p)
+{
+    return p->pos >= p->len;
+}
+
+static char peek(SnbtParser *p)
+{
+    return p->pos < p->len ? p->text[p->pos] : '\0';
+}
 
 /* Reports a parse failure at `pos`, with line/column so a bad SNBT file is
    easy to locate. Keeping the position explicit lets a caller point at where
@@ -108,22 +115,37 @@ static bool parse_quoted(SnbtParser *p, McmeStr *out)
                `\'` and a backslash before the active quote, and pass any other
                backslash sequence through unchanged so nothing is mangled. */
             if (nx == '\\' ) {
-                if (!mcme_buffer_append_char(&buf, '\\')) { mcme_buffer_free(&buf); return false; }
+                if (!mcme_buffer_append_char(&buf, '\\')) {
+                    mcme_buffer_free(&buf);
+                    return false;
+                }
                 p->pos += 2;
                 continue;
             }
             if (nx == '"' || nx == '\'' || nx == quote) {
-                if (!mcme_buffer_append_char(&buf, nx)) { mcme_buffer_free(&buf); return false; }
+                if (!mcme_buffer_append_char(&buf, nx)) {
+                    mcme_buffer_free(&buf);
+                    return false;
+                }
                 p->pos += 2;
                 continue;
             }
-            if (!mcme_buffer_append_char(&buf, '\\')) { mcme_buffer_free(&buf); return false; }
-            if (!mcme_buffer_append_char(&buf, nx)) { mcme_buffer_free(&buf); return false; }
+            if (!mcme_buffer_append_char(&buf, '\\')) {
+                mcme_buffer_free(&buf);
+                return false;
+            }
+            if (!mcme_buffer_append_char(&buf, nx)) {
+                mcme_buffer_free(&buf);
+                return false;
+            }
             p->pos += 2;
             continue;
         }
 
-        if (!mcme_buffer_append_char(&buf, c)) { mcme_buffer_free(&buf); return false; }
+        if (!mcme_buffer_append_char(&buf, c)) {
+            mcme_buffer_free(&buf);
+            return false;
+        }
         p->pos++;
     }
 
@@ -153,7 +175,11 @@ static bool parse_number_token(SnbtParser *p, const char *tok, McmeTag **out)
        an empty number. */
     if (len > 1) {
         char last = (char)ascii_lower((unsigned char)tok[len - 1]);
-        if (last == 'b' || last == 's' || last == 'l' || last == 'f' || last == 'd') {
+        if (last == 'b'
+		    || last == 's'
+		    || last == 'l'
+		    || last == 'f'
+		    || last == 'd') {
             suffix = last;
             nlen = len - 1;
         }
@@ -172,55 +198,55 @@ static bool parse_number_token(SnbtParser *p, const char *tok, McmeTag **out)
     char *end = NULL;
 
     switch (suffix) {
-        case 'f': {
+    case 'f': {
+        double d = strtod(num, &end);
+        if (end == num) { return fail(p, "malformed float"); }
+        t->type = MCME_TAG_Float;
+        t->as_float = (float)d;
+        break;
+    }
+    case 'd': {
+        double d = strtod(num, &end);
+        if (end == num) { return fail(p, "malformed double"); }
+        t->type = MCME_TAG_Double;
+        t->as_double = d;
+        break;
+    }
+    case 'b': {
+        long long v = strtoll(num, &end, 10);
+        if (end == num) { return fail(p, "malformed byte"); }
+        t->type = MCME_TAG_Byte;
+        t->as_byte = (int8_t)v;
+        break;
+    }
+    case 's': {
+        long long v = strtoll(num, &end, 10);
+        if (end == num) { return fail(p, "malformed short"); }
+        t->type = MCME_TAG_Short;
+        t->as_short = (int16_t)v;
+        break;
+    }
+    case 'l': {
+        long long v = strtoll(num, &end, 10);
+        if (end == num) { return fail(p, "malformed long"); }
+        t->type = MCME_TAG_Long;
+        t->as_long = (int64_t)v;
+        break;
+    }
+    default:
+        /* No suffix: a decimal point or exponent means double, else int. */
+        if (strchr(num, '.') || strchr(num, 'e') || strchr(num, 'E')) {
             double d = strtod(num, &end);
-            if (end == num) { return fail(p, "malformed float"); }
-            t->type = MCME_TAG_Float;
-            t->as_float = (float)d;
-            break;
-        }
-        case 'd': {
-            double d = strtod(num, &end);
-            if (end == num) { return fail(p, "malformed double"); }
+            if (end == num) { return fail(p, "malformed number"); }
             t->type = MCME_TAG_Double;
             t->as_double = d;
-            break;
-        }
-        case 'b': {
+        } else {
             long long v = strtoll(num, &end, 10);
-            if (end == num) { return fail(p, "malformed byte"); }
-            t->type = MCME_TAG_Byte;
-            t->as_byte = (int8_t)v;
-            break;
+            if (end == num) { return fail(p, "malformed integer"); }
+            t->type = MCME_TAG_Int;
+            t->as_int = (int32_t)v;
         }
-        case 's': {
-            long long v = strtoll(num, &end, 10);
-            if (end == num) { return fail(p, "malformed short"); }
-            t->type = MCME_TAG_Short;
-            t->as_short = (int16_t)v;
-            break;
-        }
-        case 'l': {
-            long long v = strtoll(num, &end, 10);
-            if (end == num) { return fail(p, "malformed long"); }
-            t->type = MCME_TAG_Long;
-            t->as_long = (int64_t)v;
-            break;
-        }
-        default:
-            /* No suffix: a decimal point or exponent means double, else int. */
-            if (strchr(num, '.') || strchr(num, 'e') || strchr(num, 'E')) {
-                double d = strtod(num, &end);
-                if (end == num) { return fail(p, "malformed number"); }
-                t->type = MCME_TAG_Double;
-                t->as_double = d;
-            } else {
-                long long v = strtoll(num, &end, 10);
-                if (end == num) { return fail(p, "malformed integer"); }
-                t->type = MCME_TAG_Int;
-                t->as_int = (int32_t)v;
-            }
-            break;
+        break;
     }
 
     *out = t;
@@ -246,21 +272,29 @@ static bool parse_special_float(SnbtParser *p, const char *tok, McmeTag **out)
             bool neg = false;
             const char *b = body;
             size_t n = blen;
-            if (n > 0 && (*b == '-' || *b == '+')) { neg = (*b == '-'); b++; n--; }
+            if (n > 0 && (*b == '-' || *b == '+')) {
+                neg = (*b == '-');
+                b++;
+                n--;
+            }
 
             if (ieq_n(b, n, "inf")) {
-                McmeTag *t = mcme_nbt_new(p->arena, is_float ? MCME_TAG_Float : MCME_TAG_Double);
+                McmeTag *t = mcme_nbt_new(p->arena, is_float ? MCME_TAG_Float
+                                                             : MCME_TAG_Double);
                 if (!t) return false;
                 double v = neg ? -HUGE_VAL : HUGE_VAL;
-                if (is_float) { t->as_float = (float)v; } else { t->as_double = v; }
+                if (is_float) { t->as_float = (float)v; }
+                else { t->as_double = v; }
                 *out = t;
                 return true;
             }
             if (ieq_n(b, n, "nan")) {
-                McmeTag *t = mcme_nbt_new(p->arena, is_float ? MCME_TAG_Float : MCME_TAG_Double);
+                McmeTag *t = mcme_nbt_new(p->arena, is_float ? MCME_TAG_Float
+                                                             : MCME_TAG_Double);
                 if (!t) return false;
                 double v = NAN;
-                if (is_float) { t->as_float = (float)v; } else { t->as_double = v; }
+                if (is_float) { t->as_float = (float)v; }
+                else { t->as_double = v; }
                 *out = t;
                 return true;
             }
@@ -373,15 +407,24 @@ static bool parse_compound(SnbtParser *p, McmeTag **out)
 
     for (;;) {
         skip_ws(p);
-        if (at_end(p)) { arrfree(entries); return fail(p, "unterminated compound"); }
+        if (at_end(p)) {
+            arrfree(entries);
+            return fail(p, "unterminated compound");
+        }
 
         McmeStr key;
         char c = peek(p);
         if (c == '"' || c == '\'') {
-            if (!parse_quoted(p, &key)) { arrfree(entries); return false; }
+            if (!parse_quoted(p, &key)) {
+                arrfree(entries);
+                return false;
+            }
         } else {
             char tok[512];
-            if (!scan_token(p, tok, sizeof(tok))) { arrfree(entries); return false; }
+            if (!scan_token(p, tok, sizeof(tok))) {
+                arrfree(entries);
+                return false;
+            }
             if (!mcme_nbt_str_set(p->arena, &key, tok, strlen(tok))) {
                 arrfree(entries);
                 return false;
@@ -396,9 +439,15 @@ static bool parse_compound(SnbtParser *p, McmeTag **out)
         p->pos++;   /* consume ':' */
 
         McmeTag *value = NULL;
-        if (!parse_value(p, &value)) { arrfree(entries); return false; }
+        if (!parse_value(p, &value)) {
+            arrfree(entries);
+            return false;
+        }
 
-        arrput(entries, ((McmeCompoundEntry){ .name = key, .value = value }));
+        arrput(entries, ((McmeCompoundEntry) {
+            .name = key,
+            .value = value
+        }));
 
         skip_ws(p);
         if (!at_end(p) && peek(p) == ',') { p->pos++; continue; }
@@ -439,7 +488,10 @@ static bool parse_array(SnbtParser *p, char marker, McmeTag **out)
 
     for (;;) {
         McmeTag *v = NULL;
-        if (!parse_value(p, &v)) { arrfree(vals); return false; }
+        if (!parse_value(p, &v)) {
+            arrfree(vals);
+            return false;
+        }
         arrput(vals, mcme_nbt_long_or(v, 0));
 
         skip_ws(p);
@@ -462,7 +514,8 @@ static bool parse_array(SnbtParser *p, char marker, McmeTag **out)
             break;
         }
         case 'I': {
-            int32_t *d = n ? mcme_arena_alloc(p->arena, n * sizeof(int32_t)) : NULL;
+            int32_t *d = n ? mcme_arena_alloc(p->arena, n * sizeof(int32_t)) 
+                           : NULL;
             if (n && !d) ok = false;
             else for (size_t i = 0; ok && i < n; ++i) d[i] = (int32_t)vals[i];
             t->ints.data = d;
@@ -470,7 +523,8 @@ static bool parse_array(SnbtParser *p, char marker, McmeTag **out)
             break;
         }
         default: {
-            int64_t *d = n ? mcme_arena_alloc(p->arena, n * sizeof(int64_t)) : NULL;
+            int64_t *d = n ? mcme_arena_alloc(p->arena, n * sizeof(int64_t))
+                           : NULL;
             if (n && !d) ok = false;
             else for (size_t i = 0; ok && i < n; ++i) d[i] = vals[i];
             t->longs.data = d;
@@ -585,15 +639,24 @@ static bool parse_value(SnbtParser *p, McmeTag **out)
         ok = parse_list(p, out);
     } else if (c == '"' || c == '\'') {
         McmeStr s;
-        if (!parse_quoted(p, &s)) { p->depth--; return false; }
+        if (!parse_quoted(p, &s)) {
+            p->depth--;
+            return false;
+        }
         McmeTag *t = mcme_nbt_new(p->arena, MCME_TAG_String);
-        if (!t) { p->depth--; return false; }
+        if (!t) {
+            p->depth--;
+            return false;
+        }
         t->string = s;
         *out = t;
         ok = true;
     } else {
         char tok[1024];
-        if (!scan_token(p, tok, sizeof(tok))) { p->depth--; return false; }
+        if (!scan_token(p, tok, sizeof(tok))) {
+            p->depth--;
+            return false;
+        }
         ok = parse_token(p, tok, out);
     }
 
@@ -601,7 +664,8 @@ static bool parse_value(SnbtParser *p, McmeTag **out)
     return ok;
 }
 
-bool mcme_nbt_parse_snbt(McmeArena *arena, const char *text, size_t len, McmeTag **out)
+bool mcme_nbt_parse_snbt(McmeArena *arena, const char *text, size_t len,
+                         McmeTag **out)
 {
     if (!arena || (!text && len > 0) || !out) {
         mcme_set_error("snbt: null argument");

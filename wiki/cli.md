@@ -83,7 +83,7 @@ that is what the UI does.
 Works on the user config, which is **JSON** (not the original's pickle).
 
 ```
-mcme config path                 # where the config file lives
+mcme config path # where the config file lives
 mcme config get <dotted.key>
 mcme config set <dotted.key> <json-value>
 mcme config dump --json
@@ -94,11 +94,11 @@ mcme config dump --json
 Reads **raw (uncompressed) NBT** and prints it. Implemented in Phase 2.
 
 ```
-mcme nbt dump <file>                  # SNBT, one line
-mcme nbt dump <file> --json           # the same tree as JSON
-mcme nbt dump <file> --le             # little-endian (Bedrock); default is big-endian
-mcme nbt dump <file> --path a.b.0     # print only that subtree (dotted, lists indexed)
-mcme nbt dump <file> --indent 2       # pretty-print
+mcme nbt dump <file>              # SNBT, one line
+mcme nbt dump <file> --json       # the same tree as JSON
+mcme nbt dump <file> --le         # little-endian (Bedrock); default is big-endian
+mcme nbt dump <file> --path a.b.0 # print only that subtree (dotted, lists indexed)
+mcme nbt dump <file> --indent 2   # pretty-print
 ```
 
 Exits `MCME_EXIT_BAD_FORMAT` if the bytes are not NBT, `MCME_EXIT_NOT_FOUND`

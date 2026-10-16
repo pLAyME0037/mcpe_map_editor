@@ -29,7 +29,8 @@ typedef struct {
 static bool r_need(NbtReader *r, size_t n)
 {
     if (n > r->size - r->pos) {
-        mcme_set_error("nbt: truncated at byte %zu (need %zu more)", r->pos, n - (r->size - r->pos));
+        mcme_set_error("nbt: truncated at byte %zu (need %zu more)",
+                       r->pos, n - (r->size - r->pos));
         return false;
     }
     return true;
@@ -58,9 +59,15 @@ static bool r_i32(NbtReader *r, int32_t *out)
     const uint8_t *p = r->data + r->pos;
     uint32_t u;
     if (r->little_endian) {
-        u = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        u = (uint32_t)p[0]
+            | ((uint32_t)p[1] << 8)
+            | ((uint32_t)p[2] << 16)
+            | ((uint32_t)p[3] << 24);
     } else {
-        u = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+        u = ((uint32_t)p[0] << 24)
+            | ((uint32_t)p[1] << 16)
+            | ((uint32_t)p[2] << 8)
+            | (uint32_t)p[3];
     }
     *out = (int32_t)u;
     r->pos += 4;
@@ -149,7 +156,8 @@ static bool parse_compound(NbtReader *r, McmeTag *t)
         if (child_type == MCME_TAG_End) break;   /* normal terminator */
 
         if (child_type > MCME_TAG_Long_Array) {
-            mcme_set_error("nbt: bad tag type %u at byte %zu", child_type, r->pos - 1);
+            mcme_set_error("nbt: bad tag type %u at byte %zu",
+                           child_type, r->pos - 1);
             arrfree(entries);
             return false;
         }
@@ -187,14 +195,16 @@ static bool parse_list(NbtReader *r, McmeTag *t)
     if (!r_i32(r, &n)) return false;
 
     if (n < 0) {
-        mcme_set_error("nbt: negative list length %d at byte %zu", n, r->pos - 4);
+        mcme_set_error("nbt: negative list length %d at byte %zu",
+                       n, r->pos - 4);
         return false;
     }
 
     /* A list of TAG_End with a nonzero count is malformed, and would otherwise
        let a one-byte file request a multi-gigabyte allocation. */
     if (elem == MCME_TAG_End && n > 0) {
-        mcme_set_error("nbt: list of End with length %d at byte %zu", n, r->pos - 4);
+        mcme_set_error("nbt: list of End with length %d at byte %zu",
+                       n, r->pos - 4);
         return false;
     }
 
@@ -202,8 +212,8 @@ static bool parse_list(NbtReader *r, McmeTag *t)
        the bytes remaining cannot be real. This caps the allocation to a small
        multiple of the input size instead of trusting a raw length field. */
     if ((size_t)n > r->size - r->pos) {
-        mcme_set_error("nbt: list length %d exceeds remaining %zu bytes at byte %zu",
-                       n, r->size - r->pos, r->pos - 4);
+        mcme_set_error("nbt: list length %d exceeds remaining %zu bytes at "
+                       "byte %zu", n, r->size - r->pos, r->pos - 4);
         return false;
     }
 
@@ -235,89 +245,93 @@ static bool parse_payload(NbtReader *r, uint8_t type, McmeTag *t)
     t->type = (McmeTagType)type;
 
     switch (type) {
-        case MCME_TAG_Byte: {
-            if (!r_need(r, 1)) return false;
-            t->as_byte = (int8_t)r->data[r->pos++];
-            return true;
-        }
-        case MCME_TAG_Short: {
-            uint16_t u;
-            if (!r_u16(r, &u)) return false;
-            t->as_short = (int16_t)u;
-            return true;
-        }
-        case MCME_TAG_Int:      return r_i32(r, &t->as_int);
-        case MCME_TAG_Long:     return r_i64(r, &t->as_long);
-        case MCME_TAG_Float:    return r_f32(r, &t->as_float);
-        case MCME_TAG_Double:   return r_f64(r, &t->as_double);
-        case MCME_TAG_String:   return r_string(r, &t->string);
+    case MCME_TAG_Byte: {
+        if (!r_need(r, 1)) return false;
+        t->as_byte = (int8_t)r->data[r->pos++];
+        return true;
+    }
+    case MCME_TAG_Short: {
+        uint16_t u;
+        if (!r_u16(r, &u)) return false;
+        t->as_short = (int16_t)u;
+        return true;
+    }
+    case MCME_TAG_Int:    return r_i32(r, &t->as_int);
+    case MCME_TAG_Long:   return r_i64(r, &t->as_long);
+    case MCME_TAG_Float:  return r_f32(r, &t->as_float);
+    case MCME_TAG_Double: return r_f64(r, &t->as_double);
+    case MCME_TAG_String: return r_string(r, &t->string);
 
-        case MCME_TAG_Byte_Array: {
-            int32_t n;
-            if (!r_i32(r, &n)) return false;
-            if (n < 0 || (size_t)n > r->size - r->pos) {
-                mcme_set_error("nbt: byte array length %d invalid at byte %zu", n, r->pos - 4);
-                return false;
-            }
-            const uint8_t *bytes;
-            if (!r_slice(r, (size_t)n, &bytes)) return false;
-            int8_t *data = NULL;
-            if (n > 0) {
-                data = mcme_arena_alloc(r->arena, (size_t)n);
-                if (!data) return false;
-                memcpy(data, bytes, (size_t)n);
-            }
-            t->bytes.data = data;
-            t->bytes.len = (size_t)n;
-            return true;
-        }
-
-        case MCME_TAG_Int_Array: {
-            int32_t n;
-            if (!r_i32(r, &n)) return false;
-            if (n < 0 || (size_t)n > (r->size - r->pos) / 4) {
-                mcme_set_error("nbt: int array length %d invalid at byte %zu", n, r->pos - 4);
-                return false;
-            }
-            int32_t *data = NULL;
-            if (n > 0) {
-                data = mcme_arena_alloc(r->arena, (size_t)n * sizeof(int32_t));
-                if (!data) return false;
-                for (int32_t i = 0; i < n; ++i) {
-                    if (!r_i32(r, &data[i])) return false;
-                }
-            }
-            t->ints.data = data;
-            t->ints.len = (size_t)n;
-            return true;
-        }
-
-        case MCME_TAG_Long_Array: {
-            int32_t n;
-            if (!r_i32(r, &n)) return false;
-            if (n < 0 || (size_t)n > (r->size - r->pos) / 8) {
-                mcme_set_error("nbt: long array length %d invalid at byte %zu", n, r->pos - 4);
-                return false;
-            }
-            int64_t *data = NULL;
-            if (n > 0) {
-                data = mcme_arena_alloc(r->arena, (size_t)n * sizeof(int64_t));
-                if (!data) return false;
-                for (int32_t i = 0; i < n; ++i) {
-                    if (!r_i64(r, &data[i])) return false;
-                }
-            }
-            t->longs.data = data;
-            t->longs.len = (size_t)n;
-            return true;
-        }
-
-        case MCME_TAG_List:     return parse_list(r, t);
-        case MCME_TAG_Compound: return parse_compound(r, t);
-
-        default:
-            mcme_set_error("nbt: tag type %u not valid here at byte %zu", type, r->pos);
+    case MCME_TAG_Byte_Array: {
+        int32_t n;
+        if (!r_i32(r, &n)) return false;
+        if (n < 0 || (size_t)n > r->size - r->pos) {
+            mcme_set_error("nbt: byte array length %d invalid at byte %zu",
+                           n, r->pos - 4);
             return false;
+        }
+        const uint8_t *bytes;
+        if (!r_slice(r, (size_t)n, &bytes)) return false;
+        int8_t *data = NULL;
+        if (n > 0) {
+            data = mcme_arena_alloc(r->arena, (size_t)n);
+            if (!data) return false;
+            memcpy(data, bytes, (size_t)n);
+        }
+        t->bytes.data = data;
+        t->bytes.len = (size_t)n;
+        return true;
+    }
+
+    case MCME_TAG_Int_Array: {
+        int32_t n;
+        if (!r_i32(r, &n)) return false;
+        if (n < 0 || (size_t)n > (r->size - r->pos) / 4) {
+            mcme_set_error("nbt: int array length %d invalid at byte %zu",
+                           n, r->pos - 4);
+            return false;
+        }
+        int32_t *data = NULL;
+        if (n > 0) {
+            data = mcme_arena_alloc(r->arena, (size_t)n * sizeof(int32_t));
+            if (!data) return false;
+            for (int32_t i = 0; i < n; ++i) {
+                if (!r_i32(r, &data[i])) return false;
+            }
+        }
+        t->ints.data = data;
+        t->ints.len = (size_t)n;
+        return true;
+    }
+
+    case MCME_TAG_Long_Array: {
+        int32_t n;
+        if (!r_i32(r, &n)) return false;
+        if (n < 0 || (size_t)n > (r->size - r->pos) / 8) {
+            mcme_set_error("nbt: long array length %d invalid at byte %zu",
+                           n, r->pos - 4);
+            return false;
+        }
+        int64_t *data = NULL;
+        if (n > 0) {
+            data = mcme_arena_alloc(r->arena, (size_t)n * sizeof(int64_t));
+            if (!data) return false;
+            for (int32_t i = 0; i < n; ++i) {
+                if (!r_i64(r, &data[i])) return false;
+            }
+        }
+        t->longs.data = data;
+        t->longs.len = (size_t)n;
+        return true;
+    }
+
+    case MCME_TAG_List:     return parse_list(r, t);
+    case MCME_TAG_Compound: return parse_compound(r, t);
+
+    default:
+        mcme_set_error("nbt: tag type %u not valid here at byte %zu",
+                       type, r->pos);
+        return false;
     }
 }
 
@@ -381,7 +395,8 @@ bool mcme_nbt_parse_prefix(McmeNbtDoc *doc, McmeArena *arena,
  * Building and navigation
  * ======================================================================== */
 
-bool mcme_nbt_str_set(McmeArena *arena, McmeStr *out, const char *utf8, size_t len)
+bool mcme_nbt_str_set(McmeArena *arena, McmeStr *out, const char *utf8,
+                      size_t len)
 {
     /* Validate here rather than at each caller, because this is the one place
        every string enters the tree: binary read (via r_string), quoted and bare
@@ -520,13 +535,15 @@ bool mcme_nbt_set_long(McmeTag *t, int64_t v)  { t->type = MCME_TAG_Long;   t->a
 bool mcme_nbt_set_float(McmeTag *t, float v)   { t->type = MCME_TAG_Float;  t->as_float = v;  return true; }
 bool mcme_nbt_set_double(McmeTag *t, double v) { t->type = MCME_TAG_Double; t->as_double = v; return true; }
 
-bool mcme_nbt_set_string(McmeArena *arena, McmeTag *t, const char *utf8, size_t len)
+bool mcme_nbt_set_string(McmeArena *arena, McmeTag *t, const char *utf8,
+                         size_t len)
 {
     t->type = MCME_TAG_String;
     return mcme_nbt_str_set(arena, &t->string, utf8, len);
 }
 
-bool mcme_nbt_set_bytes(McmeArena *arena, McmeTag *t, const int8_t *data, size_t len)
+bool mcme_nbt_set_bytes(McmeArena *arena, McmeTag *t, const int8_t *data,
+                        size_t len)
 {
     t->type = MCME_TAG_Byte_Array;
     t->bytes.len = len;
@@ -538,7 +555,8 @@ bool mcme_nbt_set_bytes(McmeArena *arena, McmeTag *t, const int8_t *data, size_t
     return true;
 }
 
-bool mcme_nbt_set_ints(McmeArena *arena, McmeTag *t, const int32_t *data, size_t len)
+bool mcme_nbt_set_ints(McmeArena *arena, McmeTag *t, const int32_t *data,
+                       size_t len)
 {
     t->type = MCME_TAG_Int_Array;
     t->ints.len = len;
@@ -550,7 +568,8 @@ bool mcme_nbt_set_ints(McmeArena *arena, McmeTag *t, const int32_t *data, size_t
     return true;
 }
 
-bool mcme_nbt_set_longs(McmeArena *arena, McmeTag *t, const int64_t *data, size_t len)
+bool mcme_nbt_set_longs(McmeArena *arena, McmeTag *t, const int64_t *data,
+                        size_t len)
 {
     t->type = MCME_TAG_Long_Array;
     t->longs.len = len;
@@ -562,7 +581,8 @@ bool mcme_nbt_set_longs(McmeArena *arena, McmeTag *t, const int64_t *data, size_
     return true;
 }
 
-bool mcme_nbt_list_alloc(McmeArena *arena, McmeTag *t, McmeTagType elem, size_t len)
+bool mcme_nbt_list_alloc(McmeArena *arena, McmeTag *t, McmeTagType elem,
+                         size_t len)
 {
     t->type = MCME_TAG_List;
     t->list.elem = elem;
@@ -683,11 +703,11 @@ int32_t mcme_nbt_int_or(const McmeTag *tag, int32_t fallback)
 {
     if (!tag) return fallback;
     switch (tag->type) {
-        case MCME_TAG_Int:   return tag->as_int;
-        case MCME_TAG_Byte:  return tag->as_byte;
-        case MCME_TAG_Short: return tag->as_short;
-        case MCME_TAG_Long:  return (int32_t)tag->as_long;
-        default: return fallback;
+    case MCME_TAG_Int:   return tag->as_int;
+    case MCME_TAG_Byte:  return tag->as_byte;
+    case MCME_TAG_Short: return tag->as_short;
+    case MCME_TAG_Long:  return (int32_t)tag->as_long;
+    default: return fallback;
     }
 }
 
@@ -695,11 +715,11 @@ int64_t mcme_nbt_long_or(const McmeTag *tag, int64_t fallback)
 {
     if (!tag) return fallback;
     switch (tag->type) {
-        case MCME_TAG_Long:  return tag->as_long;
-        case MCME_TAG_Int:   return tag->as_int;
-        case MCME_TAG_Short: return tag->as_short;
-        case MCME_TAG_Byte:  return tag->as_byte;
-        default: return fallback;
+    case MCME_TAG_Long:  return tag->as_long;
+    case MCME_TAG_Int:   return tag->as_int;
+    case MCME_TAG_Short: return tag->as_short;
+    case MCME_TAG_Byte:  return tag->as_byte;
+    default: return fallback;
     }
 }
 
@@ -707,10 +727,10 @@ int8_t mcme_nbt_byte_or(const McmeTag *tag, int8_t fallback)
 {
     if (!tag) return fallback;
     switch (tag->type) {
-        case MCME_TAG_Byte:  return tag->as_byte;
-        case MCME_TAG_Int:   return (int8_t)tag->as_int;
-        case MCME_TAG_Short: return (int8_t)tag->as_short;
-        default: return fallback;
+    case MCME_TAG_Byte:  return tag->as_byte;
+    case MCME_TAG_Int:   return (int8_t)tag->as_int;
+    case MCME_TAG_Short: return (int8_t)tag->as_short;
+    default: return fallback;
     }
 }
 
@@ -718,11 +738,11 @@ double mcme_nbt_double_or(const McmeTag *tag, double fallback)
 {
     if (!tag) return fallback;
     switch (tag->type) {
-        case MCME_TAG_Double: return tag->as_double;
-        case MCME_TAG_Float:  return (double)tag->as_float;
-        case MCME_TAG_Int:    return (double)tag->as_int;
-        case MCME_TAG_Long:   return (double)tag->as_long;
-        default: return fallback;
+    case MCME_TAG_Double: return tag->as_double;
+    case MCME_TAG_Float:  return (double)tag->as_float;
+    case MCME_TAG_Int:    return (double)tag->as_int;
+    case MCME_TAG_Long:   return (double)tag->as_long;
+    default: return fallback;
     }
 }
 
@@ -734,31 +754,31 @@ bool mcme_nbt_is(const McmeTag *tag, McmeTagType type)
 const char *mcme_tag_type_name(McmeTagType type)
 {
     switch (type) {
-        case MCME_TAG_Byte:       return "byte";
-        case MCME_TAG_Short:      return "short";
-        case MCME_TAG_Int:        return "int";
-        case MCME_TAG_Long:       return "long";
-        case MCME_TAG_Float:      return "float";
-        case MCME_TAG_Double:     return "double";
-        case MCME_TAG_Byte_Array: return "byte_array";
-        case MCME_TAG_String:     return "string";
-        case MCME_TAG_List:       return "list";
-        case MCME_TAG_Compound:   return "compound";
-        case MCME_TAG_Int_Array:  return "int_array";
-        case MCME_TAG_Long_Array: return "long_array";
-        default:                  return "end";
+    case MCME_TAG_Byte:       return "byte";
+    case MCME_TAG_Short:      return "short";
+    case MCME_TAG_Int:        return "int";
+    case MCME_TAG_Long:       return "long";
+    case MCME_TAG_Float:      return "float";
+    case MCME_TAG_Double:     return "double";
+    case MCME_TAG_Byte_Array: return "byte_array";
+    case MCME_TAG_String:     return "string";
+    case MCME_TAG_List:       return "list";
+    case MCME_TAG_Compound:   return "compound";
+    case MCME_TAG_Int_Array:  return "int_array";
+    case MCME_TAG_Long_Array: return "long_array";
+    default:                  return "end";
     }
 }
 
 const char *mcme_tag_type_snbt_suffix(McmeTagType type)
 {
     switch (type) {
-        case MCME_TAG_Byte:   return "b";
-        case MCME_TAG_Short:  return "s";
-        case MCME_TAG_Long:   return "L";
-        case MCME_TAG_Float:  return "f";
-        case MCME_TAG_Double: return "d";
-        default:              return "";
+    case MCME_TAG_Byte:   return "b";
+    case MCME_TAG_Short:  return "s";
+    case MCME_TAG_Long:   return "L";
+    case MCME_TAG_Float:  return "f";
+    case MCME_TAG_Double: return "d";
+    default:              return "";
     }
 }
 
@@ -778,7 +798,8 @@ static bool write_string(const McmeStr *s, McmeBuffer *out, bool le)
         return false;
     }
     if (tmp.len > 0xFFFF) {
-        mcme_set_error("nbt: string of %zu bytes exceeds the 65535 limit", tmp.len);
+        mcme_set_error("nbt: string of %zu bytes exceeds the 65535 limit",
+                       tmp.len);
         mcme_buffer_free(&tmp);
         return false;
     }
@@ -792,98 +813,112 @@ static bool write_string(const McmeStr *s, McmeBuffer *out, bool le)
 static bool write_payload(const McmeTag *t, McmeBuffer *out, bool le)
 {
     switch (t->type) {
-        case MCME_TAG_Byte:
-            return mcme_buffer_append_u8(out, (uint8_t)t->as_byte);
+    case MCME_TAG_Byte:
+        return mcme_buffer_append_u8(out, (uint8_t)t->as_byte);
 
-        case MCME_TAG_Short:
-            return le ? mcme_buffer_append_u16le(out, (uint16_t)t->as_short)
-                      : mcme_buffer_append_u16be(out, (uint16_t)t->as_short);
+    case MCME_TAG_Short:
+        return le ? mcme_buffer_append_u16le(out, (uint16_t)t->as_short)
+                  : mcme_buffer_append_u16be(out, (uint16_t)t->as_short);
 
-        case MCME_TAG_Int:
-            return le ? mcme_buffer_append_i32le(out, t->as_int)
-                      : mcme_buffer_append_i32be(out, t->as_int);
+    case MCME_TAG_Int:
+        return le ? mcme_buffer_append_i32le(out, t->as_int)
+                  : mcme_buffer_append_i32be(out, t->as_int);
 
-        case MCME_TAG_Long:
-            return le ? mcme_buffer_append_i64le(out, t->as_long)
-                      : mcme_buffer_append_i64be(out, t->as_long);
+    case MCME_TAG_Long:
+        return le ? mcme_buffer_append_i64le(out, t->as_long)
+                  : mcme_buffer_append_i64be(out, t->as_long);
 
-        case MCME_TAG_Float:
-            return le ? mcme_buffer_append_f32le(out, t->as_float)
-                      : mcme_buffer_append_f32be(out, t->as_float);
+    case MCME_TAG_Float:
+        return le ? mcme_buffer_append_f32le(out, t->as_float)
+                  : mcme_buffer_append_f32be(out, t->as_float);
 
-        case MCME_TAG_Double:
-            return le ? mcme_buffer_append_f64le(out, t->as_double)
-                      : mcme_buffer_append_f64be(out, t->as_double);
+    case MCME_TAG_Double:
+        return le ? mcme_buffer_append_f64le(out, t->as_double)
+                  : mcme_buffer_append_f64be(out, t->as_double);
 
-        case MCME_TAG_String:
-            return write_string(&t->string, out, le);
+    case MCME_TAG_String:
+        return write_string(&t->string, out, le);
 
-        case MCME_TAG_Byte_Array: {
-            int32_t n = (int32_t)t->bytes.len;
-            if (le) {
-                if (!mcme_buffer_append_i32le(out, n)) return false;
-            } else {
-                if (!mcme_buffer_append_i32be(out, n)) return false;
-            }
-            return mcme_buffer_append(out, t->bytes.data, t->bytes.len);
+    case MCME_TAG_Byte_Array: {
+        int32_t n = (int32_t)t->bytes.len;
+        if (le) {
+            if (!mcme_buffer_append_i32le(out, n)) return false;
+        } else {
+            if (!mcme_buffer_append_i32be(out, n)) return false;
         }
+        return mcme_buffer_append(out, t->bytes.data, t->bytes.len);
+    }
 
-        case MCME_TAG_Int_Array: {
-            int32_t n = (int32_t)t->ints.len;
-            if (le) {
-                if (!mcme_buffer_append_i32le(out, n)) return false;
-                for (size_t i = 0; i < t->ints.len; ++i)
-                    if (!mcme_buffer_append_i32le(out, t->ints.data[i])) return false;
-            } else {
-                if (!mcme_buffer_append_i32be(out, n)) return false;
-                for (size_t i = 0; i < t->ints.len; ++i)
-                    if (!mcme_buffer_append_i32be(out, t->ints.data[i])) return false;
+    case MCME_TAG_Int_Array: {
+        int32_t n = (int32_t)t->ints.len;
+        if (le) {
+            if (!mcme_buffer_append_i32le(out, n)) return false;
+            for (size_t i = 0; i < t->ints.len; ++i) {
+                if (!mcme_buffer_append_i32le(out, t->ints.data[i])) {
+                    return false;
+                }
             }
-            return true;
+        } else {
+            if (!mcme_buffer_append_i32be(out, n)) return false;
+            for (size_t i = 0; i < t->ints.len; ++i) {
+                if (!mcme_buffer_append_i32be(out, t->ints.data[i])) {
+                    return false;
+                }
+            }
         }
+        return true;
+    }
 
-        case MCME_TAG_Long_Array: {
-            int32_t n = (int32_t)t->longs.len;
-            if (le) {
-                if (!mcme_buffer_append_i32le(out, n)) return false;
-                for (size_t i = 0; i < t->longs.len; ++i)
-                    if (!mcme_buffer_append_i64le(out, t->longs.data[i])) return false;
-            } else {
-                if (!mcme_buffer_append_i32be(out, n)) return false;
-                for (size_t i = 0; i < t->longs.len; ++i)
-                    if (!mcme_buffer_append_i64be(out, t->longs.data[i])) return false;
+    case MCME_TAG_Long_Array: {
+        int32_t n = (int32_t)t->longs.len;
+        if (le) {
+            if (!mcme_buffer_append_i32le(out, n)) return false;
+            for (size_t i = 0; i < t->longs.len; ++i) {
+                if (!mcme_buffer_append_i64le(out, t->longs.data[i])) {
+                    return false;
+                }
             }
-            return true;
+        } else {
+            if (!mcme_buffer_append_i32be(out, n)) return false;
+            for (size_t i = 0; i < t->longs.len; ++i) {
+                if (!mcme_buffer_append_i64be(out, t->longs.data[i])) {
+                    return false;
+                }
+            }
         }
+        return true;
+    }
 
-        case MCME_TAG_List: {
-            uint8_t elem = (uint8_t)t->list.elem;
-            int32_t n = (int32_t)t->list.len;
-            if (!mcme_buffer_append_u8(out, elem)) return false;
-            if (le) {
-                if (!mcme_buffer_append_i32le(out, n)) return false;
-            } else {
-                if (!mcme_buffer_append_i32be(out, n)) return false;
-            }
-            for (size_t i = 0; i < t->list.len; ++i) {
-                if (!write_payload(&t->list.items[i], out, le)) return false;
-            }
-            return true;
+    case MCME_TAG_List: {
+        uint8_t elem = (uint8_t)t->list.elem;
+        int32_t n = (int32_t)t->list.len;
+        if (!mcme_buffer_append_u8(out, elem)) return false;
+        if (le) {
+            if (!mcme_buffer_append_i32le(out, n)) return false;
+        } else {
+            if (!mcme_buffer_append_i32be(out, n)) return false;
         }
-
-        case MCME_TAG_Compound: {
-            for (size_t i = 0; i < t->compound.len; ++i) {
-                const McmeCompoundEntry *e = &t->compound.entries[i];
-                if (!mcme_buffer_append_u8(out, (uint8_t)e->value->type)) return false;
-                if (!write_string(&e->name, out, le)) return false;
-                if (!write_payload(e->value, out, le)) return false;
-            }
-            return mcme_buffer_append_u8(out, (uint8_t)MCME_TAG_End);
+        for (size_t i = 0; i < t->list.len; ++i) {
+            if (!write_payload(&t->list.items[i], out, le)) return false;
         }
+        return true;
+    }
 
-        default:
-            mcme_set_error("nbt: cannot write tag type %d", (int)t->type);
-            return false;
+    case MCME_TAG_Compound: {
+        for (size_t i = 0; i < t->compound.len; ++i) {
+            const McmeCompoundEntry *e = &t->compound.entries[i];
+            if (!mcme_buffer_append_u8(out, (uint8_t)e->value->type)) {
+                return false;
+            }
+            if (!write_string(&e->name, out, le)) return false;
+            if (!write_payload(e->value, out, le)) return false;
+        }
+        return mcme_buffer_append_u8(out, (uint8_t)MCME_TAG_End);
+    }
+
+    default:
+        mcme_set_error("nbt: cannot write tag type %d", (int)t->type);
+        return false;
     }
 }
 
@@ -916,8 +951,12 @@ bool mcme_nbt_write_binary(const McmeNbtDoc *doc, McmeBuffer *out)
  *   - a trailing ".0" so a whole number still reads as a float
  * ======================================================================== */
 
-static int ascii_lower(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
-static int ascii_isupper(int c) { return c >= 'A' && c <= 'Z'; }
+static int ascii_lower(int c) {
+    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+static int ascii_isupper(int c) {
+    return c >= 'A' && c <= 'Z';
+}
 
 /*
  * Reformats a printf %e string ("d.ddddde±XX") into Python repr style.
@@ -1111,9 +1150,11 @@ static bool snbt_indent(McmeBuffer *out, int indent, int depth)
     return true;
 }
 
-static bool snbt_write_value(const McmeTag *t, McmeBuffer *out, int indent, int depth);
+static bool snbt_write_value(const McmeTag *t, McmeBuffer *out, int indent,
+                             int depth);
 
-static bool snbt_write_compound(const McmeTag *t, McmeBuffer *out, int indent, int depth)
+static bool snbt_write_compound(const McmeTag *t, McmeBuffer *out, int indent,
+                                int depth)
 {
     size_t n = t->compound.len;
     if (!mcme_buffer_append_char(out, '{')) return false;
@@ -1159,7 +1200,8 @@ static bool snbt_write_compound(const McmeTag *t, McmeBuffer *out, int indent, i
     return ok && mcme_buffer_append_char(out, '}');
 }
 
-static bool snbt_write_list(const McmeTag *t, McmeBuffer *out, int indent, int depth)
+static bool snbt_write_list(const McmeTag *t, McmeBuffer *out, int indent,
+                            int depth)
 {
     if (!mcme_buffer_append_char(out, '[')) return false;
     for (size_t i = 0; i < t->list.len; ++i) {
@@ -1167,10 +1209,19 @@ static bool snbt_write_list(const McmeTag *t, McmeBuffer *out, int indent, int d
             if (!mcme_buffer_append_char(out, ',')) return false;
             if (indent <= 0 && !mcme_buffer_append_char(out, ' ')) return false;
         }
-        if (t->list.len > 1 && indent > 0 && !snbt_indent(out, indent, depth + 1)) return false;
-        if (!snbt_write_value(&t->list.items[i], out, indent, depth + 1)) return false;
+        if (t->list.len > 1 && indent > 0 
+            && !snbt_indent(out, indent, depth + 1)) {
+            return false;
+        } 
+        if (!snbt_write_value(&t->list.items[i], out, indent, depth + 1)) {
+            return false;
+        }
     }
-    if (indent > 0 && t->list.len > 0 && !snbt_indent(out, indent, depth)) return false;
+    if (indent > 0 
+        && t->list.len > 0 
+        && !snbt_indent(out, indent, depth)) {
+        return false;
+    }
     return mcme_buffer_append_char(out, ']');
 }
 
@@ -1215,54 +1266,55 @@ static bool snbt_write_array(const McmeTag *t, McmeBuffer *out)
     }
 }
 
-static bool snbt_write_value(const McmeTag *t, McmeBuffer *out, int indent, int depth)
+static bool snbt_write_value(const McmeTag *t, McmeBuffer *out, int indent,
+                             int depth)
 {
     char tmp[64];
 
     switch (t->type) {
-        case MCME_TAG_Byte:
-            snprintf(tmp, sizeof(tmp), "%db", (int)t->as_byte);
-            return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Byte:
+        snprintf(tmp, sizeof(tmp), "%db", (int)t->as_byte);
+        return mcme_buffer_append_cstr(out, tmp);
 
-        case MCME_TAG_Short:
-            snprintf(tmp, sizeof(tmp), "%ds", (int)t->as_short);
-            return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Short:
+        snprintf(tmp, sizeof(tmp), "%ds", (int)t->as_short);
+        return mcme_buffer_append_cstr(out, tmp);
 
-        case MCME_TAG_Int:
-            snprintf(tmp, sizeof(tmp), "%d", t->as_int);
-            return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Int:
+        snprintf(tmp, sizeof(tmp), "%d", t->as_int);
+        return mcme_buffer_append_cstr(out, tmp);
 
-        case MCME_TAG_Long:
-            snprintf(tmp, sizeof(tmp), "%lldL", (long long)t->as_long);
-            return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Long:
+        snprintf(tmp, sizeof(tmp), "%lldL", (long long)t->as_long);
+        return mcme_buffer_append_cstr(out, tmp);
 
-        case MCME_TAG_Float:
-            format_float_repr(t->as_float, tmp, sizeof(tmp));
-            if (!mcme_buffer_append_cstr(out, tmp)) return false;
-            return mcme_buffer_append_cstr(out, "f");
+    case MCME_TAG_Float:
+        format_float_repr(t->as_float, tmp, sizeof(tmp));
+        if (!mcme_buffer_append_cstr(out, tmp)) return false;
+        return mcme_buffer_append_cstr(out, "f");
 
-        case MCME_TAG_Double:
-            format_double_repr(t->as_double, tmp, sizeof(tmp));
-            if (!mcme_buffer_append_cstr(out, tmp)) return false;
-            return mcme_buffer_append_cstr(out, "d");
+    case MCME_TAG_Double:
+        format_double_repr(t->as_double, tmp, sizeof(tmp));
+        if (!mcme_buffer_append_cstr(out, tmp)) return false;
+        return mcme_buffer_append_cstr(out, "d");
 
-        case MCME_TAG_String:
-            return snbt_write_string(&t->string, out);
+    case MCME_TAG_String:
+        return snbt_write_string(&t->string, out);
 
-        case MCME_TAG_Compound:
-            return snbt_write_compound(t, out, indent, depth);
+    case MCME_TAG_Compound:
+        return snbt_write_compound(t, out, indent, depth);
 
-        case MCME_TAG_List:
-            return snbt_write_list(t, out, indent, depth);
+    case MCME_TAG_List:
+        return snbt_write_list(t, out, indent, depth);
 
-        case MCME_TAG_Byte_Array:
-        case MCME_TAG_Int_Array:
-        case MCME_TAG_Long_Array:
-            return snbt_write_array(t, out);
+    case MCME_TAG_Byte_Array:
+    case MCME_TAG_Int_Array:
+    case MCME_TAG_Long_Array:
+        return snbt_write_array(t, out);
 
-        default:
-            mcme_set_error("nbt: cannot write tag type %d as SNBT", (int)t->type);
-            return false;
+    default:
+        mcme_set_error("nbt: cannot write tag type %d as SNBT", (int)t->type);
+        return false;
     }
 }
 
@@ -1288,11 +1340,21 @@ static bool json_write_escaped(const char *s, size_t len, McmeBuffer *out)
     for (size_t i = 0; i < len; ++i) {
         unsigned char c = (unsigned char)s[i];
         switch (c) {
-            case '"':  if (!mcme_buffer_append_cstr(out, "\\\"")) return false; break;
-            case '\\': if (!mcme_buffer_append_cstr(out, "\\\\")) return false; break;
-            case '\n': if (!mcme_buffer_append_cstr(out, "\\n")) return false; break;
-            case '\r': if (!mcme_buffer_append_cstr(out, "\\r")) return false; break;
-            case '\t': if (!mcme_buffer_append_cstr(out, "\\t")) return false; break;
+            case '"':  
+                if (!mcme_buffer_append_cstr(out, "\\\"")) return false;
+            break;
+            case '\\':
+                if (!mcme_buffer_append_cstr(out, "\\\\")) return false;
+            break;
+            case '\n':
+                if (!mcme_buffer_append_cstr(out, "\\n")) return false;
+            break;
+            case '\r':
+                if (!mcme_buffer_append_cstr(out, "\\r")) return false;
+            break;
+            case '\t':
+                if (!mcme_buffer_append_cstr(out, "\\t")) return false;
+            break;
             default:
                 if (c < 0x20) {
                     char tmp[8];
@@ -1301,7 +1363,7 @@ static bool json_write_escaped(const char *s, size_t len, McmeBuffer *out)
                 } else {
                     if (!mcme_buffer_append_u8(out, c)) return false;
                 }
-                break;
+            break;
         }
     }
     return mcme_buffer_append_char(out, '"');
@@ -1322,90 +1384,92 @@ static bool json_write_value(const McmeTag *t, McmeBuffer *out, int indent, int 
     char tmp[64];
 
     switch (t->type) {
-        case MCME_TAG_Byte:
-            snprintf(tmp, sizeof(tmp), "%d", (int)t->as_byte);
-            return mcme_buffer_append_cstr(out, tmp);
-        case MCME_TAG_Short:
-            snprintf(tmp, sizeof(tmp), "%d", (int)t->as_short);
-            return mcme_buffer_append_cstr(out, tmp);
-        case MCME_TAG_Int:
-            snprintf(tmp, sizeof(tmp), "%d", t->as_int);
-            return mcme_buffer_append_cstr(out, tmp);
-        case MCME_TAG_Long:
-            snprintf(tmp, sizeof(tmp), "%lld", (long long)t->as_long);
-            return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Byte:
+        snprintf(tmp, sizeof(tmp), "%d", (int)t->as_byte);
+        return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Short:
+        snprintf(tmp, sizeof(tmp), "%d", (int)t->as_short);
+        return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Int:
+        snprintf(tmp, sizeof(tmp), "%d", t->as_int);
+        return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Long:
+        snprintf(tmp, sizeof(tmp), "%lld", (long long)t->as_long);
+        return mcme_buffer_append_cstr(out, tmp);
 
-        case MCME_TAG_Float: {
-            float f = t->as_float;
-            if (isnan(f) || isinf(f)) return mcme_buffer_append_cstr(out, "null");
-            format_float_repr(f, tmp, sizeof(tmp));
-            return mcme_buffer_append_cstr(out, tmp);
+    case MCME_TAG_Float: {
+        float f = t->as_float;
+        if (isnan(f) || isinf(f)) return mcme_buffer_append_cstr(out, "null");
+        format_float_repr(f, tmp, sizeof(tmp));
+        return mcme_buffer_append_cstr(out, tmp);
+    }
+    case MCME_TAG_Double: {
+        double d = t->as_double;
+        if (isnan(d) || isinf(d)) return mcme_buffer_append_cstr(out, "null");
+        format_double_repr(d, tmp, sizeof(tmp));
+        return mcme_buffer_append_cstr(out, tmp);
+    }
+
+    case MCME_TAG_String:
+        return json_write_escaped(t->string.data, t->string.len, out);
+
+    case MCME_TAG_Compound: {
+        if (!mcme_buffer_append_char(out, '{')) return false;
+        for (size_t i = 0; i < t->compound.len; ++i) {
+            if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
+            if (!json_indent(out, indent, depth + 1)) return false;
+            const McmeCompoundEntry *e = &t->compound.entries[i];
+            if (!json_write_escaped(e->name.data, e->name.len, out)) return false;
+            if (!mcme_buffer_append_cstr(out, indent > 0 ? ": " : ":")) return false;
+            if (!json_write_value(e->value, out, indent, depth + 1)) return false;
         }
-        case MCME_TAG_Double: {
-            double d = t->as_double;
-            if (isnan(d) || isinf(d)) return mcme_buffer_append_cstr(out, "null");
-            format_double_repr(d, tmp, sizeof(tmp));
-            return mcme_buffer_append_cstr(out, tmp);
+        if (t->compound.len > 0 && !json_indent(out, indent, depth)) return false;
+        return mcme_buffer_append_char(out, '}');
+    }
+
+    case MCME_TAG_List: {
+        if (!mcme_buffer_append_char(out, '[')) return false;
+        for (size_t i = 0; i < t->list.len; ++i) {
+            if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
+            if (!json_indent(out, indent, depth + 1)) return false;
+            if (!json_write_value(&t->list.items[i], out, indent, depth + 1)) {
+                return false;
+            }
         }
+        if (t->list.len > 0 && !json_indent(out, indent, depth)) return false;
+        return mcme_buffer_append_char(out, ']');
+    }
 
-        case MCME_TAG_String:
-            return json_write_escaped(t->string.data, t->string.len, out);
-
-        case MCME_TAG_Compound: {
-            if (!mcme_buffer_append_char(out, '{')) return false;
-            for (size_t i = 0; i < t->compound.len; ++i) {
-                if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
-                if (!json_indent(out, indent, depth + 1)) return false;
-                const McmeCompoundEntry *e = &t->compound.entries[i];
-                if (!json_write_escaped(e->name.data, e->name.len, out)) return false;
-                if (!mcme_buffer_append_cstr(out, indent > 0 ? ": " : ":")) return false;
-                if (!json_write_value(e->value, out, indent, depth + 1)) return false;
-            }
-            if (t->compound.len > 0 && !json_indent(out, indent, depth)) return false;
-            return mcme_buffer_append_char(out, '}');
+    case MCME_TAG_Byte_Array:
+        if (!mcme_buffer_append_char(out, '[')) return false;
+        for (size_t i = 0; i < t->bytes.len; ++i) {
+            if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
+            snprintf(tmp, sizeof(tmp), "%d", (int)t->bytes.data[i]);
+            if (!mcme_buffer_append_cstr(out, tmp)) return false;
         }
+        return mcme_buffer_append_char(out, ']');
 
-        case MCME_TAG_List: {
-            if (!mcme_buffer_append_char(out, '[')) return false;
-            for (size_t i = 0; i < t->list.len; ++i) {
-                if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
-                if (!json_indent(out, indent, depth + 1)) return false;
-                if (!json_write_value(&t->list.items[i], out, indent, depth + 1)) return false;
-            }
-            if (t->list.len > 0 && !json_indent(out, indent, depth)) return false;
-            return mcme_buffer_append_char(out, ']');
+    case MCME_TAG_Int_Array:
+        if (!mcme_buffer_append_char(out, '[')) return false;
+        for (size_t i = 0; i < t->ints.len; ++i) {
+            if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
+            snprintf(tmp, sizeof(tmp), "%d", t->ints.data[i]);
+            if (!mcme_buffer_append_cstr(out, tmp)) return false;
         }
+        return mcme_buffer_append_char(out, ']');
 
-        case MCME_TAG_Byte_Array:
-            if (!mcme_buffer_append_char(out, '[')) return false;
-            for (size_t i = 0; i < t->bytes.len; ++i) {
-                if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
-                snprintf(tmp, sizeof(tmp), "%d", (int)t->bytes.data[i]);
-                if (!mcme_buffer_append_cstr(out, tmp)) return false;
-            }
-            return mcme_buffer_append_char(out, ']');
+    case MCME_TAG_Long_Array:
+        if (!mcme_buffer_append_char(out, '[')) return false;
+        for (size_t i = 0; i < t->longs.len; ++i) {
+            if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
+            snprintf(tmp, sizeof(tmp), "%lld", (long long)t->longs.data[i]);
+            if (!mcme_buffer_append_cstr(out, tmp)) return false;
+        }
+        return mcme_buffer_append_char(out, ']');
 
-        case MCME_TAG_Int_Array:
-            if (!mcme_buffer_append_char(out, '[')) return false;
-            for (size_t i = 0; i < t->ints.len; ++i) {
-                if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
-                snprintf(tmp, sizeof(tmp), "%d", t->ints.data[i]);
-                if (!mcme_buffer_append_cstr(out, tmp)) return false;
-            }
-            return mcme_buffer_append_char(out, ']');
-
-        case MCME_TAG_Long_Array:
-            if (!mcme_buffer_append_char(out, '[')) return false;
-            for (size_t i = 0; i < t->longs.len; ++i) {
-                if (i > 0 && !mcme_buffer_append_char(out, ',')) return false;
-                snprintf(tmp, sizeof(tmp), "%lld", (long long)t->longs.data[i]);
-                if (!mcme_buffer_append_cstr(out, tmp)) return false;
-            }
-            return mcme_buffer_append_char(out, ']');
-
-        default:
-            mcme_set_error("nbt: cannot write tag type %d as JSON", (int)t->type);
-            return false;
+    default:
+        mcme_set_error("nbt: cannot write tag type %d as JSON", (int)t->type);
+        return false;
     }
 }
 

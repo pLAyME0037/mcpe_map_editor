@@ -136,7 +136,7 @@ static bool compile_one(const char *src, bool release, bool is_ours)
         "-I", "third_party/cjson",
         "-I", "third_party/miniz",
         "-I", "third_party/lz4",
-        "-Wall", "-Wextra");
+        "-Wall", "-Wextra", "-ggdb");
 
     if (is_ours) {
         nob_cmd_append(&cmd, "-Werror");
@@ -211,8 +211,8 @@ int main(int argc, char **argv)
             const char *src;
             const char *out;
         } targets[] = {
-            { "tests/fuzz/fuzz_nbt.c",        "build/fuzz_nbt"        },
-            { "tests/fuzz/fuzz_snbt.c",       "build/fuzz_snbt"       },
+            { "tests/fuzz/fuzz_nbt.c",        "build/fuzz_nbt" },
+            { "tests/fuzz/fuzz_snbt.c",       "build/fuzz_snbt" },
             { "tests/fuzz/fuzz_decompress.c", "build/fuzz_decompress" },
         };
         const size_t target_count = sizeof(targets) / sizeof(targets[0]);
@@ -276,7 +276,8 @@ int main(int argc, char **argv)
             nob_log(NOB_ERROR, "link failed for mcme");
             return 1;
         }
-        nob_log(NOB_INFO, "built ./mcme (%s)", release ? "release" : "debug, ASan+UBSan");
+        nob_log(NOB_INFO, "built ./mcme (%s)",
+                release ? "release" : "debug, ASan+UBSan");
     }
 
     /* --- link and optionally run mcme_tests --- */

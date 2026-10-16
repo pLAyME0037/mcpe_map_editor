@@ -124,10 +124,10 @@ static McmeNbtDoc doc_from_tag(McmeArena *arena, McmeTag *tag)
 static void test_golden(const char *name)
 {
     char be_path[512], le_path[512], snbt_path[512], root_path[512];
-    snprintf(be_path,    sizeof be_path,    "%s/%s.be.bin",    kGoldenDir, name);
-    snprintf(le_path,    sizeof le_path,    "%s/%s.le.bin",    kGoldenDir, name);
-    snprintf(snbt_path,  sizeof snbt_path,  "%s/%s.snbt",      kGoldenDir, name);
-    snprintf(root_path,  sizeof root_path,  "%s/%s.root.txt",  kGoldenDir, name);
+    snprintf(be_path,   sizeof be_path,   "%s/%s.be.bin",   kGoldenDir, name);
+    snprintf(le_path,   sizeof le_path,   "%s/%s.le.bin",   kGoldenDir, name);
+    snprintf(snbt_path, sizeof snbt_path, "%s/%s.snbt",     kGoldenDir, name);
+    snprintf(root_path, sizeof root_path, "%s/%s.root.txt", kGoldenDir, name);
 
     size_t be_len = 0, le_len = 0, snbt_len = 0, root_len = 0;
     void *be    = load(be_path,   &be_len);
@@ -535,19 +535,20 @@ static void test_snbt_rejects_bad_utf8(void)
     struct { const char *snbt; bool should_parse; const char *what; } cases[] = {
         /* NB: adjacent literals, because a C hex escape greedily consumes hex
            digits and "\x20b" would silently mean 0x20B. */
-        { "{s: \"a\xCA\x20" "b\"}",   false, "bad byte in value"   },
-        { "{s: \"a\xC3\xA9" "b\"}",   true,  "valid UTF-8 in value" },
-        { "{s: \"\xC0\xAF" "\"}",     false, "overlong sequence"   },
-        { "{s: \"ok\xE2\x82\"}",      false, "truncated tail"      },
-        { "{\xCA\x20" ": 1}",         false, "bad byte in key"     },
-        { "{s: \"\xED\xA0\xBD\"}",    true,  "lone surrogate"      },
-        { "{s: \"\xF0\x9F\x98\x80\"}", true, "supplementary char"  },
+        { "{s: \"a\xCA\x20" "b\"}",    false, "bad byte in value" },
+        { "{s: \"a\xC3\xA9" "b\"}",    true,  "valid UTF-8 in value" },
+        { "{s: \"\xC0\xAF" "\"}",      false, "overlong sequence" },
+        { "{s: \"ok\xE2\x82\"}",       false, "truncated tail" },
+        { "{\xCA\x20" ": 1}",          false, "bad byte in key" },
+        { "{s: \"\xED\xA0\xBD\"}",     true,  "lone surrogate" },
+        { "{s: \"\xF0\x9F\x98\x80\"}", true,  "supplementary char" },
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         McmeArena *a = mcme_arena_new();
         McmeTag *tag = NULL;
-        bool ok = mcme_nbt_parse_snbt(a, cases[i].snbt, strlen(cases[i].snbt), &tag);
+        bool ok = mcme_nbt_parse_snbt(a, cases[i].snbt, strlen(cases[i].snbt),
+                                      &tag);
         if (ok != cases[i].should_parse) {
             g_failed++;
             printf("  FAIL snbt utf8 [%s]: parse returned %d, expected %d\n",
@@ -595,8 +596,13 @@ static void test_snbt_rejects_bad_utf8(void)
    easy to over-constrain; pinned here so it does not silently regress. */
 static void test_non_compound_root(void)
 {
-    struct { const char *what; bool le;
-             const uint8_t *bytes; size_t len; uint8_t want_type; } cases[] = {
+    struct {
+        const char    *what;
+        bool           le;
+        const uint8_t *bytes;
+        size_t         len;
+        uint8_t        want_type;
+    } cases[] = {
         /* Byte root: type 01, name len 0001, name "z", value 42. */
         { "byte root",   false, (const uint8_t *)"\x01\x00\x01\x7A\x2A", 5, 1 },
         { "byte root",   true,  (const uint8_t *)"\x01\x01\x00\x7A\x2A", 5, 1 },
@@ -651,26 +657,31 @@ static void test_non_compound_root(void)
  */
 static void test_list_homogeneity_and_dup_keys(void)
 {
-    struct { const char *snbt; bool should_parse; const char *what; } lists[] = {
-        { "[1, 2, 3]",        true,  "uniform ints"      },
-        { "[]",               true,  "empty list"        },
-        { "[IB]",             true,  "single element"    },
-        { "[\"a\", \"b\"]",   true,  "uniform strings"   },
-        { "[1, \"two\"]",     false, "int then string"   },
-        { "[\"a\", 1]",       false, "string then int"   },
-        { "[1b, 2]",          false, "byte then int"     },
-        { "[IB, -128B]",      false, "string then byte"  },
-        { "[{a:1}, 2]",       false, "compound then int" },
+    struct {
+        const char *snbt;
+        bool        should_parse;
+        const char *what;
+    } lists[] = {
+        { "[1, 2, 3]",      true,  "uniform ints"      },
+        { "[]",             true,  "empty list"        },
+        { "[IB]",           true,  "single element"    },
+        { "[\"a\", \"b\"]", true,  "uniform strings"   },
+        { "[1, \"two\"]",   false, "int then string"   },
+        { "[\"a\", 1]",     false, "string then int"   },
+        { "[1b, 2]",        false, "byte then int"     },
+        { "[IB, -128B]",    false, "string then byte"  },
+        { "[{a:1}, 2]",     false, "compound then int" },
     };
 
     for (size_t i = 0; i < sizeof(lists) / sizeof(lists[0]); ++i) {
         McmeArena *a = mcme_arena_new();
         McmeTag *tag = NULL;
-        bool ok = mcme_nbt_parse_snbt(a, lists[i].snbt, strlen(lists[i].snbt), &tag);
+        bool ok = mcme_nbt_parse_snbt(a, lists[i].snbt, strlen(lists[i].snbt),
+                                      &tag);
         if (ok != lists[i].should_parse) {
             g_failed++;
-            printf("  FAIL list homogeneity [%s]: parse returned %d, expected %d\n",
-                   lists[i].what, ok, lists[i].should_parse);
+            printf("  FAIL list homogeneity [%s]: parse returned %d, "
+                   "expected %d\n", lists[i].what, ok, lists[i].should_parse);
         } else if (!ok && mcme_last_error()[0] == '\0') {
             g_failed++;
             printf("  FAIL list homogeneity [%s]: rejected with no message\n",
@@ -685,7 +696,8 @@ static void test_list_homogeneity_and_dup_keys(void)
         McmeArena *a = mcme_arena_new();
         McmeTag *tag = NULL;
         CHECK(mcme_nbt_parse_snbt(a, "[]", 2, &tag));
-        CHECK(tag && tag->type == MCME_TAG_List && tag->list.elem == MCME_TAG_Byte);
+        CHECK(tag && tag->type == MCME_TAG_List 
+              && tag->list.elem == MCME_TAG_Byte);
         mcme_arena_free(a);
     }
 
@@ -861,7 +873,8 @@ static void test_navigate(void)
 
     found = mcme_nbt_path(root, "name");
     CHECK(found != NULL && found->type == MCME_TAG_String);
-    CHECK(found && found->string.len == 5 && memcmp(found->string.data, "world", 5) == 0);
+    CHECK(found && found->string.len == 5
+          && memcmp(found->string.data, "world", 5) == 0);
 
     /* Missing paths and bad shapes return NULL rather than a bogus value. */
     CHECK(mcme_nbt_path(root, "meta.nope") == NULL);
@@ -936,7 +949,8 @@ static void test_snbt_key_order(void)
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
         McmeArena *arena = mcme_arena_new();
         McmeTag *tag = NULL;
-        bool ok = mcme_nbt_parse_snbt(arena, cases[i].in, strlen(cases[i].in), &tag);
+        bool ok = mcme_nbt_parse_snbt(arena, cases[i].in, strlen(cases[i].in),
+                                      &tag);
         CHECK_MSG(ok, "case %zu failed to parse '%s': %s",
                   i, cases[i].in, mcme_last_error());
 
@@ -944,8 +958,8 @@ static void test_snbt_key_order(void)
             McmeBuffer out;
             mcme_buffer_init(&out);
             CHECK(mcme_nbt_write_snbt(tag, &out, 0));
-            CHECK_MSG(out.len == strlen(cases[i].want) &&
-                      memcmp(out.data, cases[i].want, out.len) == 0,
+            CHECK_MSG(out.len == strlen(cases[i].want)
+                      && memcmp(out.data, cases[i].want, out.len) == 0,
                       "case %zu\n    in   %s\n    got  %.*s\n    want %s",
                       i, cases[i].in, (int)out.len, (const char *)out.data,
                       cases[i].want);

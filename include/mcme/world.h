@@ -42,11 +42,11 @@ typedef enum {
    reliable Java/Bedrock discriminator and callers debugging a mis-detected
    world want to see it. */
 typedef enum {
-    MCME_LEVELDAT_NONE      = 0,   /* no level.dat found */
-    MCME_LEVELDAT_GZIP      = 1,   /* raw gzip, no header          -> Java */
-    MCME_LEVELDAT_HEADER_PLAIN = 2, /* 8-byte header, bare NBT     -> Bedrock */
-    MCME_LEVELDAT_HEADER_GZIP  = 3, /* 8-byte header, then gzip    -> Bedrock */
-    MCME_LEVELDAT_BARE_NBT  = 4,   /* no header, no gzip; ambiguous */
+    MCME_LEVELDAT_NONE         = 0, /* no level.dat found */
+    MCME_LEVELDAT_GZIP         = 1, /* raw gzip, no header       -> Java */
+    MCME_LEVELDAT_HEADER_PLAIN = 2, /* 8-byte header, bare NBT   -> Bedrock */
+    MCME_LEVELDAT_HEADER_GZIP  = 3, /* 8-byte header, then gzip  -> Bedrock */
+    MCME_LEVELDAT_BARE_NBT     = 4, /* no header, no gzip; ambiguous */
 } McmeLevelDatFrame;
 
 typedef struct {
@@ -54,14 +54,14 @@ typedef struct {
     McmeLevelDatFrame frame;
     char *path;
 
-    char    *name;             /* LevelName, else levelname.txt; NULL if absent */
-    char    *version;          /* human-readable game version, or NULL */
-    int32_t  data_version;     /* Java DataVersion; 0 if absent */
+    char    *name;         /* LevelName, else levelname.txt; NULL if absent */
+    char    *version;      /* human-readable game version, or NULL */
+    int32_t  data_version; /* Java DataVersion; 0 if absent */
     bool     has_spawn;
     int32_t  spawn_x, spawn_y, spawn_z;
     int32_t  game_type;
     bool     has_game_type;
-    int64_t  last_played;      /* unix seconds; 0 if absent */
+    int64_t  last_played;  /* unix seconds; 0 if absent */
 
     /* Java inventory, from scanning the overworld region/ directory. */
     size_t   region_files;

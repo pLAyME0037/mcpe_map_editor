@@ -22,7 +22,7 @@
  * Version
  * ======================================================================== */
 
-#define MCME_VERSION_STRING "0.1.0"
+#define MCME_VERSION_STRING "0.2.2"
 
 /* ========================================================================
  * Error reporting
@@ -107,13 +107,13 @@ typedef struct {
     size_t   cap;
 } McmeBuffer;
 
-void mcme_buffer_init(McmeBuffer *b);          /* data is NULL until first append */
-void mcme_buffer_free(McmeBuffer *b);          /* releases the bytes; safe on empty */
+void mcme_buffer_init(McmeBuffer *b);  /* data is NULL until first append */
+void mcme_buffer_free(McmeBuffer *b);  /* releases the bytes; safe on empty */
 bool mcme_buffer_reserve(McmeBuffer *b, size_t extra);
 
 bool mcme_buffer_append(McmeBuffer *b, const void *data, size_t len);
 bool mcme_buffer_append_u8(McmeBuffer *b, uint8_t v);
-bool mcme_buffer_append_cstr(McmeBuffer *b, const char *s);   /* bytes, no NUL */
+bool mcme_buffer_append_cstr(McmeBuffer *b, const char *s); /* bytes, no NUL */
 bool mcme_buffer_append_char(McmeBuffer *b, char c);
 
 /* Endian-specific appends. NBT stores numbers big-endian for Java and
@@ -151,7 +151,7 @@ typedef struct McmeEventQueue McmeEventQueue;
 
 McmeEventQueue *mcme_eq_new(void);
 bool   mcme_eq_post(McmeEventQueue *q, McmeFn fn, void *userdata);
-size_t mcme_eq_drain(McmeEventQueue *q);          /* runs pending, returns count run */
+size_t mcme_eq_drain(McmeEventQueue *q); /* runs pending, returns count run */
 size_t mcme_eq_pending(const McmeEventQueue *q);
 void   mcme_eq_free(McmeEventQueue *q);
 
@@ -210,7 +210,7 @@ void mcme_lang_free(McmeLang *lang);
 
 struct cJSON;
 
-struct cJSON *mcme_config_load(const char *path);   /* NULL if missing/invalid */
+struct cJSON *mcme_config_load(const char *path); /* NULL if missing/invalid */
 bool          mcme_config_save(const char *path, const struct cJSON *cfg);
 bool          mcme_config_pretty(const struct cJSON *cfg, char **out_text); /* caller frees */
 

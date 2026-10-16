@@ -32,10 +32,10 @@
 #include <string.h>
 
 /* Fragment types. */
-#define LDB_REC_FULL    1
-#define LDB_REC_FIRST   2
-#define LDB_REC_MIDDLE  3
-#define LDB_REC_LAST    4
+#define LDB_REC_FULL   1
+#define LDB_REC_FIRST  2
+#define LDB_REC_MIDDLE 3
+#define LDB_REC_LAST   4
 
 /* Hard ceiling on one reassembled record. A legitimate record never approaches
    this; it exists so a corrupt length cannot drive an unbounded allocation. */
@@ -61,9 +61,12 @@ bool mcme_ldb_log_read(const uint8_t *data, size_t len,
 
         size_t at = block_at;
         while (at + 7 <= block_end) {
-            uint32_t crc = (uint32_t)data[at]         | ((uint32_t)data[at + 1] << 8) |
-                           ((uint32_t)data[at + 2] << 16) | ((uint32_t)data[at + 3] << 24);
-            uint32_t frag_len = (uint32_t)data[at + 4] | ((uint32_t)data[at + 5] << 8);
+            uint32_t crc = (uint32_t)data[at] 
+                         | ((uint32_t)data[at + 1] << 8)
+                         | ((uint32_t)data[at + 2] << 16)
+                         | ((uint32_t)data[at + 3] << 24);
+            uint32_t frag_len = (uint32_t)data[at + 4]
+                              | ((uint32_t)data[at + 5] << 8);
             uint8_t type = data[at + 6];
             at += 7;
 
@@ -116,7 +119,8 @@ bool mcme_ldb_log_read(const uint8_t *data, size_t len,
             if (mcme_ldb_mask_crc(got) != crc) {
                 /* Damaged fragment. Stop rather than hand the caller bytes
                    that may have been altered. */
-                mcme_set_error("leveldb log: checksum mismatch at byte %zu", block_at);
+                mcme_set_error("leveldb log: checksum mismatch at byte %zu",
+                               block_at);
                 ok = false;
                 goto done;
             }
@@ -139,7 +143,8 @@ bool mcme_ldb_log_read(const uint8_t *data, size_t len,
             }
 
             if (record.len + frag_len > LDB_RECORD_MAX) {
-                mcme_set_error("leveldb log: record over %u bytes", LDB_RECORD_MAX);
+                mcme_set_error("leveldb log: record over %u bytes",
+                               LDB_RECORD_MAX);
                 ok = false;
                 goto done;
             }

@@ -48,17 +48,15 @@ bool mcme_bedrock_subchunk_key(int32_t x, int32_t y,
  * one exit code across the CLI.
  */
 typedef enum {
-    MCME_WRITE_REFUSAL_NONE = 0,     /* nothing stood in the way  */
-    MCME_WRITE_REFUSAL_NOT_THERE,    /* the game deleted it       */
-    MCME_WRITE_REFUSAL_NOT_READABLE, /* undecodable payload, or
-                                        the all-air marker, which
-                                        has no layer to fill      */
+    MCME_WRITE_REFUSAL_NONE = 0,     /* nothing stood in the way            */
+    MCME_WRITE_REFUSAL_NOT_THERE,    /* the game deleted it                 */
+    MCME_WRITE_REFUSAL_NOT_READABLE, /* undecodable payload, or the all-air
+                                        marker, which has no layer to fill  */
     MCME_WRITE_REFUSAL_STORE,        /* the store could not be
-                                        read or written           */
+                                        read or written                     */
     MCME_WRITE_REFUSAL_USAGE,        /* a null argument, or a
-                                        coordinate the key cannot
-                                        name                      */
-    MCME_WRITE_REFUSAL_INTERNAL      /* out of memory             */
+                                        coordinate the key cannot name      */
+    MCME_WRITE_REFUSAL_INTERNAL      /* out of memory                       */
 } McmeWriteRefusal;
 
 /*

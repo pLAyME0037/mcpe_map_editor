@@ -45,7 +45,8 @@
 /* Decodes one code point from UTF-8 input. Returns the number of bytes
    consumed, or 0 if the input is malformed (truncated, overlong, bad lead
    byte, or an encoded surrogate, which standard UTF-8 must never contain). */
-static size_t utf8_decode_one(const uint8_t *p, const uint8_t *end, uint32_t *out_cp)
+static size_t utf8_decode_one(const uint8_t *p, const uint8_t *end,
+                              uint32_t *out_cp)
 {
     if (p >= end) return 0;
     uint8_t b0 = p[0];
@@ -84,7 +85,11 @@ static size_t utf8_decode_one(const uint8_t *p, const uint8_t *end, uint32_t *ou
     if ((b0 & 0xF8) == 0xF0) {
         if (end - p < 4) return 0;
         uint8_t b1 = p[1], b2 = p[2], b3 = p[3];
-        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80) return 0;
+        if ((b1 & 0xC0) != 0x80 
+             || (b2 & 0xC0) != 0x80 
+             || (b3 & 0xC0) != 0x80) {
+            return 0;
+        }
         uint32_t cp = ((uint32_t)(b0 & 0x07) << 18)
                     | ((uint32_t)(b1 & 0x3F) << 12)
                     | ((uint32_t)(b2 & 0x3F) << 6)
@@ -236,18 +241,22 @@ bool mcme_mutf8_decode(const char *mutf8, size_t mutf8_len, McmeBuffer *out)
             }
             uint8_t b1 = p[1];
             if ((b1 & 0xC0) != 0x80) {
-                mcme_set_error("mutf8: bad continuation at byte %zu", (size_t)(p - start));
+                mcme_set_error("mutf8: bad continuation at byte %zu",
+                               (size_t)(p - start));
                 return false;
             }
             uint32_t cp = ((uint32_t)(b0 & 0x1F) << 6) | (uint32_t)(b1 & 0x3F);
             /* C0 80 is the canonical U+0000. Any other sub-0x80 result is an
                overlong encoding and is rejected. */
             if (cp < 0x80 && !(b0 == 0xC0 && b1 == 0x80)) {
-                mcme_set_error("mutf8: overlong encoding at byte %zu", (size_t)(p - start));
+                mcme_set_error("mutf8: overlong encoding at byte %zu",
+                               (size_t)(p - start));
                 return false;
             }
             uint8_t buf[4];
-            if (!mcme_buffer_append(out, buf, utf8_encode_one(cp, buf))) return false;
+            if (!mcme_buffer_append(out, buf, utf8_encode_one(cp, buf))) {
+                return false;
+            }
             p += 2;
             continue;
         }
@@ -260,14 +269,16 @@ bool mcme_mutf8_decode(const char *mutf8, size_t mutf8_len, McmeBuffer *out)
             }
             uint8_t b1 = p[1], b2 = p[2];
             if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80) {
-                mcme_set_error("mutf8: bad continuation at byte %zu", (size_t)(p - start));
+                mcme_set_error("mutf8: bad continuation at byte %zu",
+                               (size_t)(p - start));
                 return false;
             }
             uint32_t cp = ((uint32_t)(b0 & 0x0F) << 12)
                         | ((uint32_t)(b1 & 0x3F) << 6)
                         |  (uint32_t)(b2 & 0x3F);
             if (cp < 0x800) {
-                mcme_set_error("mutf8: overlong encoding at byte %zu", (size_t)(p - start));
+                mcme_set_error("mutf8: overlong encoding at byte %zu",
+                               (size_t)(p - start));
                 return false;
             }
 
@@ -296,7 +307,9 @@ bool mcme_mutf8_decode(const char *mutf8, size_t mutf8_len, McmeBuffer *out)
             /* Lone surrogate. Emit it as a three-byte sequence (WTF-8) so a
                round trip preserves the original bytes. */
             uint8_t buf[4];
-            if (!mcme_buffer_append(out, buf, utf8_encode_one(cp, buf))) return false;
+            if (!mcme_buffer_append(out, buf, utf8_encode_one(cp, buf))) {
+                return false;
+            }
             p += 3;
             continue;
         }
@@ -400,7 +413,9 @@ size_t mcme_mutf8_decoded_len(const char *mutf8, size_t mutf8_len)
             if (cp < 0x800) return 0;
             if (cp >= 0xD800 && cp <= 0xDBFF && end - p >= 6) {
                 uint8_t n0 = p[3], n1 = p[4], n2 = p[5];
-                if ((n0 & 0xF0) == 0xE0 && (n1 & 0xC0) == 0x80 && (n2 & 0xC0) == 0x80) {
+                if ((n0 & 0xF0) == 0xE0
+                    && (n1 & 0xC0) == 0x80
+                    && (n2 & 0xC0) == 0x80) {
                     uint32_t low = ((uint32_t)(n0 & 0x0F) << 12)
                                  | ((uint32_t)(n1 & 0x3F) << 6)
                                  |  (uint32_t)(n2 & 0x3F);
