@@ -24,6 +24,10 @@
  * older biome/heightmap spelling) and 0x36 (chunk version), are recognised by
  * name but are not chunk markers: counting them would count some chunks twice
  * and others not at all.
+ *
+ * The two entity keys — the actor records and the digp index — are outside
+ * this shape entirely (a prefix, not coordinates first) and are named below
+ * since D23, which is what decisions.md#D13 said the entity work would do.
  */
 
 #ifndef MCME_BEDROCK_KEYS_H
@@ -71,6 +75,52 @@
    chunk data, not carried. */
 #define MCME_BEDROCK_TAG_BIOME_3D 0x2bu /* Data3D: heightmap + 3D biomes  */
 #define MCME_BEDROCK_TAG_BIOME 0x2du /* the older 768-byte 2D spelling    */
+
+/* A chunk's entity list: the older spelling of a chunk's entities, one
+   record per chunk holding one NBT document per entity concatenated with
+   no framing — the same shape as the block-entity record. NOT a chunk
+   marker either (a list without blocks is still not a chunk), and its
+   documents have carried nothing into Java since D23: the reference
+   answers nothing for entities, so convert reads the record to count
+   what it does not carry. */
+#define MCME_BEDROCK_TAG_ENTITIES 0x32u
+
+/* The actor records (D23) — the game's modern spelling of entities: one
+   document per record under a key of its own instead of one record per
+   chunk, addressed through an index:
+
+     actorprefix (11 bytes)  id (8 LE)                    one entity's record
+     digp (4)  x (4)  z (4)  [dimension (4 LE)]           the chunk's index
+
+   The digp record of a chunk names its actors — its value is their 8-byte
+   ids concatenated — and the dimension, omitted for the overworld exactly
+   like a chunk key's, lives only in that index: an actorprefix key alone
+   says nothing about where the record sits. Measured on one real store
+   (decisions.md#D23): 740,591 actor records against 38,752 index records,
+   of which 6,381 ids are reachable — 196 named by an index the store no
+   longer holds a record for — and the other 734,406 actor records belong
+   to chunks the game pruned, the set D13 left standing until this work
+   named the keys.
+
+   Neither key parses as a chunk key — at those lengths no chunk shape
+   matches — so neither marks a chunk, and the index is not a document:
+   its documents are the actor records, counted where they stand. The
+   index's own keys therefore count nowhere: counting the pointer as well
+   as the record would count the same entity twice, and counting only the
+   pointer would count one the store does not hold — never twice, never
+   zero. */
+bool mcme_bedrock_actor_key(const uint8_t *key, size_t len);
+bool mcme_bedrock_digp_key(const uint8_t *key, size_t len);
+
+/* The two keys' builders — the inverse of the predicates above, and the
+   shape any write to them must spell (D13 refused prune a tag number to
+   guess; these are the measured ones). The actor key is 19 bytes; the
+   digp key is 12 with the overworld's dimension omitted and 16 with one,
+   the chunk key's own rule. On success `*len` is the length written. */
+bool mcme_bedrock_actor_key_build(uint8_t *out, size_t cap, size_t *len,
+                                  const uint8_t id[8]);
+bool mcme_bedrock_digp_key_build(uint8_t *out, size_t cap, size_t *len,
+                                 int32_t x, int32_t z, int32_t dimension);
 
 typedef struct {
     bool    is_chunk;        /* tag marks a chunk; x/z/dimension are valid */

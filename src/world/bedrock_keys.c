@@ -96,6 +96,71 @@ bool mcme_bedrock_key_build(uint8_t *out, size_t cap, size_t *len,
     return true;
 }
 
+/* The two entity keys, named at D23 against the store the census
+   read (decisions.md#D23): "actorprefix" plus the 8-byte id — 19
+   bytes, one entity's record — and "digp" plus a chunk key's own
+   bytes — 12 with the overworld's dimension omitted, 16 with one.
+   The lengths are checked, not just the prefixes: a store holds
+   other prefixed keys, and recognising one of those as an actor
+   record would count metadata as an entity that never crosses. */
+#define MCME_ACTOR_PREFIX      "actorprefix"
+#define MCME_ACTOR_PREFIX_LEN  11
+#define MCME_ACTOR_KEY_LEN     19
+#define MCME_DIGP_PREFIX       "digp"
+#define MCME_DIGP_PREFIX_LEN   4
+
+bool mcme_bedrock_actor_key(const uint8_t *key, size_t len)
+{
+    return key != NULL && len == MCME_ACTOR_KEY_LEN
+        && memcmp(key, MCME_ACTOR_PREFIX, MCME_ACTOR_PREFIX_LEN) == 0;
+}
+
+bool mcme_bedrock_digp_key(const uint8_t *key, size_t len)
+{
+    return key != NULL && (len == 12 || len == 16)
+        && memcmp(key, MCME_DIGP_PREFIX, MCME_DIGP_PREFIX_LEN) == 0;
+}
+
+bool mcme_bedrock_actor_key_build(uint8_t *out, size_t cap, size_t *len,
+                                  const uint8_t id[8])
+{
+    if (out == NULL || len == NULL || id == NULL) {
+        mcme_set_error("actor key: null argument");
+        return false;
+    }
+    if (cap < MCME_ACTOR_KEY_LEN) {
+        mcme_set_error("actor key: %zu bytes needed, buffer holds %zu",
+                       (size_t)MCME_ACTOR_KEY_LEN, cap);
+        return false;
+    }
+    memcpy(out, MCME_ACTOR_PREFIX, MCME_ACTOR_PREFIX_LEN);
+    memcpy(out + MCME_ACTOR_PREFIX_LEN, id, 8);
+    *len = MCME_ACTOR_KEY_LEN;
+    return true;
+}
+
+bool mcme_bedrock_digp_key_build(uint8_t *out, size_t cap, size_t *len,
+                                 int32_t x, int32_t z, int32_t dimension)
+{
+    if (out == NULL || len == NULL) {
+        mcme_set_error("digp key: null argument");
+        return false;
+    }
+    size_t need = MCME_DIGP_PREFIX_LEN + (dimension != 0 ? 12 : 8);
+    if (cap < need) {
+        mcme_set_error("digp key: %zu bytes needed, buffer holds %zu",
+                       need, cap);
+        return false;
+    }
+    memcpy(out, MCME_DIGP_PREFIX, MCME_DIGP_PREFIX_LEN);
+    write_le32(out + MCME_DIGP_PREFIX_LEN, x);
+    write_le32(out + MCME_DIGP_PREFIX_LEN + 4, z);
+    if (dimension != 0) write_le32(out + MCME_DIGP_PREFIX_LEN + 8,
+                                   dimension);
+    *len = need;
+    return true;
+}
+
 int32_t mcme_bedrock_chunk_of(int32_t block)
 {
     int32_t q = block / 16;

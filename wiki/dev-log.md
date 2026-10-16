@@ -9,6 +9,98 @@ Status vocabulary:
 
 ---
 
+## 2026-10-16 — Entities counted whole: 777 documents, 740,591 actor records, an index that counts nowhere
+
+### Built
+
+- The two entity keys, named as D13 deferred them: `bedrock_keys`
+  spells `actorprefix` (+ 8-byte id, 19 bytes) and `digp` (+ a
+  chunk key's bytes, 12 overworld / 16 with a dimension) with
+  predicates and their inverse builders, shapes measured on the
+  real store; the 0x32 tag joins the header's tag set.
+- `bedrock_entity` gains `mcme_bedrock_chunk_entities`: the
+  block-entity reader factored to take the record's tag and an
+  error label, whole-record rule unchanged — every document
+  decodes or the record counts once, an empty record counts zero.
+- Convert collects 0x32 records like block-entity records and
+  reads them after the chunk loop, together: nothing crosses for
+  entities, so nothing pairs and there is no carry branch to
+  respect. `skipped.entities` counts documents, the new
+  `skipped.actors` counts `actorprefix` records, and `digp` keys
+  are routed out of `other` to count nowhere — their documents
+  are the actor records, counted where they stand.
+- CLI surfaces: the drops table prints "entity document(s)" and
+  a new "actor record(s)" row; the JSON `skipped` gains
+  `actors`, alphabetically and unconditionally.
+- wiki/cli.md's convert examples and report prose — stale since
+  before D17, still saying `water_layers` — regenerated from a
+  real run of the release binary (2 chunks, the actor and
+  entity-document rows visible), staged as this session's hunks
+  only beside the foreign reflow.
+- Tests: the selftest fabricates a two-document list, an empty
+  list and an actor+index pair beside the unreadable record, and
+  pins `entities` 3, `actors` 1, `other` held at 1 (the pair may
+  not leak) plus `actors` 0 in the carry test; ref_convert's
+  mirror fabricates the same set, `WANT_REPORT` `entities` 1 → 3
+  with `actors` 1 added and every other field equal.
+
+### Measured
+
+- The reference question D17 raised, answered: PyMCTranslate
+  ships **no entity data anywhere** — installed 1.2.51 carries
+  `block.json.gz` + `meta.json.gz` only, and upstream trees for
+  `bedrock_1_20_80`, `bedrock_1_16_20`, `java_1_20_0` and
+  `java_1_16_0` contain `block` directories and no `entity`
+  directory; `EntityTranslator` is a deepcopy pass-through,
+  `amulet.entity_support` is `False`, and the Anvil writer pops
+  bedrock's `EntitiesDataVersion`, writing only java-native
+  entity sets. The reference output carries no entity documents;
+  the fixtures' `entities/*.mca` are empty `{DataVersion}` layer
+  stubs. mcme carries none either — a pass-through document is an
+  unloadable Java entity, D12's half-write (D23).
+- Census of the current store, two independent walks agreeing key
+  for key: 15,540 lists — 15,207 empty payloads, 333 with
+  content, 0 unreadable — decoding to **777 documents**;
+  **740,591** actor records; **38,752** indexes naming 6,381 ids
+  of which 6,185 exist (196 dangling) with 734,406 actor records
+  no index names — D13's pruned set; no tombstones, and no list
+  key spells a zero dimension, so the coordinate-rebuild the
+  block entities read with has no second spelling to miss.
+- The store moved between entries: D17–D22 ran on a copy taken
+  before the game's Oct 15 14:58 save, and the reboot's recopy
+  brought current bytes (source and copy verified identical,
+  1,451,166 keys both; nether/end subchunk counts still match
+  D21 exactly, the overworld lost 6,745). D23's run therefore
+  records fresh values — chunks 45,552, subchunks 385,287, blocks
+  1,578,135,552, carried 11,255 / 106,170 / 24,555,014 / 45,551,
+  items 980 — and claims no cross-entry deltas.
+- Prediction before the run (the shipped key rules and the
+  shipped reader, linked against the built objects): `entities`
+  **777**, `actors` **740,591**, `other` **515**, `chunk_data`
+  **215,490** — both release runs printed exactly these, rc=0
+  twice, 281 output files each with every sha256 equal and the
+  JSON reports byte-identical. The old-routing equivalents on
+  the same content, for anyone diffing entries: entities 15,540
+  keys, other 779,858.
+
+### Method notes
+
+- A census one-liner opened the golden bedrock fixture with
+  amulet's `LevelDB` — the read-write replay produced exactly the
+  mutation signature the rules warn about (new `.ldb`+log+
+  MANIFEST, `CURRENT` modified). Caught by `git status`, restored
+  with `git checkout` plus removing the replay's files, 15 keys
+  re-verified. The rule bit once; it costs one command to undo
+  and zero to keep.
+- Gates: 5 suites PASS under `./rebuild.sh test`, `./nob test`
+  and `./rebuild.sh release test` (release last); battery 11/11
+  rc=0; `tests/` clean after every gate.
+
+### Next
+
+- D24 — the legacy v1 palettes: subchunks whose payloads predate
+  the palette format, the last of the ordered drops.
+
 ## 2026-10-16 — The rest of the block entities: 7,067 documents into Java's lists, 21 ids from 10
 
 ### Built

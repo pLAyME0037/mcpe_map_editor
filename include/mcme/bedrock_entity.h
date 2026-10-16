@@ -24,6 +24,15 @@
  * rule: a record any part of which mcme cannot read is one mcme
  * will not answer for or rewrite, because a read that stopped early
  * would disagree with a write that splices.
+ *
+ * Since D23 this module also reads the chunk's ENTITY list (tag
+ * 0x32) — the older spelling of a chunk's entities, the same walk
+ * with a different key — because convert reads it to count what it
+ * does not carry: the reference answers nothing for entities
+ * (decisions.md#D23), so there is nothing to write and only the
+ * count to be exact. The modern spelling (the actor records under
+ * their own keys) needs no document walk to count — one key, one
+ * record — and is named in bedrock_keys.h.
  */
 
 #ifndef MCME_BEDROCK_ENTITY_H
@@ -101,6 +110,32 @@ McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
                                                    McmeArena *arena,
                                                    McmeNbtDoc **docs,
                                                    size_t *count);
+
+/*
+ * Every document of one chunk's entity-list record (tag 0x32) —
+ * the same read as the block entities above with the list's own
+ * key, added at D23 so convert can count what it does not carry.
+ *
+ * The whole-record rule stands: every document decodes or the call
+ * answers MCME_ENTITY_NOT_READABLE for the record, a record that
+ * decodes but holds nothing answers MCME_ENTITY_OK with `*count`
+ * 0, and a store with no record for the chunk answers
+ * MCME_ENTITY_ABSENT. `docs` roots in `arena` and holds `*count`
+ * documents on MCME_ENTITY_OK.
+ *
+ * The key is rebuilt from the coordinates, the block-entity
+ * record's own rule: measured on the store the census read, every
+ * list key has one spelling (9 bytes spoken, 13 — the dimension
+ * only when it is not 0), so there is no second form for a
+ * rebuild to miss (decisions.md#D23).
+ */
+McmeEntityStatus mcme_bedrock_chunk_entities(McmeLevelDb *db,
+                                             int32_t cx,
+                                             int32_t cz,
+                                             int32_t dimension,
+                                             McmeArena *arena,
+                                             McmeNbtDoc **docs,
+                                             size_t *count);
 
 /*
  * Stores `entity` as the block entity of block (`x`, `y`, `z`) —

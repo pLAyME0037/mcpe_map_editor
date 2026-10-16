@@ -4885,20 +4885,74 @@ static void test_convert(void)
 
             /* The keys with nowhere to go, by the rules their own
                dimensions answer to (D21): a number beyond the
-               game's three counts `other`; the entity list of a
-               real dimension counts `entities` without ever being
-               read; its chunk version key counts `chunk_data`. */
-            uint8_t jkey[14];
+               game's three counts `other`; its chunk version key
+               counts `chunk_data`. */
+            uint8_t jkey[19];   /* the longest key here: an actor */
             size_t jl = 0;
             CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
                                          99, 99, 99, 0x2f, true, 0));
             CHECK(mcme_leveldb_put(tdb, jkey, jl, "nowhere", 7));
+            /* The nether's entity list of bytes no document
+               follows: read since D23, and a record that will not
+               decode counts once — the same number it made as an
+               unread key, now for the reason the record gives. */
             CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
                                          0, 0, 1, 0x32, false, 0));
             CHECK(mcme_leveldb_put(tdb, jkey, jl, "entities", 8));
             CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
                                          0, 0, 1, 0x36, false, 0));
             CHECK(mcme_leveldb_put(tdb, jkey, jl, "chunkver", 8));
+
+            /* The lists themselves (D23): two documents under a
+               chunk no subchunk ever names — nothing crosses for
+               entities, so documents count wherever the record
+               sits — and a record holding nothing, whose count is
+               zero: empty is not one. */
+            static const char cowsnbt[] =
+                "{identifier: \"minecraft:cow\", "
+                "Pos: [0.0f, 64.0f, 0.0f]}";
+            static const char pigsnbt[] =
+                "{identifier: \"minecraft:pig\", "
+                "Pos: [1.0f, 64.0f, 1.0f]}";
+            McmeTag *cow = NULL;
+            McmeTag *pig = NULL;
+            CHECK(mcme_nbt_parse_snbt(ta, cowsnbt, strlen(cowsnbt),
+                                      &cow));
+            CHECK(mcme_nbt_parse_snbt(ta, pigsnbt, strlen(pigsnbt),
+                                      &pig));
+            CHECK(cow != NULL && pig != NULL);
+            McmeNbtDoc d1 = { .arena = ta, .root = cow,
+                              .root_name = {NULL, 0},
+                              .little_endian = true };
+            McmeNbtDoc d2 = { .arena = ta, .root = pig,
+                              .root_name = {NULL, 0},
+                              .little_endian = true };
+            McmeBuffer entpay;
+            mcme_buffer_init(&entpay);
+            CHECK(mcme_nbt_write_binary(&d1, &entpay));
+            CHECK(mcme_nbt_write_binary(&d2, &entpay));
+            CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
+                                         7, 7, 0, 0x32, false, 0));
+            CHECK(mcme_leveldb_put(tdb, jkey, jl, entpay.data,
+                                   entpay.len));
+            CHECK(mcme_bedrock_key_build(jkey, sizeof jkey, &jl,
+                                         8, 8, 0, 0x32, false, 0));
+            CHECK(mcme_leveldb_put(tdb, jkey, jl, "", 0));
+            mcme_buffer_free(&entpay);
+
+            /* The modern spelling beside it (D23): one actor
+               record and the digp index that names it — the record
+               counts where it stands, the index nowhere (its
+               document IS the record; counting both would count
+               one entity twice), and neither may reach `other`. */
+            static const uint8_t actor_id[8] =
+                {1, 2, 3, 4, 5, 6, 7, 8};
+            CHECK(mcme_bedrock_actor_key_build(jkey, sizeof jkey, &jl,
+                                               actor_id));
+            CHECK(mcme_leveldb_put(tdb, jkey, jl, "actor", 5));
+            CHECK(mcme_bedrock_digp_key_build(jkey, sizeof jkey, &jl,
+                                              7, 7, 0));
+            CHECK(mcme_leveldb_put(tdb, jkey, jl, actor_id, 8));
             mcme_leveldb_close(tdb);
 
             /* The nether's two block-entity documents, put through
@@ -4957,7 +5011,15 @@ static void test_convert(void)
     CHECK(rep.block_entities == 1);    /* the nether orphan        */
     CHECK(rep.block_entities_carried == 1);
     CHECK(rep.items == 0);
-    CHECK(rep.entities == 1);          /* the nether entity list   */
+    /* The entity lists, read since D23: the nether record that
+       will not decode counts once, the two documents of the record
+       at (7,7) count two, the record at (8,8) holds nothing and
+       counts zero — and the actor record counts where it stands
+       while the digp index beside it counts nowhere, both out of
+       `other`. */
+    CHECK_MSG(rep.entities == 3,
+              "entities is %zu, want 3", rep.entities);
+    CHECK(rep.actors == 1);          /* the fabricated actor       */
     CHECK(rep.chunk_data == 1);        /* its chunk version key    */
     /* The fabricated records, counted their own way: four entries
        carried - the overworld's three, the nether chunk's own
@@ -5660,6 +5722,7 @@ static void test_convert_carry(void)
     CHECK(rep.water_positions == 1);  /* the water over the stone */
     CHECK(rep.legacy_subchunks == 0);
     CHECK(rep.entities == 0);
+    CHECK(rep.actors == 0);          /* no actor keys in this store */
     CHECK(rep.chunk_data == 0);
     CHECK(rep.other == 0);
     /* A converted chunk the store holds no record for: no map

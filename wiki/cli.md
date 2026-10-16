@@ -844,10 +844,10 @@ mcme convert <in> <out> --to <platform>/<version>
 
 ```
 $ mcme convert mybedrock out --to java/1.20
-converted 2 chunks (6 subchunks, 1908 blocks) to java/1.20
-dropped: 1 subchunk mcme cannot read, 1 water layer, 9 other keys
+converted 2 chunks (17 subchunks, 69632 blocks) to java/1.20 — 3 block entities carried — 1088 biome cells carried — 2 heightmaps carried
+dropped: 16 water positions, 64 biome cells, 5 block entities, 1 entity document, 1 actor record, 26 other chunk keys
 $ mcme --json convert mybedrock out2 --to java/1.20
-{"from":"bedrock","to":"java/1.20","chunks":2,"subchunks":6,"blocks":1908,"skipped":{"block_entities":0,"chunk_data":1,"entities":0,"legacy_subchunks":1,"other":9,"water_layers":1}}
+{"from":"bedrock","to":"java/1.20","chunks":2,"subchunks":17,"blocks":69632,"block_entities_carried":3,"ticks_carried":0,"biomes_carried":1088,"heightmaps_carried":2,"skipped":{"actors":1,"biomes":64,"block_entities":5,"chunk_data":26,"entities":1,"heightmaps":0,"items":0,"legacy_subchunks":0,"other":0,"ticks":0,"water_positions":16}}
 ```
 
 `<in>` is probed like every other verb and must be a Bedrock world. `<out>`
@@ -873,10 +873,12 @@ record spelled one inside that dimension's height (see
 computed, never invented.
 
 What the map cannot carry it drops **and reports**, never failing the run for
-it: block entities, entities, tick lists, the second (waterlogging) layer of a
-subchunk, subchunks whose payload this build does not decode (the pre-palette
-versions), keys of a dimension beyond the game's three, and the store's own
-bookkeeping keys.
+it: block entities, entities — the per-chunk lists' documents and the actor
+records the game spells one document per key, neither loading in Java (see
+[decisions.md](decisions.md)#D23) — tick lists, the second (waterlogging)
+layer of a subchunk, subchunks whose payload this build does not decode (the
+pre-palette versions), keys of a dimension beyond the game's three, and the
+store's own bookkeeping keys.
 A world full of chests converts; the report says what was left behind, and the
 blocks are air in the output where the input could not be carried.
 
@@ -891,18 +893,31 @@ The `--json` shape:
 
 ```json
 {"from": "bedrock", "to": "java/1.20",
- "chunks": 2, "subchunks": 6, "blocks": 1908,
- "skipped": {"block_entities": 0, "chunk_data": 1, "entities": 0,
-             "legacy_subchunks": 1, "other": 9, "water_layers": 1}}
+ "chunks": 2, "subchunks": 17, "blocks": 69632,
+ "block_entities_carried": 3, "ticks_carried": 0,
+ "biomes_carried": 1088, "heightmaps_carried": 2,
+ "skipped": {"actors": 1, "biomes": 64, "block_entities": 5,
+             "chunk_data": 26, "entities": 1, "heightmaps": 0,
+             "items": 0, "legacy_subchunks": 0, "other": 0,
+             "ticks": 0, "water_positions": 16}}
 ```
 
 `chunks` is chunks written across the store's dimensions, `subchunks` payloads
 read and decoded
 (all-air markers included; the ones that failed are under `skipped`),
-`blocks` non-air positions the output holds. `skipped.chunk_data` counts
-chunk keys that are not subchunks — biome records, chunk versions, entity
-lists; `skipped.other` counts everything else in the store, level metadata
-among it and any dimension number beyond the game's three.
+`blocks` non-air positions the output holds. The `*_carried` fields count
+what did cross: block entities, tick entries, biome cells and heightmaps
+written to the output. `skipped.chunk_data` counts chunk keys that are not
+subchunks — chunk versions, the older biome records, and any other tag no
+record answers to. `skipped.entities` counts the documents of the per-chunk
+entity lists and `skipped.actors` one per actor record the store holds —
+neither spelling loads in Java, so every document counts as dropped, and a
+record that will not decode counts once (see
+[decisions.md](decisions.md)#D23). The `digp` index keys that name actor
+records count nowhere: their documents are the actor records themselves,
+counted once where they stand. `skipped.other` counts everything else in the
+store, level metadata among it and any dimension number beyond the game's
+three.
 
 ### Reserved, not yet implemented
 

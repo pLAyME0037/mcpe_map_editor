@@ -2894,7 +2894,9 @@ static void print_convert_drops(const McmeConvertReport *r)
         { r->block_entities,   "block entity",   "block entities" },
         { r->items,            "item stack",     "item stacks" },
         { r->ticks,            "tick entry",     "tick entries" },
-        { r->entities,         "entity list",    "entity lists" },
+        { r->entities,         "entity document",
+                                "entity documents" },
+        { r->actors,           "actor record",   "actor records" },
         { r->chunk_data,       "other chunk key", "other chunk keys" },
         { r->other,            "other key",      "other keys" },
     };
@@ -3006,6 +3008,7 @@ static int cmd_convert(int argc, char **argv)
                                 (double)rep.biomes_carried);
         cJSON_AddNumberToObject(root, "heightmaps_carried",
                                 (double)rep.heightmaps_carried);
+        cJSON_AddNumberToObject(skipped, "actors", (double)rep.actors);
         cJSON_AddNumberToObject(skipped, "biomes",
                                 (double)rep.biomes);
         cJSON_AddNumberToObject(skipped, "block_entities",

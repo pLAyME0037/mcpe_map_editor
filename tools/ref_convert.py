@@ -152,12 +152,18 @@ WANT_REPORT = {
     "biomes_carried": 383,
     "heightmaps_carried": 2,       # overworld base 100, nether 0
     "skipped": {
+        # one fabricated actor record (D23); the digp index beside
+        # it counts nowhere — its documents are the actor records
+        "actors": 1,
         "biomes": 386,
         # the nether orphan's document, and the bed whose color
         # keeps it out of the list (D22's coupling count)
         "block_entities": 2,
         "chunk_data": 1,           # its dimension's version key
-        "entities": 1,             # its dimension's entity list
+        # the entity lists (D23): the nether's record that will not
+        # decode counts once, the two documents at (7,7) count two,
+        # the record at (8,8) holds nothing and counts zero
+        "entities": 3,
         "heightmaps": 6,
         "items": 0,
         "legacy_subchunks": 1,
@@ -186,6 +192,7 @@ WANT_ENTITIES_REPORT = {
     "biomes_carried": 0,
     "heightmaps_carried": 0,
     "skipped": {
+        "actors": 0,               # the fixture holds no actor keys
         "biomes": 0,
         # the frame (D15) — the sign no longer among them (D22)
         "block_entities": 1,
@@ -529,6 +536,21 @@ def put_be_record(db, cx: int, cz: int, dim: int,
                                        little_endian=True)
         for s in snbts)
     db.put(_record_key(cx, cz, dim, 0x31), payload)
+
+
+def put_entity_record(db, cx: int, cz: int, dim: int,
+                      *snbts: str) -> None:
+    """One entity-list record on the copy (D23): the documents
+    concatenated little-endian under the chunk's own key in its own
+    dimension — the block-entity record's own shape with the 0x32
+    tag. No documents put an empty record, the game's spelling of a
+    list it holds nothing in; every one of them counts zero, not
+    one."""
+    payload = b"".join(
+        amulet_nbt.from_snbt(s).to_nbt(compressed=False,
+                                       little_endian=True)
+        for s in snbts)
+    db.put(_record_key(cx, cz, dim, 0x32), payload)
 
 
 def biome_record_chunk() -> bytes:
@@ -1349,12 +1371,33 @@ def main() -> int:
                           '{id: "minecraft:chest", x: 99, y: 70, '
                           'z: 100}')
             # A dimension number beyond the game's three counts
-            # `other`; the entity list of a real dimension counts
-            # `entities` without being read; its chunk version key
-            # counts `chunk_data`.
+            # `other`; its chunk version key counts `chunk_data`.
             tdb.put(chunk_key(99, 99, 0, 99), b"nowhere")
-            tdb.put(_record_key(0, 0, 1, 0x32), b"entities")
             tdb.put(_record_key(0, 0, 1, 0x36), b"chunkver")
+            # The entity lists (D23): the nether's record of bytes
+            # no document follows counts once — read now, not just
+            # counted as a key — two documents under a chunk that
+            # never converts count two (nothing crosses for
+            # entities, so records count wherever they sit), and a
+            # record holding nothing counts zero.
+            tdb.put(_record_key(0, 0, 1, 0x32), b"entities")
+            put_entity_record(tdb, 7, 7, 0,
+                              '{identifier: "minecraft:cow", '
+                              'Pos: [0.0f, 64.0f, 0.0f]}',
+                              '{identifier: "minecraft:pig", '
+                              'Pos: [1.0f, 64.0f, 1.0f]}')
+            put_entity_record(tdb, 8, 8, 0)
+            # One actor record and the digp index that names it
+            # (D23): the record counts where it stands, the index
+            # nowhere — its document IS the record, and counting
+            # both would count one entity twice — and neither may
+            # land in `other`.
+            actor_id = bytes([1, 2, 3, 4, 5, 6, 7, 8])
+            tdb.put(b"actorprefix" + actor_id, b"actor")
+            tdb.put(b"digp"
+                    + (7).to_bytes(4, "little", signed=True)
+                    + (7).to_bytes(4, "little", signed=True),
+                    actor_id)
         finally:
             tdb.close()
 

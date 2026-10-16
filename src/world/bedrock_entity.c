@@ -34,14 +34,14 @@ static bool at_position(const McmeTag *root, int32_t x, int32_t y,
 }
 
 /* The record's key for one chunk: no subchunk index, because the
-   record holds the whole chunk's entity list at once. */
+   record holds the whole chunk's entity list at once. The tag says
+   which list — 0x31 the block entities, 0x32 the entities (D23). */
 static bool record_key(int32_t cx, int32_t cz, int32_t dimension,
+                       uint8_t tag,
                        uint8_t *key, size_t cap, size_t *key_len)
 {
     return mcme_bedrock_key_build(key, cap, key_len, cx, cz,
-                                  dimension,
-                                  MCME_BEDROCK_TAG_BLOCK_ENTITY,
-                                  false, 0);
+                                  dimension, tag, false, 0);
 }
 
 /* Where one document of a record sits, and the document itself. */
@@ -73,12 +73,14 @@ typedef struct {
  * stopped early would disagree with a write that splices.
  *
  * Returns false with mcme_last_error() naming the chunk when any
- * part will not read. `*out` receives the documents as an stb array
+ * part will not read, prefixed with `label` ("block entity", "entity")
+ * so a failing record says which list of the chunk it was.
+ * `*out` receives the documents as an stb array
  * the caller frees, empty when the walk fails.
  */
 static bool record_walk(const uint8_t *data, size_t len,
-                        int32_t cx, int32_t cz, McmeArena *arena,
-                        McmeEntityDoc **out)
+                        int32_t cx, int32_t cz, const char *label,
+                        McmeArena *arena, McmeEntityDoc **out)
 {
     *out = NULL;
     size_t at = 0;
@@ -92,9 +94,9 @@ static bool record_walk(const uint8_t *data, size_t len,
                will not parse is world data mcme cannot read. */
             char why[256];
             snprintf(why, sizeof why, "%s", mcme_last_error());
-            mcme_set_error("block entity: the record of chunk (%d, "
-                           "%d) does not decode: %s", (int)cx, (int)cz,
-                           why);
+            mcme_set_error("%s: the record of chunk (%d, "
+                           "%d) does not decode: %s", label, (int)cx,
+                           (int)cz, why);
             arrfree(*out);
             *out = NULL;
             return false;
@@ -130,7 +132,8 @@ static bool record_scan(const uint8_t *data, size_t len,
     memset(&hit->doc, 0, sizeof hit->doc);
 
     McmeEntityDoc *docs = NULL;
-    bool ok = record_walk(data, len, cx, cz, arena, &docs);
+    bool ok = record_walk(data, len, cx, cz, "block entity", arena,
+                          &docs);
     if (ok) {
         for (size_t i = 0; i < (size_t)arrlen(docs); ++i) {
             if (at_position(docs[i].doc.root, x, y, z)) {
@@ -163,7 +166,8 @@ McmeEntityStatus mcme_bedrock_block_entity(McmeLevelDb *db,
     int32_t cz = mcme_bedrock_chunk_of(z);
     uint8_t key[14];
     size_t key_len = 0;
-    if (!record_key(cx, cz, dimension, key, sizeof key, &key_len)) {
+    if (!record_key(cx, cz, dimension, MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                    key, sizeof key, &key_len)) {
         return MCME_ENTITY_USAGE;
     }
 
@@ -197,16 +201,23 @@ McmeEntityStatus mcme_bedrock_block_entity(McmeLevelDb *db,
     return status;
 }
 
-McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
-                                                   int32_t cx,
-                                                   int32_t cz,
-                                                   int32_t dimension,
-                                                   McmeArena *arena,
-                                                   McmeNbtDoc **docs,
-                                                   size_t *count)
+/* The whole-record read both chunk readers share: the key of the
+   record's tag, one get, every document decoded or the record
+   unreadable — the D9 rule, kept whole. `label` names the list in
+   every error the read can produce, so a failing record says
+   which of the chunk's two lists would not read. */
+static McmeEntityStatus chunk_record_read(McmeLevelDb *db,
+                                          int32_t cx,
+                                          int32_t cz,
+                                          int32_t dimension,
+                                          uint8_t tag,
+                                          const char *label,
+                                          McmeArena *arena,
+                                          McmeNbtDoc **docs,
+                                          size_t *count)
 {
     if (db == NULL || arena == NULL || docs == NULL || count == NULL) {
-        mcme_set_error("block entity: null argument");
+        mcme_set_error("%s: null argument", label);
         return MCME_ENTITY_USAGE;
     }
     *docs = NULL;
@@ -214,7 +225,7 @@ McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
 
     uint8_t key[14];
     size_t key_len = 0;
-    if (!record_key(cx, cz, dimension, key, sizeof key, &key_len)) {
+    if (!record_key(cx, cz, dimension, tag, key, sizeof key, &key_len)) {
         return MCME_ENTITY_USAGE;
     }
 
@@ -236,7 +247,7 @@ McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
 
     McmeEntityDoc *walked = NULL;
     McmeEntityStatus status = MCME_ENTITY_OK;
-    if (!record_walk(payload.data, payload.len, cx, cz, arena,
+    if (!record_walk(payload.data, payload.len, cx, cz, label, arena,
                      &walked)) {
         status = MCME_ENTITY_NOT_READABLE;
     } else {
@@ -256,6 +267,32 @@ McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
     arrfree(walked);
     mcme_buffer_free(&payload);
     return status;
+}
+
+McmeEntityStatus mcme_bedrock_chunk_block_entities(McmeLevelDb *db,
+                                                   int32_t cx,
+                                                   int32_t cz,
+                                                   int32_t dimension,
+                                                   McmeArena *arena,
+                                                   McmeNbtDoc **docs,
+                                                   size_t *count)
+{
+    return chunk_record_read(db, cx, cz, dimension,
+                             MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                             "block entity", arena, docs, count);
+}
+
+McmeEntityStatus mcme_bedrock_chunk_entities(McmeLevelDb *db,
+                                             int32_t cx,
+                                             int32_t cz,
+                                             int32_t dimension,
+                                             McmeArena *arena,
+                                             McmeNbtDoc **docs,
+                                             size_t *count)
+{
+    return chunk_record_read(db, cx, cz, dimension,
+                             MCME_BEDROCK_TAG_ENTITIES,
+                             "entity", arena, docs, count);
 }
 
 /* Sets one coordinate field of a document: the position is the
@@ -346,7 +383,8 @@ bool mcme_bedrock_put_block_entity(const char *db_dir,
     int32_t cz = mcme_bedrock_chunk_of(z);
     uint8_t key[14];
     size_t key_len = 0;
-    if (!record_key(cx, cz, dimension, key, sizeof key, &key_len)) {
+    if (!record_key(cx, cz, dimension, MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                    key, sizeof key, &key_len)) {
         if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         return false;
     }
@@ -454,7 +492,8 @@ bool mcme_bedrock_del_block_entity(const char *db_dir,
     int32_t cz = mcme_bedrock_chunk_of(z);
     uint8_t key[14];
     size_t key_len = 0;
-    if (!record_key(cx, cz, dimension, key, sizeof key, &key_len)) {
+    if (!record_key(cx, cz, dimension, MCME_BEDROCK_TAG_BLOCK_ENTITY,
+                    key, sizeof key, &key_len)) {
         if (refusal != NULL) *refusal = MCME_WRITE_REFUSAL_USAGE;
         return false;
     }

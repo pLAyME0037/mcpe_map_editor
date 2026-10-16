@@ -1308,3 +1308,124 @@ this world's documents hold.
 fields differently, the game gives the empty-tier types fields
 both editions spell, or the reference grows a path for the sign's
 color — the table changes shape, and the pins follow the fields.
+
+## D23 — Convert carries no entity and counts every one: the reference answers nothing, so nothing half-crosses
+
+**What crosses: nothing, measured.** The question this entry existed to
+ask — what does the reference do with bedrock entities on the way to
+Java — has now been measured from both ends, and the answer is that it
+does nothing, because there is nothing there to do. PyMCTranslate
+ships no entity database anywhere: the installed 1.2.51 carries
+`block.json.gz` and `meta.json.gz` and nothing else; the upstream
+`Amulet-Team/PyMCTranslate` trees for `bedrock_1_20_80`,
+`bedrock_1_16_20`, `java_1_20_0` and `java_1_16_0` each contain a
+`block` directory and no `entity` directory; the `EntityTranslator` is
+a deepcopy pass-through; `amulet.entity_support` is `False`; and
+Amulet's Anvil writer (`anvil_2681._encode_entities`) pops bedrock's
+`EntitiesDataVersion` and writes only the entity sets Java natively
+spells — every other document is dropped on the floor. The reference
+bedrock→java output therefore carries no entity documents at all, and
+the `entities/*.mca` files the golden fixtures hold are amulet's empty
+`{DataVersion}` layer stubs, not conversion output. mcme carries
+nothing too: a pass-through document would be `identifier` plus a
+float `Pos` in bedrock's spellings — an unloadable Java entity, which
+is D12's half-write by another name. No `entities/` directory is
+written, no CLI verb is added, and prune still never touches an actor
+record (wiki/cli.md's prune section stayed true through this entry).
+
+**The count tells both spellings exactly.** The store writes entities
+twice over, and the report now counts each the way it stands:
+
+- `skipped.entities` counts *documents* of the per-chunk entity
+  lists — the 0x32 records, read through a new reader that is the
+  block-entity reader with the list's own key (`mcme_bedrock_chunk_
+  entities`). The D9 whole-record rule holds: every document decodes
+  or the record counts once as unread; an empty record counts zero
+  (empty is not one); a record the store does not hold counts
+  nothing. Every record is walked after the chunk loop, together:
+  nothing crosses for entities, so no record pairs with a chunk and
+  there is no carry-versus-count branch to respect.
+- `skipped.actors` counts *records* of the modern spelling — one per
+  `actorprefix` key the store holds, whether the chunk's `digp`
+  index still names it or the chunk behind it was pruned.
+- the `digp` index keys count **nowhere**. An index key is not a
+  document; its documents are the actor records, counted where they
+  stand. Counting both would count one entity twice, counting only
+  the pointer would count one the store does not hold — never
+  twice, never zero — so the index is routed out of `skipped.other`
+  and counts nothing itself.
+
+Item stacks inside dropped entity documents do not touch
+`skipped.items`: the whole document drops under its own count, D15's
+rule, and the item count answers for records read as inventories.
+D22's `ItemFrame` (43) and `Beehive` (129) documents stay where they
+always were — in `block_entities`, counted as the 0x31 documents they
+are; no count moves for them here.
+
+**The keys named — D13's deferral, half-paid.** `bedrock_keys` now
+spells both entity keys with predicates and their inverse builders,
+shapes measured on the real store rather than guessed: `actorprefix`
+plus the 8-byte id (19 bytes), and `digp` plus a chunk key's own
+bytes — 12 with the overworld's dimension omitted, 16 with one, the
+same omission rule every chunk key speaks. This is the naming D13
+said the entity work would own: prune still holds no tag number for
+them and never writes either key; deleting the actor records of
+pruned chunks is a separate entry's question and stays deferred
+(734,406 such records stand in the store as this entry ships).
+
+**Census (current store, measured twice — mcme's own rules and an
+independent walk, agreeing key for key).** 1,451,166 keys, no
+tombstones. Entity lists: 15,540 records — 10,784 overworld (9-byte
+keys) and 4,756 in the nether/end (13-byte, dimensions 1 and 2 only;
+no key spells a zero dimension explicitly, so the coordinate-rebuild
+the block entities read with has no second spelling to miss) — of
+which 15,207 payloads are empty and 333 hold content, decoding to 777
+documents in total, 0 unreadable. Actor records: 740,591.
+Index records: 38,752 — 33,615 overworld, 5,137 with a dimension —
+naming 6,381 ids of which 6,185 exist (196 name a record the store no
+longer holds) and 734,406 actor records are named by no index at all:
+the pruned-chunk set D13 left standing.
+
+**The store moved under the record — stated, not papered over.** The
+real-run numbers in D17–D22 describe an earlier snapshot of this same
+world: those entries ran on a `/tmp` copy taken before the game's
+own save of Oct 15 14:58, the machine's later reboot wiped that copy,
+and today's copy — verified identical to the source store, 1,451,166
+keys both — contains the save. The nether and end still match D21's
+record exactly (31,938 and 19,495 subchunk keys); the overworld lost
+6,745 subchunks (340,599 → 333,854), `chunk_data` 219,867 → 215,490,
+unparseable keys −409, entity lists +39. So no cross-entry delta is
+claimed for any field D23 does not touch: "nothing else moved" is
+proven the three ways this repo proves such things — the fixture's
+report compares equal on every other field, exact and byte-for-byte
+(`ref_convert`), the code paths that compute them are untouched by
+this entry's diff, and the doubled run below is byte-identical.
+
+**Counts (D12), on the current store.** Before, in the old routing —
+which counts a key, not a document: `entities` 15,540,
+`other` 779,858 (514 unparseable, 740,591 actor, 38,752 index, 1
+dimension beyond the three), no `actors` field. After: `entities`
+**777**, `actors` **740,591**, `other` **515**, `chunk_data`
+**215,490** unmoved. A prediction probe — the shipped key rules and
+the shipped reader, run over the store before convert was — named all
+four numbers beforehand, and both release runs printed them exactly:
+rc=0 twice, `281` output files each, every file's sha256 equal, JSON
+reports byte-identical. The fixture pins the same shape at the small
+scale: `entities` 1 → 3 (the unread record once, two documents twice,
+the empty record zero), `actors` 1 with `other` held at 1 — the
+fabricated actor and index may not leak into `other` — and the
+entity fixture's `actors` 0.
+
+**Cost accepted.** The report's `entities` no longer answers "how
+many keys" but "how many documents", a field whose number shrinks by
+twentyfold on this store because the old number counted records the
+game mostly left empty. Anyone diffing reports across entries will
+see `entities` fall and `other` collapse; both are the truth getting
+sharper, not the world shrinking — and the `actors` field, new
+beside them, is where the 740,591 modern records went.
+
+**Reverses if:** Amulet or PyMCTranslate grows real entity
+translation (a `entity` database or `entity_support = True`), a Java
+load test shows a document form mcme could carry whole for some
+entity id, or a reader-facing use for the `digp` index appears — the
+count becomes a carry, and the pins follow the documents.

@@ -40,10 +40,24 @@ typedef struct {
                                  fields the mapping cannot translate —
                                  no half-translated item leaves           */
     size_t chunk_data;        /* chunk keys that are not subchunks:
-                                 chunk versions, entity lists, the older
-                                 0x2d biome records — counted, not
-                                 carried                                 */
-    size_t entities;          /* entity-list keys, not carried            */
+                                 chunk versions, the older 0x2d biome
+                                 records — counted, not carried       */
+    size_t entities;          /* entity documents not carried: the
+                                 per-chunk lists' documents (the 0x32
+                                 records), walked like block-entity
+                                 records — the reference answers
+                                 nothing Java can load (D23), so every
+                                 document counts, and a record that
+                                 will not decode counts once         */
+    size_t actors;            /* actor documents not carried: one per
+                                 actorprefix record the store holds —
+                                 the modern spelling of the same
+                                 entities — whether the chunk's digp
+                                 index still names the record or the
+                                 chunk behind it was pruned (D13);
+                                 the index keys themselves count
+                                 nowhere, their documents count here
+                                 (D23)                                 */
     size_t legacy_subchunks;  /* subchunks dropped: payloads this build
                                  does not decode, or palettes carrying
                                  legacy (pre-1.9) entries                 */

@@ -170,8 +170,14 @@ typedef struct {
 } BiomeRef;                 /* a chunk's Data3D record               */
 
 typedef struct {
+    int32_t dim;             /* the record's own dimension (D21)    */
+    int32_t cx, cz;
+} EntRef;                     /* a chunk's entity-list record (0x32) */
+
+typedef struct {
     SubRef            *subs;   /* stb array */
     BeRef             *bes;    /* stb array */
+    EntRef            *ents;   /* stb array */
     TickRef           *ticks;  /* stb array */
     BiomeRef          *biomes; /* stb array */
     bool               has_subs[3];
@@ -180,15 +186,25 @@ typedef struct {
     McmeConvertReport *rep;
 } Scan;
 
-#define MCME_BEDROCK_TAG_ENTITIES 0x32u  /* the per-chunk entity list */
-
 static bool scan_key(void *ud, const McmeLevelEntry *e)
 {
     Scan *s = (Scan *)ud;
     McmeBedrockKey k;
     if (!mcme_bedrock_key_parse(e->key, e->key_len, &k)) {
-        /* Level metadata, actor records, anything else a store keeps.
-           Named in the report as `other`; nothing else to do. */
+        /* Level metadata, portallists, anything else a store keeps.
+           The two entity keys are named since D23: an actor record
+           is a document the store holds and counts with them; the
+           digp index counts nowhere, its documents being the actor
+           records themselves — counting both would count one entity
+           twice. Anything else is named in the report as `other`;
+           nothing else to do. */
+        if (mcme_bedrock_actor_key(e->key, e->key_len)) {
+            s->rep->actors++;
+            return true;
+        }
+        if (mcme_bedrock_digp_key(e->key, e->key_len)) {
+            return true;
+        }
         s->rep->other++;
         return true;
     }
@@ -245,7 +261,19 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
         return true;
     }
     if (k.tag == MCME_BEDROCK_TAG_ENTITIES) {
-        s->rep->entities++;
+        /* Collected, not counted here — but with no pairing to
+           respect, unlike the block-entity records: no entity
+           document crosses into Java (the reference answers
+           nothing for entities, D23), so every record's documents
+           count once after the chunk loop, whatever its own chunk
+           does. The key is rebuilt for the get the block-entity
+           records rebuild theirs with — measured one spelling on
+           the real store (D23). */
+        EntRef r;
+        r.dim = dim;
+        r.cx = k.x;
+        r.cz = k.z;
+        arrpush(s->ents, r);
         return true;
     }
     bool is_sub = k.tag == MCME_BEDROCK_TAG_SUBCHUNK
@@ -289,6 +317,16 @@ static int be_cmp(const void *a, const void *b)
 {
     const BeRef *x = (const BeRef *)a;
     const BeRef *y = (const BeRef *)b;
+    if (x->dim != y->dim) return (x->dim < y->dim) ? -1 : 1;
+    if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
+    if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
+    return 0;
+}
+
+static int ent_cmp(const void *a, const void *b)
+{
+    const EntRef *x = (const EntRef *)a;
+    const EntRef *y = (const EntRef *)b;
     if (x->dim != y->dim) return (x->dim < y->dim) ? -1 : 1;
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
@@ -2247,6 +2285,42 @@ static bool count_unconverted_records(McmeLevelDb *db,
     return true;
 }
 
+/* Entity-list records: the whole record is the drop. Unlike every
+   other record kind there is no pairing to respect — no entity
+   document crosses into Java (the reference answers nothing a Java
+   entity can load, decisions.md#D23), so a record's documents all
+   count here, once, whether its chunk converts or never appears.
+   The read is the block-entity reader's own: documents counted, a
+   record that will not decode counted once, an empty record
+   counting nothing — never a partial answer. */
+static bool count_unconverted_entities(McmeLevelDb *db,
+                                       const EntRef *ents, size_t n,
+                                       McmeArena *arena,
+                                       McmeConvertReport *rep,
+                                       McmeWriteRefusal *refusal)
+{
+    for (size_t i = 0; i < n; ++i) {
+        McmeNbtDoc *docs = NULL;
+        size_t nd = 0;
+        McmeEntityStatus st = mcme_bedrock_chunk_entities(
+            db, ents[i].cx, ents[i].cz, ents[i].dim, arena, &docs, &nd);
+        if (st == MCME_ENTITY_OK) {
+            rep->entities += nd;
+        } else if (st == MCME_ENTITY_NOT_READABLE) {
+            mcme_clear_error();
+            rep->entities += 1;   /* the record counts once */
+        } else if (st != MCME_ENTITY_ABSENT) {
+            /* A store that fails mid-walk is not a count mcme can
+               finish — the run fails, the output is removed. */
+            refuse(refusal, st == MCME_ENTITY_STORE
+                   ? MCME_WRITE_REFUSAL_STORE
+                   : MCME_WRITE_REFUSAL_INTERNAL);
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Tick records whose chunk holds no subchunks: no Java chunk is
    written for that chunk, so every entry counts as dropped. The read
    is the same whole-record read the carried path uses — the count is
@@ -2611,6 +2685,7 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     Scan scan;
     scan.subs = NULL;
     scan.bes = NULL;
+    scan.ents = NULL;
     scan.ticks = NULL;
     scan.biomes = NULL;
     memset(scan.has_subs, 0, sizeof scan.has_subs);
@@ -2618,10 +2693,12 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     mcme_leveldb_iterate(db, scan_key, &scan);
     size_t nsubs = (size_t)arrlen(scan.subs);
     size_t nbes = (size_t)arrlen(scan.bes);
+    size_t nent = (size_t)arrlen(scan.ents);
     size_t ntk = (size_t)arrlen(scan.ticks);
     size_t nbi = (size_t)arrlen(scan.biomes);
     if (nsubs > 1) qsort(scan.subs, nsubs, sizeof (SubRef), sub_cmp);
     if (nbes > 1) qsort(scan.bes, nbes, sizeof (BeRef), be_cmp);
+    if (nent > 1) qsort(scan.ents, nent, sizeof (EntRef), ent_cmp);
     if (ntk > 1) qsort(scan.ticks, ntk, sizeof (TickRef), tick_cmp);
     if (nbi > 1) qsort(scan.biomes, nbi, sizeof (BiomeRef), biome_cmp);
 
@@ -2646,6 +2723,7 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
         }
         arrfree(scan.subs);
         arrfree(scan.bes);
+        arrfree(scan.ents);
         arrfree(scan.ticks);
         arrfree(scan.biomes);
         mcme_leveldb_close(db);
@@ -2746,10 +2824,21 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
                                       rec_arena, report, refusal);
         ++bmi;
     }
+    /* The entity-list records last, together: nothing about them
+       depends on which chunks converted (D23), so they need no
+       place in the pairing walk above — every record is read once
+       here and its documents counted. */
+    size_t ei = 0;
+    while (ok && ei < nent) {
+        ok = count_unconverted_entities(db, scan.ents + ei, 1,
+                                        rec_arena, report, refusal);
+        ++ei;
+    }
     mcme_arena_free(rec_arena);
 
     arrfree(scan.subs);
     arrfree(scan.bes);
+    arrfree(scan.ents);
     arrfree(scan.ticks);
     arrfree(scan.biomes);
     mcme_leveldb_close(db);
