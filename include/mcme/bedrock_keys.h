@@ -71,8 +71,9 @@
    from the world floor up to each chunk's own top, so sizes track terrain.
    Convert carries its biome half into the Java sections since D19. 0x2d is
    the older 768-byte spelling (heightmap plus a flat 16x16 id table) of
-   worlds this store does not hold; its keys still parse and still count as
-   chunk data, not carried. */
+   worlds this store does not hold; its keys parse and, since D26, its
+   records are biome records too — carried when the chunk holds no Data3D
+   record (the reference's own precedence), counted when it does. */
 #define MCME_BEDROCK_TAG_BIOME_3D 0x2bu /* Data3D: heightmap + 3D biomes  */
 #define MCME_BEDROCK_TAG_BIOME 0x2du /* the older 768-byte 2D spelling    */
 

@@ -2582,6 +2582,67 @@ static void test_biome_record(void)
 }
 
 /* ========================================================================
+ * The older biome record (2D): decode, and the exact-size refusal
+ * ======================================================================== */
+
+static void test_biome_record_2d(void)
+{
+    printf("  biome record (2D: heightmap + 16x16 id table)\n");
+    McmeArena *arena = mcme_arena_new();
+    CHECK(arena != NULL);
+    if (arena == NULL) return;
+
+    /* --- Exactly 768 bytes decode: the heightmap half comes across
+       signed like the Data3D record's, and the id table materializes
+       as the reference's own broadcast — 16 arrays at absolute cy
+       0..15 (whatever the floor), cell (x, y, z) of every one
+       reading table byte 64z + 4x, the same value down the four
+       cells of a column. The table here spells byte i = i, so each
+       sampled cell names its own index. */
+    {
+        uint8_t b[768];
+        memset(b, 0, sizeof b);
+        b[0] = 0x34; b[1] = 0x12;          /* column 0:     4660 */
+        b[2] = 0x00; b[3] = 0x80;          /* column 1:   -32768 */
+        for (size_t i = 0; i < 256; ++i) b[512 + i] = (uint8_t)i;
+        McmeBedrockBiomes m;
+        CHECK(mcme_bedrock_biome_2d_decode(&m, arena, b, sizeof b));
+        CHECK(m.heightmap[0] == 4660);
+        CHECK(m.heightmap[1] == -32768);
+        CHECK(m.count == 16);
+        for (size_t cyi = 0; cyi < 16; ++cyi) {
+            CHECK(m.arrays[cyi].cy == (int8_t)cyi);
+            const uint32_t *cells = m.arrays[cyi].cells;
+            CHECK(cells[0 * 16 + 0 * 4 + 0] == 0);    /* 64*0 + 4*0 */
+            CHECK(cells[1 * 16 + 1 * 4 + 1] == 68);   /* 64*1 + 4*1 */
+            CHECK(cells[3 * 16 + 0 * 4 + 3] == 12);   /* 64*0 + 4*3 */
+            CHECK(cells[0 * 16 + 3 * 4 + 0] == 192);  /* 64*3 + 4*0 */
+            /* The broadcast is flat: y repeats the column's value. */
+            CHECK(cells[0 * 16 + 3 * 4 + 1]
+                  == cells[3 * 16 + 3 * 4 + 1]);
+            CHECK(cells[2 * 16 + 2 * 4 + 2] == 136);  /* 64*2 + 4*2 */
+        }
+    }
+
+    /* --- One byte short and one past: the reference slices exactly
+       a map and a table and its reshape answers for nothing else,
+       so neither is a record — refused whole, finding set. */
+    {
+        uint8_t b[769];
+        memset(b, 0, sizeof b);
+        McmeBedrockBiomes m;
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_2d_decode(&m, arena, b, 767));
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_clear_error();
+        CHECK(!mcme_bedrock_biome_2d_decode(&m, arena, b, sizeof b));
+        CHECK(mcme_last_error()[0] != '\0');
+    }
+
+    mcme_arena_free(arena);
+}
+
+/* ========================================================================
  * Chunk inventory over the forged store
  * ======================================================================== */
 
@@ -6531,6 +6592,7 @@ int mcme_test_world(void)
     test_subchunk_refusals();
     test_subchunk_flat();
     test_biome_record();
+    test_biome_record_2d();
     test_bedrock_inventory();
     test_bedrock_write();
     test_bedrock_column();

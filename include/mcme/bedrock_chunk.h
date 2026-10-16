@@ -203,6 +203,7 @@ bool mcme_bedrock_subchunk_set(McmeBedrockSubchunk *sc,
 #define MCME_BEDROCK_BIOME_CELLS      64u /* one 4x4x4 cell block      */
 #define MCME_BEDROCK_HEIGHTMAP_COLS  256u /* the record's column heights */
 #define MCME_BEDROCK_BIOME_MAX_ARRAYS 24u /* one world height of them  */
+#define MCME_BEDROCK_BIOME_2D_SIZE   768u /* the older spelling, exact  */
 
 /*
  * The biome half of a Data3D record (tag 0x2b): the heightmap, and one
@@ -226,6 +227,13 @@ bool mcme_bedrock_subchunk_set(McmeBedrockSubchunk *sc,
  * truncation anywhere. One refusal is the whole record's — the caller
  * counts it once (decisions.md#D19) rather than trusting a half.
  *
+ * The older 768-byte spelling (tag 0x2d, D26) decodes through
+ * mcme_bedrock_biome_2d_decode into the same struct: its heightmap is
+ * the same first 512 bytes, and its 256 raw column ids materialize as
+ * 16 broadcast arrays at absolute cy 0..15 — the sections the
+ * reference's own convert_to_3d fills, whatever the floor — each cell
+ * value repeating down the section's four cells.
+ *
  * Ownership: everything returned lives in the arena; the input bytes
  * are borrowed for the call only.
  */
@@ -237,10 +245,15 @@ struct McmeBedrockBiomeArray {
 typedef struct {
     int16_t heightmap[256];
     struct McmeBedrockBiomeArray *arrays;
-    size_t count;            /* arrays used; array i sits at floor_cy + i */
+    size_t count;            /* arrays used; for a Data3D record array
+                                i sits at floor_cy + i, for the older
+                                spelling at cy i (D26)               */
 } McmeBedrockBiomes;
 
 bool mcme_bedrock_biome_decode(McmeBedrockBiomes *out, McmeArena *arena,
                                const void *data, size_t size, int8_t floor_cy);
+
+bool mcme_bedrock_biome_2d_decode(McmeBedrockBiomes *out, McmeArena *arena,
+                                  const void *data, size_t size);
 
 #endif /* MCME_BEDROCK_CHUNK_H */

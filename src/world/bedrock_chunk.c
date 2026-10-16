@@ -1056,3 +1056,67 @@ bool mcme_bedrock_biome_decode(McmeBedrockBiomes *out, McmeArena *arena,
     }
     return true;
 }
+
+/*
+ * The older spelling (D26): 768 bytes — the same 512-byte heightmap
+ * half, then 256 raw biome ids, one per column, no palette. The
+ * reference reads the bytes as frombuffer(...).reshape(16, 16).T
+ * and broadcasts them with convert_to_3d: every section from Y0
+ * through Y255 (cy 0..15 — the unbounded array's default range,
+ * measured from Biomes3D's own defaults, not from any floor) takes
+ * the cell value A[4x, 4z] = bytes[64z + 4x], the same value down
+ * the section's four cells. This decoder materializes that
+ * broadcast: 16 arrays at absolute cy 0..15, whatever the
+ * dimension's floor, cells in Java's container order like the 3D
+ * record's. The heightmap half decodes exactly as the 3D record's
+ * first 512 bytes.
+ *
+ * Refused with the finding in mcme_last_error(): any size other
+ * than exactly 768 — the reference slices exactly a 512-byte map
+ * and a 256-byte table and its reshape answers for nothing else.
+ * One refusal is the whole record's — the caller counts it once.
+ *
+ * Ownership: everything returned lives in the arena; the input
+ * bytes are borrowed for the call only.
+ */
+bool mcme_bedrock_biome_2d_decode(McmeBedrockBiomes *out,
+                                  McmeArena *arena,
+                                  const void *data, size_t size)
+{
+    if (out == NULL || arena == NULL || data == NULL) return false;
+    memset(out, 0, sizeof *out);
+
+    if (size != MCME_BEDROCK_BIOME_2D_SIZE) {
+        mcme_set_error("biome record (2D): %zu bytes; the older "
+                       "spelling is a 512-byte heightmap and 256 "
+                       "biome ids, nothing else", size);
+        return false;
+    }
+    const uint8_t *p = (const uint8_t *)data;
+    for (size_t i = 0; i < 256; ++i) {
+        uint32_t u = (uint32_t)p[i * 2] | ((uint32_t)p[i * 2 + 1] << 8);
+        out->heightmap[i] = (int16_t)(u & 0x8000u ? (int32_t)u - 65536
+                                                   : (int32_t)u);
+    }
+
+    out->arrays = mcme_arena_alloc(arena, MCME_BEDROCK_BIOME_MAX_ARRAYS
+                                           * sizeof *out->arrays);
+    if (!out->arrays) return false;
+    memset(out->arrays, 0, MCME_BEDROCK_BIOME_MAX_ARRAYS
+                               * sizeof *out->arrays);
+
+    for (size_t cyi = 0; cyi < 16; ++cyi) {
+        struct McmeBedrockBiomeArray *arr = &out->arrays[cyi];
+        arr->cy = (int8_t)cyi;           /* absolute: 0..15 */
+        for (size_t zi = 0; zi < 4; ++zi) {
+            for (size_t xi = 0; xi < 4; ++xi) {
+                uint32_t id = p[512 + 64 * zi + 4 * xi];
+                for (size_t yi = 0; yi < 4; ++yi) {
+                    arr->cells[yi * 16 + zi * 4 + xi] = id;
+                }
+            }
+        }
+    }
+    out->count = 16;
+    return true;
+}

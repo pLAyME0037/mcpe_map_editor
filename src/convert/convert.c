@@ -165,9 +165,11 @@ typedef struct {
 typedef struct {
     int32_t dim;
     int32_t cx, cz;
+    uint8_t tag;             /* 0x2b or 0x2d: which spelling this
+                                record is (D26)                     */
     uint8_t key[14];      /* the key exactly as stored, for the get */
     uint8_t key_len;
-} BiomeRef;                 /* a chunk's Data3D record               */
+} BiomeRef;                 /* a chunk's biome record, either spelling */
 
 typedef struct {
     int32_t dim;             /* the record's own dimension (D21)    */
@@ -244,17 +246,25 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
         arrpush(s->ticks, t);
         return true;
     }
-    if (k.tag == MCME_BEDROCK_TAG_BIOME_3D) {
-        /* Collected the same way (D19): the record whose chunk
-           converts carries its biome cells, the record whose chunk
-           holds no subchunks counts them after the chunk loop. The
-           whole key is kept for the get — the record has no reader
-           keyed by coordinates the way entities have, and rebuilding
-           the key would drop a second spelling store's might hold. */
+    if (k.tag == MCME_BEDROCK_TAG_BIOME_3D
+            || k.tag == MCME_BEDROCK_TAG_BIOME) {
+        /* Collected the same way (D19), both spellings since D26:
+           the record whose chunk converts carries its biome cells,
+           the record whose chunk holds no subchunks counts them
+           after the chunk loop, and a chunk holding both spellings
+           answers from the Data3D record alone — the reference's
+           own precedence, its loader reads the 3D arrays when they
+           are there and the older table only when they are not
+           (D26), so the sort below puts the 3D record first and
+           the older one counts beside it. The whole key is kept
+           for the get — the record has no reader keyed by
+           coordinates the way entities have, and rebuilding the
+           key would drop a second spelling store's might hold. */
         BiomeRef b;
         b.dim = dim;
         b.cx = k.x;
         b.cz = k.z;
+        b.tag = k.tag;
         memcpy(b.key, e->key, e->key_len);
         b.key_len = (uint8_t)e->key_len;
         arrpush(s->biomes, b);
@@ -279,7 +289,9 @@ static bool scan_key(void *ud, const McmeLevelEntry *e)
     bool is_sub = k.tag == MCME_BEDROCK_TAG_SUBCHUNK
         || k.tag == MCME_BEDROCK_TAG_SUBCHUNK_OLD;
     if (!is_sub) {
-        /* Chunk versions, the older 0x2d biome spelling, markers. */
+        /* Chunk versions, markers — and any chunk-data tag the
+           walk has no reader for. The biome records are not here:
+           both spellings are collected above (D19, D26). */
         s->rep->chunk_data++;
         return true;
     }
@@ -354,6 +366,12 @@ static int biome_cmp(const void *a, const void *b)
     if (x->dim != y->dim) return (x->dim < y->dim) ? -1 : 1;
     if (x->cx != y->cx) return (x->cx < y->cx) ? -1 : 1;
     if (x->cz != y->cz) return (x->cz < y->cz) ? -1 : 1;
+    /* A chunk holding both spellings answers from the Data3D
+       record — the reference's loader takes the 3D arrays when
+       they are there and the older table only when they are not
+       (D26), so the 3D record must stand first: not a guess which
+       the game means, the rule its own reader follows. */
+    if (x->tag != y->tag) return (x->tag < y->tag) ? -1 : 1;
     return 0;
 }
 
@@ -1914,17 +1932,20 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
     int32_t cx = subs[0].cx;
     int32_t cz = subs[0].cz;
 
-    /* The chunk's Data3D record, decoded once before the sections it
-       decorates are built. One record is the shape — one key per
-       chunk — so the span's first entry is the chunk's own; a second
-       spelling of the same record is not merged by guessing which the
-       game means, and its cells count as not carried like any other
-       record the chunk gets no use from. A record that will not
-       decode drops every cell it would have held, counted once; a
-       tombstone held nothing to drop. The record's other half — its
-       heightmap — rides the same verdicts and counts for itself:
-       it crosses when the record decodes and every column spells
-       inside the world's height (D20). */
+    /* The chunk's biome record, decoded once before the sections it
+       decorates are built — either spelling, dispatched on the key
+       (D26): the Data3D record's arrays from the world floor, or
+       the older table's broadcast to cy 0..15. One record is the
+       shape — one key per spelling per chunk — so the span's first
+       entry is the chunk's own, the Data3D record when both exist
+       (the reference's own precedence, the sort's tiebreak), and a
+       second spelling is not merged: its cells count as not carried
+       like any other record the chunk gets no use from. A record
+       that will not decode drops every cell it would have held,
+       counted once; a tombstone held nothing to drop. The record's
+       other half — its heightmap — rides the same verdicts and
+       counts for itself: it crosses when the record decodes and
+       every column spells inside the world's height (D20). */
     McmeBedrockBiomes bis;
     bool has_biomes = false;
     bool has_heightmap = false;
@@ -1952,9 +1973,12 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         if (deleted) {
             mcme_buffer_free(&val);
             /* A tombstone held no map either — nothing to drop. */
-        } else if (!mcme_bedrock_biome_decode(&bis, arena, val.data,
-                                              val.len,
-                                              dim_floor_cy(dim))) {
+        } else if (!(biomes[0].tag == MCME_BEDROCK_TAG_BIOME
+                     ? mcme_bedrock_biome_2d_decode(&bis, arena,
+                                                    val.data, val.len)
+                     : mcme_bedrock_biome_decode(&bis, arena, val.data,
+                                                 val.len,
+                                                 dim_floor_cy(dim)))) {
             mcme_buffer_free(&val);
             mcme_clear_error();
             rep->biomes += 1;      /* the record counts once    */
@@ -2382,10 +2406,12 @@ static bool count_unconverted_ticks(McmeLevelDb *db,
 }
 
 /* A biome record no chunk gets use from — its span's chunk never
-   appears in the subchunk scan. The whole record is the drop: its
-   cells count (decoded first, since the count is the payload's own
-   shape), and a record that will not decode counts once like any
-   other, never half-read. */
+   appears in the subchunk scan, or the chunk answers from its other
+   spelling (D26). The whole record is the drop: its cells count
+   (decoded first, since the count is the payload's own shape — the
+   older spelling's broadcast is 16 arrays of 64, D26), and a record
+   that will not decode counts once like any other, never
+   half-read. */
 static bool count_unconverted_biomes(McmeLevelDb *db,
                                      const BiomeRef *refs, size_t n,
                                      McmeArena *arena,
@@ -2410,8 +2436,13 @@ static bool count_unconverted_biomes(McmeLevelDb *db,
             continue;          /* a tombstone holds no cells */
         }
         McmeBedrockBiomes biomes;
-        if (!mcme_bedrock_biome_decode(&biomes, arena, val.data, val.len,
-                                       dim_floor_cy(refs[i].dim))) {
+        bool got = refs[i].tag == MCME_BEDROCK_TAG_BIOME
+                 ? mcme_bedrock_biome_2d_decode(&biomes, arena,
+                                                val.data, val.len)
+                 : mcme_bedrock_biome_decode(&biomes, arena, val.data,
+                                             val.len,
+                                             dim_floor_cy(refs[i].dim));
+        if (!got) {
             mcme_buffer_free(&val);
             mcme_clear_error();
             rep->biomes += 1;      /* the record counts once   */

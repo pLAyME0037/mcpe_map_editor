@@ -1595,3 +1595,89 @@ PyMCTranslate's 1.1 and 1.2 tables change their answers, or the
 game grows a flat-era payload the two measured eras do not cover
 — the pin re-measures all three every battery run, and the tables
 regenerate from the same enumeration.
+
+## D26 — Convert carries the older biome record: the 768-byte table's cells and map
+
+**What the reference does, measured from the loader's elif.** A
+chunk whose data holds no Data3D record (`b"+"`) but holds the
+older spelling (`b"\x2d"`) is read as `height =
+frombuffer(d2d[:512], "<i2").reshape(16, 16)` and `biomes =
+frombuffer(d2d[512:], uint8).reshape(16, 16).T` — the same
+512-byte int16 heightmap half the Data3D record starts with, then
+256 raw biome ids, one per column, no palette; when both records
+stand, the 3D arrays win (the elif), and the older table is not
+read at all. On the way to Java, `convert_to_3d` broadcasts the
+table: `repeat(self._2d[::4, ::4].reshape(4,1,4), 64, axis=1)`
+fills sections **0..15 absolute** — measured from Biomes3D's own
+defaults, `(0, 16)` sections above the origin, not from any
+dimension's floor — and every section's cell (x, y, z) reads
+table byte `64z + 4x`, the same value down the column's four
+cells. The java container order is the Data3D path's own:
+`transpose((1, 2, 0)).ravel()` = `y*16 + z*4 + x`. Ids the
+reference's biome table does not hold revert to `minecraft:plains`
+with a warning — its own fallback, the one mcme's map has made
+since D19 — and the table is version-stable where it matters:
+bedrock (1, 2, 0)'s int→str table is 69 entries, (1, 20, 80)'s is
+86, and every shared id spells the same name — ids were only ever
+added, so one map answers both eras' records.
+
+**The rule in mcme.** Both spellings are biome records now: the
+scan collects a 0x2d key exactly like a 0x2b one, and
+`chunk_data` loses the 0x2d — it counts the versions, markers and
+unknown chunk-data tags it counted before, nothing the report's
+biome counters can also count. The sort's tiebreak puts the Data3D
+record first when a chunk holds both — not a guess which the game
+means but the loader's own precedence, and the older record counts
+beside the answering one: 16 broadcast arrays of 64 cells and a
+map, never carried. `mcme_bedrock_biome_2d_decode` materializes
+the broadcast the reference's `convert_to_3d` materializes: the
+heightmap half decoded exactly as the Data3D record's, then 16
+arrays at absolute cy 0..15 — whatever the floor, because the
+reference's broadcast is absolute — cells in Java's container
+order, `bytes[512 + 64z + 4x]` at `y*16 + z*4 + x`. Anything
+other than exactly 768 bytes is refused whole: the reference
+slices exactly a map and a table, and its reshape answers for
+nothing else — counted once, cells and map lost with it (D12).
+From there every verdict is D19's and D20's unchanged: a written
+section carries its 64 cells through the biome map (unknown ids
+the plains fallback, counted), an array with no section to stand
+in counts 64, the map crosses when every column spells inside the
+dimension's own height.
+
+**Fixture truth.** The copy gains three keys in the older
+spelling. The end chunk (1,-2) dim 2 gets a real one: columns
+spelling their own coordinates inside the end's 256, and a table
+whose 16 sampled positions hold id `x + 4z` — every one a biome
+the map knows — except column (x=1, z=2), which holds 194: an id
+neither table knows, so its four cells per section fall back to
+plains and count, the Data3D fixture's own unknown id made
+familiar. The overworld (0,0) gets a second spelling beside its
+answering record — all zero, the shape is the pin — and the
+orphan at (10,10) is 767 bytes, one short: not a record, counted
+once. Report: `biomes_carried` 383 → 443 (the end section's 60
+known cells), `heightmaps_carried` 2 → 3 (the end's map crosses
+now), `skipped.biomes` 386 → 2375 (the end's 15 arrays with no
+section, the unknown column's 4 cells, the ignored second
+spelling's 1024, the orphan's 1), `skipped.heightmaps` 6 → 7 (the
+end's drop became a carry, the ignored map and the orphan's lost
+one stand beside it), `chunk_data` unchanged at 1 — the older
+records are not there to count anymore. The mirror reads the
+table the loader reads it, and the parity check counts 448 cells
+where it counted 384: the end's one section beside the
+overworld's four heights and the nether's two floors.
+
+**Cost accepted.** No new tables: the biome map has answered all
+256 ids since D19, and the measured id stability across versions
+is why one map serves both spellings. The pin re-asks the
+reference for every cell the fabricated records reach, the
+unknown-id fallback included, and the heightmap comparison pins
+the third map under MOTION_BLOCKING. The census snapshot that
+pinned earlier drops' real-store behavior is gone — stale /tmp
+cleanup, no source world left on disk — so this drop is
+fixture-verified by the user's own call, and the dev-log says so.
+
+**Reverses if:** amulet's `convert_to_3d` broadcast changes its
+range or sampling, the biome id table grows a rename instead of
+an append, or the game grows a third biome spelling — the pin
+re-asks the reference's cells and fallback every battery run, and
+the mirror decodes both records from the loader's own lines.

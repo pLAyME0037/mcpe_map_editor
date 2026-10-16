@@ -40,8 +40,10 @@ typedef struct {
                                  fields the mapping cannot translate —
                                  no half-translated item leaves           */
     size_t chunk_data;        /* chunk keys that are not subchunks:
-                                 chunk versions, the older 0x2d biome
-                                 records — counted, not carried       */
+                                 chunk versions, markers — counted,
+                                 not carried (the 0x2d biome records
+                                 are not here since D26: they are
+                                 biome records, carried or counted)  */
     size_t entities;          /* entity documents not carried: the
                                  per-chunk lists' documents (the 0x32
                                  records), walked like block-entity
@@ -90,10 +92,13 @@ typedef struct {
                                  whose section mcme does not write, or a
                                  record that will not decode (counted
                                  once — half a record is not a count)   */
-    size_t heightmaps_carried;/* the chunk's heightmap — the Data3D
-                                 record's 256 columns, already Java's
-                                 own numbers — written as the chunk's
-                                 MOTION_BLOCKING map (D20)              */
+    size_t heightmaps_carried;/* the chunk's heightmap — the record's
+                                 256 columns, already Java's own
+                                 numbers, from either spelling: the
+                                 Data3D record's first half, the older
+                                 table's identical first 512 bytes
+                                 (D20, D26) — written as the chunk's
+                                 MOTION_BLOCKING map              */
     size_t heightmaps;        /* maps not carried: a converted chunk
                                  whose store held no record, a record
                                  that will not decode (its map is lost

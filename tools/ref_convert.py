@@ -187,13 +187,25 @@ WANT_REPORT = {
     # check fabricates there
     "block_entities_carried": 7,
     "ticks_carried": 4,
-    "biomes_carried": 383,
-    "heightmaps_carried": 2,       # overworld base 100, nether 0
+    # 383 from the Data3D records (D19, D21) plus the end chunk's
+    # 60 known cells: the older spelling's broadcast carries the
+    # one section it writes, one sampled column's id unknown (D26)
+    "biomes_carried": 443,
+    # the overworld base 100, the nether 0, and the end chunk's own
+    # map since the older spelling's half rides the same verdicts
+    "heightmaps_carried": 3,
     "skipped": {
         # one fabricated actor record (D23); the digp index beside
         # it counts nowhere — its documents are the actor records
         "actors": 1,
-        "biomes": 386,
+        # 386 from the Data3D records (D19, D21) plus the older
+        # spelling's own drops (D26): the end chunk's 15 broadcast
+        # arrays with no section to stand in (960), the unknown
+        # column's four fallback cells in the section that writes,
+        # the second spelling beside the overworld's answering
+        # record (16 arrays of 64), and the orphan one byte short
+        # of a record (counted once)
+        "biomes": 2375,
         # the nether orphan's document, and the bed whose color
         # keeps it out of the list (D22's coupling count)
         "block_entities": 2,
@@ -202,7 +214,12 @@ WANT_REPORT = {
         # decode counts once, the two documents at (7,7) count two,
         # the record at (8,8) holds nothing and counts zero
         "entities": 3,
-        "heightmaps": 6,
+        # the refused maps (one column past each world's top), the
+        # chunks holding no record, and since D26 the second
+        # spelling's map beside the overworld's answering record and
+        # the orphan's lost with its refused payload — the end
+        # chunk's map crosses now, its own record standing
+        "heightmaps": 7,
         "items": 0,
         # the v1 subchunk's `{name, val}` palette carries now (D24);
         # the two payloads fabricated to refuse (D25): a flat one
@@ -703,6 +720,14 @@ def put_biome_record(db, cx: int, cz: int, dim: int,
     db.put(_record_key(cx, cz, dim, 0x2B), payload)
 
 
+def put_2d_record(db, cx: int, cz: int, dim: int,
+                  payload: bytes) -> None:
+    """One fabricated record in the older 768-byte spelling (D26):
+    the same heightmap half, then 256 raw biome ids, under the
+    chunk's own key in its own dimension with the 0x2D tag."""
+    db.put(_record_key(cx, cz, dim, 0x2D), payload)
+
+
 def put_be_record(db, cx: int, cz: int, dim: int,
                   *snbts: str) -> None:
     """One block-entity record on the copy: the documents with
@@ -792,6 +817,50 @@ def biome_map_only_record() -> bytes:
     bad = 3 * 16 + 5                          # column (x=5, z=3)
     rec[bad * 2:bad * 2 + 2] = (400).to_bytes(2, "little")
     return bytes(rec)
+
+
+def biome_2d_record_chunk() -> bytes:
+    """The end chunk (1,-2) dim 2's record in the older spelling
+    (D26), byte for byte what the selftest decodes: the heightmap
+    half's columns spell their own coordinates — column i reads i,
+    inside the end's own 256 — then 256 raw biome ids whose
+    *sampled* columns name themselves. The reference reads the half
+    as frombuffer().reshape(16,16).T and broadcasts it: a section's
+    cell (x, z) takes table byte 64z + 4x, so those 16 positions
+    carry the answers — id x + 4z at each, every one a biome the
+    map knows — except column (x=1, z=2), which holds 194: an id
+    neither the reference's table nor mcme's knows, so its four
+    cells per section fall back to plains and count, the way the
+    Data3D fixture's own unknown id counts (D19)."""
+    rec = bytearray(512)
+    for i in range(256):
+        rec[i * 2:i * 2 + 2] = i.to_bytes(2, "little")
+    table = bytearray(256)
+    for z in range(4):
+        for x in range(4):
+            table[64 * z + 4 * x] = x + 4 * z
+    table[64 * 2 + 4 * 1] = 194                # the unknown id
+    rec += bytes(table)
+    return bytes(rec)
+
+
+def biome_2d_precedence_record() -> bytes:
+    """A second spelling on the overworld chunk (0,0), beside the
+    Data3D record that answers there (D26): the reference's loader
+    takes the 3D arrays when they are there and reads this one
+    only when they are not, so every cell it holds counts and none
+    carries — 16 broadcast arrays of 64, and a map that counts
+    with them. All zero: the shape is what this pins, not the
+    values."""
+    return bytes(768)
+
+
+def biome_2d_junk_record() -> bytes:
+    """The orphan at (10,10) (D26): 767 bytes — one short of the
+    map-and-table shape the reference's own reshape answers for —
+    so it is not a record: it counts once, its cells and its map
+    lost with it, never half-read."""
+    return bytes(767)
 
 
 def pack_heightmap(values) -> list:
@@ -913,15 +982,21 @@ def tick_mirror(world: str, ref, dim: int = 0) -> dict:
 
 def biome_mirror(world: str, ref, dim: int = 0) -> dict:
     """(cx, cz) -> {cy: [64 Java biome names]} for the chunks this
-    fixture converts: the stored Data3D record decoded the way
-    amulet decodes it — one 4x4x4 per height from the world floor,
-    cells sampled every fourth block — each id through the
-    reference's own biome answer, handed back in Java's container
-    order y*16 + z*4 + x. A chunk with no record maps to nothing:
-    mcme must carry no biomes key there. Orphan records are the
-    report's count, not a section (decisions.md#D19). Only this
-    dimension's keys are read, decoded from its own floor — -4
-    overworld, 0 nether and end (D21)."""
+    fixture converts: the stored biome record decoded the way
+    amulet decodes it — each id through the reference's own biome
+    answer, handed back in Java's container order y*16 + z*4 + x.
+    Either spelling answers (D26): the Data3D record's arrays, one
+    4x4x4 per height from the world floor, cells sampled every
+    fourth block; or, when the chunk holds no 3D record, the older
+    table's own broadcast — 256 raw ids read the way the loader
+    reads them (reshape(16,16).T), every section cy 0..15 taking
+    cell (x, z) = table byte 64z + 4x, the same value down the
+    section — the loader's elif, the 3D record wins when both
+    stand. A chunk with no record maps to nothing: mcme must carry
+    no biomes key there. Orphan records are the report's count,
+    not a section (decisions.md#D19). Only this dimension's keys
+    are read, decoded from its own floor — -4 overworld, 0 nether
+    and end (D21)."""
     from amulet.libs.leveldb import LevelDB
     from amulet.level.formats.leveldb_world.interface.chunk.\
         leveldb_8 import LevelDB8Interface
@@ -938,7 +1013,21 @@ def biome_mirror(world: str, ref, dim: int = 0) -> dict:
             try:
                 payload = db.get(key)
             except KeyError:
-                continue                      # no record: no key
+                key = key[:-1] + bytes([0x2D])
+                try:
+                    payload = db.get(key)
+                except KeyError:
+                    continue                  # no record: no key
+                table = payload[512:]
+                for cy in range(16):          # the broadcast's own
+                    names = [""] * 64          # sections, absolute
+                    for x in range(4):
+                        for y in range(4):
+                            for z in range(4):
+                                names[y * 16 + z * 4 + x] = ref.biome(
+                                    table[64 * z + 4 * x])
+                    out[(cx, cz)][cy] = names
+                continue
             _, arrays = iface._decode_height_3d_biomes(
                 payload, DIM_FLOOR[dim])
             for cy, cells in arrays.items():
@@ -1768,6 +1857,19 @@ def main() -> int:
             tdb.put(chunk_key(0, 0, 6, 0, tag=0x2C),
                     bytes([0x05]) + bytes(4096))
             tdb.put(chunk_key(0, 0, 7, 0, tag=0x2C), bytes([0x0A]))
+            # ---- D26: the older 768-byte biome spelling ----------
+            # The end chunk's own record: its sampled columns cross
+            # into the one section's biomes container — one column's
+            # id unknown, its cells the reference's plains fallback
+            # and counted — and its heightmap half rides the map's
+            # own verdicts. The overworld (0,0) holds both
+            # spellings: the Data3D record answers, the older table
+            # counts beside it, never carried. The orphan at
+            # (10,10) is one byte short of the shape and counts
+            # once.
+            put_2d_record(tdb, 1, -2, 2, biome_2d_record_chunk())
+            put_2d_record(tdb, 0, 0, 0, biome_2d_precedence_record())
+            put_2d_record(tdb, 10, 10, 0, biome_2d_junk_record())
             # One column at 300 — inside the overworld's 384, past
             # the nether's 256 — so the map drops while the floor
             # stratum's cells still cross (D20's halves per
@@ -2040,12 +2142,12 @@ def main() -> int:
                             f"chunk ({cx}, {cz}) section {cy} cell "
                             f"{i} reads {got[i]}, the reference says "
                             f"{want[i]}")
-        if cells_checked != 384:
+        if cells_checked != 448:
             raise AssertionError(
                 f"checked {cells_checked} biome cells across the "
-                f"sections the records reach, want 384 (the "
-                f"overworld's 4 heights and the nether's 2 floors, "
-                f"64 each)")
+                f"sections the records reach, want 448 (the "
+                f"overworld's 4 heights, the nether's 2 floors and "
+                f"the end's one section since D26, 64 each)")
         checks += 1
         _log("ok — every section the record reaches carries the "
              "reference's biome for each of its 64 cells, packed "
@@ -2058,15 +2160,20 @@ def main() -> int:
         # back empty — this pins mcme's own spec, not a mirror: the
         # 256 fabricated columns, 9 bits to a value, 7 to a long
         # (37 of them, none spanning two), under MOTION_BLOCKING.
-        # The two maps that cross, spelled from their own
-        # dimension's floor (D20, D21): the overworld's record
+        # The maps that cross, spelled from their own
+        # dimension's floor (D20, D21, D26): the overworld's record
         # spells 100 + i inside 384, the nether's i inside its own
-        # 256 — and no key stands where no map crossed: the refused
+        # 256, the end chunk's i beside its older-spelling cells —
+        # and no key stands where no map crossed: the refused
         # maps (one column past each world's top) and the chunks
         # holding no record at all.
         want_hm = {
             (0, 0, 0): pack_heightmap([100 + i for i in range(256)]),
             (1, 0, 0): pack_heightmap([i for i in range(256)]),
+            # the end chunk's map since D26: the older spelling's
+            # half, columns spelling their own coordinates inside
+            # the end's own 256
+            (2, 1, -2): pack_heightmap([i for i in range(256)]),
         }
         for dim, cx, cz in all_chunks:
             region = region_path(out, dim, cx, cz)

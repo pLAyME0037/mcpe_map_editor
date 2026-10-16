@@ -9,6 +9,75 @@ Status vocabulary:
 
 ---
 
+## 2026-10-16 — The older biome record: the 768-byte table crosses
+
+### Built
+
+- convert collects the 0x2d keys as biome records since D26 —
+  both spellings ride the same span, sorted with the Data3D
+  record first (the reference's loader takes the 3D arrays when
+  they are there, the older table only when they are not) — and
+  `chunk_data` loses the 0x2d: it counts versions, markers and
+  unknown chunk-data tags, nothing the biome counters also count.
+- `mcme_bedrock_biome_2d_decode` (bedrock_chunk.c) reads the
+  768-byte spelling the reference's own loader reads it: the
+  same 512-byte int16 heightmap half, then 256 raw ids
+  materialized as the broadcast `convert_to_3d` materializes —
+  16 arrays at absolute cy 0..15 (Biomes3D's defaults, not any
+  floor), cell (x, y, z) = table byte 64z + 4x in Java's
+  container order. Anything but exactly 768 bytes is refused
+  whole and counted once. From there D19's and D20's verdicts
+  ride unchanged: cells through the biome map (plains fallback
+  for unknown ids, counted), arrays with no section counted,
+  the map crossing when every column spells inside the
+  dimension's height.
+- ref_convert grows `put_2d_record` and three payloads: the end
+  chunk's real record (columns spelling their own coordinates,
+  sampled table positions holding id x + 4z with 194 — unknown
+  to both tables — at column (1, 2)), the all-zero second
+  spelling beside the overworld's answering Data3D record, and
+  the 767-byte orphan that is not a record. `biome_mirror`
+  reads the table the loader reads it: the 3D record wins, the
+  table answers only where it stands alone, its broadcast
+  sections compared cell by cell.
+
+### Measured
+
+- The broadcast is absolute: `Biomes3D`'s default section counts
+  `(0, 16)` cap the 2D→3D fill at sections 0..15 — y blocks
+  0..255, the classic world's own height — verified against
+  amulet's classes directly, not derived from the wiki. Cell
+  (x, y, z) = byte 64z + 4x, the same value down a column: the
+  transpose and the `[::4, ::4]` sample compose to that, and a
+  probe with byte i = i confirms it on the real code path.
+- The biome id table is version-stable where the older spelling
+  lives: bedrock (1, 2, 0) holds 69 ids, (1, 20, 80) 86, and
+  every shared id spells the same name — ids were only added.
+  One map answers both eras' records; no era split, unlike
+  D25's flat blocks.
+- The reference's own fallback for an id its table does not
+  hold is `minecraft:plains` with a warning — mcme's fallback
+  since D19, so the fabricated column 194 compares clean
+  through the mirror.
+
+### Cross-check
+
+- 5 suites PASS under `./rebuild.sh test` (the new
+  `test_biome_record_2d` pins the broadcast mapping, the signed
+  heightmap half and both refusal sizes); battery 11/11 rc=0,
+  ref_convert reporting 14 checks — the report counts land
+  exactly where the design predicted (`biomes_carried` 443,
+  `skipped.biomes` 2375, `skipped.heightmaps` 7, the end's map
+  and cells carried), the biome parity counting 448 cells where
+  it counted 384, and the heightmap check pinning the third map
+  under MOTION_BLOCKING.
+- The census snapshot is gone — stale /tmp cleanup took
+  /tmp/opencode/census_world and no source Bedrock world is
+  left on disk — so D26 is fixture-verified by the user's own
+  call; the drop's claims rest on the fabricated records and
+  the reference's own decode, and a restored world can re-run
+  the real-store check this entry could not.
+
 ## 2026-10-16 — The pre-palette carry: two planes, two eras, 128 delta rows
 
 ### Built
