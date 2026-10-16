@@ -1153,3 +1153,158 @@ its directory, floor and height together.
 somewhere else, or the game grows a fourth whose layout is measured —
 the fixed three become one more row in the table, and the pin
 follows the directory, the floor and the height together.
+
+## D22 — Convert carries the block entities D15 left: every family the reference answers for
+
+**What crosses.** D15 stopped at the containers: ten ids whose Java
+spelling mcme knew, whose documents were inventory plus three field
+names. Everything else dropped and counted by default — not because
+the mapping said no, but because mcme had not asked. D22 asks, family
+by family, each answer measured through the reference on the real
+store: Java's identifier from PyMCTranslate's own specification
+(`nbt_identifier`), the fields from the reference's bedrock→java
+translation of every document the store holds. The table now has
+twenty-one ids, and what travels beside id and x/y/z is each family's
+own Java spelling:
+
+- *the shulker box* joins the containers — D15's fields unchanged;
+- *the brewing stand*: Items, CustomName, Lock, and its progress
+  under Java's `BrewTime` — the game spells the same clock
+  `CookTime`, the furnace's name for a different question — with
+  `FuelAmount` as `Fuel`; `FuelTotal` is the game's bookkeeping of
+  what a fill started with and stays;
+- *the mob spawner*: the seven ranges under names both editions
+  spell alike (`Delay`, `MaxNearbyEntities`, `MaxSpawnDelay`,
+  `MinSpawnDelay`, `RequiredPlayerRange`, `SpawnCount`,
+  `SpawnRange` — identical on every spawner the store holds), and
+  one `SpawnData{id}` whose id is the document's
+  `EntityIdentifier`; `SpawnPotentials` is Java's own default and
+  the display fields describe a rendering Java computes itself;
+- *signs, plain and hanging*: `FrontText`/`BackText` → `front_text`
+  and `back_text` — the text split into Java's four messages, each
+  its JSON string, the trailing newline ending the last line rather
+  than opening an empty one, fewer than four lines padded the way
+  Java's own translator pads a missing line (`\"\"`), `color: black`
+  and `has_glowing_text: 0` beside them, and `is_waxed`. The black
+  is measured, not chosen: the int the game stores for the color
+  takes no path through the universal format the Java mapping
+  reads, so every sign's answer — the reference's and now mcme's —
+  is black. A document from before the two-sided format (a
+  top-level `Text`) carries with both sides empty: that text has no
+  measured Java spelling, and an unmapped field drops like any
+  other;
+- *the comparator's* `OutputSignal`; *the beacon's* `primary` and
+  `secondary` as `Primary`/`Secondary` — the pair where both names
+  are visibly the same word — with Java's own values filling the
+  rest;
+- *the end gateway*: `Age`, and `ExitPortal`'s three coordinates as
+  Java's `X`/`Y`/`Z` compound — the position check the game has
+  already made (`EndGatewayBadPosChecked`) is not the portal;
+- *the campfire*: `ItemTime1..4` → `CookingTimes`, Java's int array
+  of four (every campfire in the store spells all four); the cook
+  totals and the items have no counterpart and Java's defaults say
+  what the absent fields said;
+- *the jukebox's* `RecordItem` through the stack rule without a
+  `Slot` — a record stands alone, and it is the one stack in the
+  store written that way;
+- *the chiseled bookshelf*: `Items`, and `LastInteractedSlot` as
+  `last_interacted_slot`;
+- *the empty tier* — sculk sensor, catalyst and shrieker, lectern,
+  skull, bell, enchanting table, daylight detector, end portal —
+  id and coordinates alone: measured per type, this world's
+  documents hold nothing Java's block entity spells (the skull's
+  rotation and type, the bell's ring state, the listener's
+  selector all stay behind, as do the books and souls the store
+  never held).
+
+D15's two gates stand unchanged: x/y/z must name a block, and a
+document the world has not filled — one carrying a `LootTable` —
+drops entirely.
+
+**The count keeps the rest, by name.** The store's census over
+every remaining document: `Bed` 914 and `Banner` 247 — the pair
+whose color lives in the document while the name lives in the
+block, so carrying either alone would write a colorless bed or a
+one-color banner; the block-side drop that pairs with them is a
+decision of its own. `PistonArm` 2,440, `SporeBlossom` 2,028,
+`Cauldron` 567, `FlowerPot` 256, `Music` 20, `Lodestone` 1 — Java
+has no block entity for these; the mapping is the block's.
+`ItemFrame` 43 and `Beehive` 129 — documents of entities, D23's
+half of the store. `BrushableBlock` 748 and `DecoratedPot` 1,074
+with a LootTable, 24 more decorated pots with no measured Java
+spelling for their fields. `Vault` 466, `TrialSpawner` 408,
+`Crafter` 5, `CopperGolemStatue` 2, `PotentSulfurBlock` 57,
+`CreakingHeart` 67 — blocks Java 1.20 does not know.
+
+**Counts (D12).** No new report fields; three counts move. The real
+store, release, rc=0, 1m57s twice with byte-identical output trees:
+`block_entities_carried` 4,194 → 11,261 (+7,067 — 4,376 empty-tier,
+1,711 spawners, 263 campfires, 262 signs, 231 comparators, 102
+shulker boxes, 98 brewing stands, 16 gateways, 4 jukeboxes, 3
+bookshelves, 1 beacon), `skipped.block_entities` 21,214 → 14,147,
+`skipped.items` 896 → 964 (the 68 new drops are stacks inside
+newly carried families — stored content and enchantments the stack
+rule will not half-write). Every other field is unmoved — chunks
+46,291, subchunks 392,032, blocks 1,605,763,072, ticks 107,855,
+biomes 24,977,632, heightmaps 46,290 — because D22 changes no key
+and no chunk. The prediction was made before the run and matched
+all three numbers exactly, through a model that first reproduces
+D21's four pins to the document: 25,408 counted (4,194 + 21,214),
+items 896 — including the store's 17 records mcme's whole-record
+read refuses, their 169 documents counted as 17 (never half-read),
+and the documents in chunks that never convert, which count as
+dropped whatever their id says: no Java chunk means no Java list.
+
+**Pinned.** The selftest fabricates fourteen family documents
+through the game's own spelling — shulker box, brewing stand,
+spawner, a modern two-sided sign, comparator, beacon, gateway,
+campfire, jukebox, bookshelf, lectern, skull, sculk sensor,
+hanging sign — beside four with no Java counterpart (bed, banner,
+piston arm, vault): 20 carried, 6 counted, list length 20, `items`
+still 1. The modern sign's front text holds a real newline that
+SNBT's two escapes cannot spell, so the string is set after the
+parse; its pin is the split — two lines, no third, three pads on
+the hanging sign's one. The old-format sign sits at list index 2
+now, both sides four escaped-empty messages, no `is_waxed`.
+ref_convert grows its own mirror to match: CARRY_IDS 10 → 21 ids
+with kinds, `want_java_doc` spelling each family's fields, `plain`
+learning that an int array compares as the list it holds (the
+campfire's `CookingTimes`); the store check fabricates a sign,
+spawner, campfire, gateway, lectern, jukebox and a counted bed
+beside the container (report 1 → 7 carried, 1 → 2 counted), the
+entities fixture's old-format sign carries (4 carried, 1 counted),
+12 checks — the count unchanged, the questions doubled.
+
+**Rejected.**
+- *Carrying bed and banner as documents*: the color is in the
+  document, the name is in the block — carrying either alone
+  writes a colorless bed or a banner of one color, and Java's
+  block entity holds neither. The pair waits for the block-side
+  drop that carries them together; until then both count, with
+  their tables measured and waiting.
+- *Writing `SpawnPotentials`*: the reference answers this store's
+  every spawner with `SpawnData` alone; a potentials list would be
+  a default mcme invented where Java already has one.
+- *Translating the sign's color int into a hue*: no path through
+  the universal format exists — the measured answer is black for
+  every sign, and a hue table would be a guess the reference does
+  not make.
+- *Feeding the old top-level `Text` into a side*: no measured
+  Java spelling exists for it; the text drops as an unmapped field
+  and the document still carries its position.
+- *Relaxing the LootTable refusal for the new families*: the rule
+  is the mapping's, not the family's — brushable blocks and
+  decorated pots are the holders the store proves, and a half-
+  filled shulker would be the same unmapped items.
+
+**Cost accepted.** Every carried sign writes four messages and two
+sides even where the world held one line, and the color a player
+set does not cross — black is the honest answer until a universal
+path exists. 4,376 empty-tier documents now write entries Java
+reads as data-less markers: position over nothing, which is what
+this world's documents hold.
+
+**Reverses if:** a load test shows Java reading any family's
+fields differently, the game gives the empty-tier types fields
+both editions spell, or the reference grows a path for the sign's
+color — the table changes shape, and the pins follow the fields.

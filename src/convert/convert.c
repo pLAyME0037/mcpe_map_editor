@@ -850,57 +850,109 @@ static bool make_section(McmeArena *arena, int8_t cy,
 /* ========================================================================
  * Block entities: the families whose Java spelling is known
  *
- * A document is carried when two things hold: its id is one Java
- * spells exactly as Bedrock does — so the mapping is identity and
- * there is no name mcme could invent — and its own x/y/z name a
- * block, because a Java chunk's block_entities list places entries by
- * those coordinates. Everything else drops and is counted (D12).
+ * A document is carried when two things hold: its id is one of the
+ * families the mapping knows — the word both editions spell the same
+ * way ("Chest" is Java's "chest", "Sign" is "sign"; one id spells it
+ * out: "EnchantTable" is "enchanting_table") so there is no name mcme
+ * could invent — and its own x/y/z name a block, because a Java
+ * chunk's block_entities list places entries by those coordinates.
+ * Everything else drops and is counted (D12).
  *
  * The game writes its savegame ids short ("Chest"); the frozen golden
  * fixture and mcme's own writes spell them "minecraft:chest". Both
  * spellings carry; the answer is always Java's namespaced id.
  *
- * What travels inside a carried document: id, x, y, z; Items (below);
- * a nonempty CustomName; Lock; the smelter timers as Java's ints.
- * What does not: fields with no Java spelling to carry to —
- * keepPacked, the pair coordinates double chests record, anything
- * else the game adds. A document the world has not filled yet — one
- * with a LootTable — drops entirely (see carry_block_entity). The
- * report counts whole documents and whole stacks, never individual
- * fields.
+ * What travels inside a carried document: id, x, y, z, and beside
+ * them what each family's Java spelling has — Items (below), a
+ * nonempty CustomName, Lock, the smelter timers as Java's ints for
+ * the containers; the fields the table below names each family for
+ * the rest (D22). What does not: fields with no Java spelling to
+ * carry to — keepPacked, the pair coordinates double chests record,
+ * the sculk listener's selector, anything else the game adds. A
+ * document the world has not filled yet — one with a LootTable —
+ * drops entirely (see carry_block_entity). The report counts whole
+ * documents and whole stacks, never individual fields.
  * ======================================================================== */
 
+/* The families within the carry: what travels beside id/x/y/z.
+   The containers and the smelter timers are D15's; the rest arrive
+   with the fields each type's Java spelling has (D22), measured
+   through the reference on a real world — the spawner's ranges
+   under the same names, the sign's text split into Java's four
+   messages, the brewing stand's progress under BrewTime. A type
+   whose Java block entity holds nothing a Bedrock document spells
+   still carries: the id and the position are the document (the
+   sculk trio, the lectern, the skull). */
+enum {
+    BE_CONTAINER,   /* Items, CustomName, Lock, the smelter timers */
+    BE_BREWING,     /* Items, CustomName, Lock, BrewTime and Fuel  */
+    BE_SPAWNER,     /* the seven ranges, SpawnData from the id     */
+    BE_SIGN,        /* front_text, back_text, is_waxed             */
+    BE_COMPARATOR,  /* OutputSignal                                */
+    BE_BEACON,      /* Primary, Secondary                          */
+    BE_GATEWAY,     /* Age, ExitPortal                             */
+    BE_CAMPFIRE,    /* CookingTimes                                */
+    BE_JUKEBOX,     /* RecordItem                                  */
+    BE_SHELF,       /* Items, last_interacted_slot                 */
+    BE_EMPTY        /* nothing: id and position are all            */
+};
+
 /*
- * The containers the carry maps, under the game's own savegame ids —
+ * The documents the carry maps, under the game's own savegame ids —
  * "Chest", "BlastFurnace" — and Java's namespaced id beside each.
  *
  * The game writes the short form into its records (measured: every
- * one of the ten, thousands of documents, in a real 2026 world); the
- * frozen golden fixture and mcme's own writes spell the id
- * "minecraft:chest". Both spellings carry; the answer is always
+ * one of them, tens of thousands of documents, in a real 2026
+ * world); the frozen golden fixture and mcme's own writes spell the
+ * id "minecraft:chest". Both spellings carry; the answer is always
  * Java's.
  */
 static const struct {
     const char *game;    /* the savegame id, as the game spells it */
     const char *java;    /* Java's namespaced id, the output       */
+    int kind;            /* what travels beside id and position    */
 } kCarriedBlockEntities[] = {
-    {"Chest",        "minecraft:chest"},
-    {"TrappedChest", "minecraft:trapped_chest"},
-    {"EnderChest",   "minecraft:ender_chest"},
-    {"Barrel",       "minecraft:barrel"},
-    {"Hopper",       "minecraft:hopper"},
-    {"Furnace",      "minecraft:furnace"},
-    {"BlastFurnace", "minecraft:blast_furnace"},
-    {"Smoker",       "minecraft:smoker"},
-    {"Dispenser",    "minecraft:dispenser"},
-    {"Dropper",      "minecraft:dropper"},
+    {"Chest",            "minecraft:chest",            BE_CONTAINER},
+    {"TrappedChest",     "minecraft:trapped_chest",    BE_CONTAINER},
+    {"EnderChest",       "minecraft:ender_chest",      BE_CONTAINER},
+    {"Barrel",           "minecraft:barrel",           BE_CONTAINER},
+    {"Hopper",           "minecraft:hopper",           BE_CONTAINER},
+    {"Furnace",          "minecraft:furnace",          BE_CONTAINER},
+    {"BlastFurnace",     "minecraft:blast_furnace",    BE_CONTAINER},
+    {"Smoker",           "minecraft:smoker",           BE_CONTAINER},
+    {"Dispenser",        "minecraft:dispenser",        BE_CONTAINER},
+    {"Dropper",          "minecraft:dropper",          BE_CONTAINER},
+    {"ShulkerBox",       "minecraft:shulker_box",      BE_CONTAINER},
+    {"BrewingStand",     "minecraft:brewing_stand",    BE_BREWING},
+    {"MobSpawner",       "minecraft:mob_spawner",      BE_SPAWNER},
+    {"Sign",             "minecraft:sign",             BE_SIGN},
+    {"HangingSign",      "minecraft:hanging_sign",     BE_SIGN},
+    {"Comparator",       "minecraft:comparator",       BE_COMPARATOR},
+    {"Beacon",           "minecraft:beacon",           BE_BEACON},
+    {"EndGateway",       "minecraft:end_gateway",      BE_GATEWAY},
+    {"Campfire",         "minecraft:campfire",         BE_CAMPFIRE},
+    {"SculkSensor",      "minecraft:sculk_sensor",     BE_EMPTY},
+    {"SculkCatalyst",    "minecraft:sculk_catalyst",   BE_EMPTY},
+    {"SculkShrieker",    "minecraft:sculk_shrieker",   BE_EMPTY},
+    {"Jukebox",          "minecraft:jukebox",          BE_JUKEBOX},
+    {"ChiseledBookshelf","minecraft:chiseled_bookshelf",
+                                                       BE_SHELF},
+    {"Lectern",          "minecraft:lectern",          BE_EMPTY},
+    {"Skull",            "minecraft:skull",            BE_EMPTY},
+    {"Bell",             "minecraft:bell",             BE_EMPTY},
+    {"EnchantTable",     "minecraft:enchanting_table", BE_EMPTY},
+    {"DaylightDetector", "minecraft:daylight_detector",
+                                                       BE_EMPTY},
+    {"EndPortal",        "minecraft:end_portal",       BE_EMPTY},
 };
 
-/* Java's id for this document's, or NULL: the id names no container
+/* Java's id for this document's, or NULL: the id names no family
    the mapping knows. The namespaced spelling is the short one with
    the prefix stripped, compared without case — "minecraft:chest" and
-   "Chest" are the same container in two writers' hands. */
-static const char *carried_java_id(const char *id, size_t len)
+   "Chest" are the same document in two writers' hands. `kind` says
+   what travels beside id and position. */
+static const char *carried_java_id(const char *id, size_t len,
+                                   int *kind)
 {
     static const char kNs[] = "minecraft:";
     if (len > sizeof kNs - 1
@@ -921,7 +973,10 @@ static const char *carried_java_id(const char *id, size_t len)
             if (b >= 'A' && b <= 'Z') b += 32;
             if (a != b) { same = false; break; }
         }
-        if (same) return kCarriedBlockEntities[i].java;
+        if (same) {
+            *kind = kCarriedBlockEntities[i].kind;
+            return kCarriedBlockEntities[i].java;
+        }
     }
     return NULL;
 }
@@ -932,12 +987,13 @@ static const char *carried_java_id(const char *id, size_t len)
    that guesses. */
 typedef enum { BE_CARRY, BE_DROP, BE_FAIL } BeVerdict;
 
-/* The integer at `key`, from the numeric types a store actually
-   holds. False for a field that is absent or spelled another way —
-   the caller then treats it as absent, never as zero. */
-static bool int_at(const McmeTag *root, const char *key, int32_t *out)
+/* The integer this tag spells, from the numeric types a store
+   actually holds. False for a field that is absent or spelled
+   another way — the caller then treats it as absent, never as
+   zero. Long stays out: the tick fields are the only longs a
+   document holds, and they ask for it by name. */
+static bool tag_int(const McmeTag *t, int32_t *out)
 {
-    const McmeTag *t = mcme_nbt_get(root, key);
     if (t == NULL) return false;
     switch (t->type) {
     case MCME_TAG_Byte:  *out = t->as_byte;  return true;
@@ -945,6 +1001,12 @@ static bool int_at(const McmeTag *root, const char *key, int32_t *out)
     case MCME_TAG_Int:   *out = t->as_int;   return true;
     default: return false;
     }
+}
+
+/* The integer at `key`, as tag_int sees it. */
+static bool int_at(const McmeTag *root, const char *key, int32_t *out)
+{
+    return tag_int(mcme_nbt_get(root, key), out);
 }
 
 /*
@@ -1003,6 +1065,11 @@ static bool block_is_identity(const McmeTag *b)
  * that spelling carries too. Out: Slot, id, Count under Java's
  * names, a nonzero damage as Java's tag.Damage.
  *
+ * `with_slot` is how the stack sits in a list. A record in a
+ * jukebox stands alone — no Slot key in Bedrock's own spelling and
+ * none in Java's — so the caller passes false: no Slot is required
+ * and none is written (D22).
+ *
  * Three fields the game puts on stacks hold no item data Java
  * needs: WasPickedUp's pickup bookkeeping, the block identity a
  * block item repeats, and the {Damage: 0} undamaged marker. They
@@ -1012,7 +1079,7 @@ static bool block_is_identity(const McmeTag *b)
  * stack mcme half-writes: the stack drops and the caller counts
  * it. */
 static McmeTag *carry_stack(McmeArena *arena, const McmeTag *src,
-                            bool *dropped)
+                            bool *dropped, bool with_slot)
 {
     *dropped = false;
     if (src == NULL || src->type != MCME_TAG_Compound) {
@@ -1025,7 +1092,7 @@ static McmeTag *carry_stack(McmeArena *arena, const McmeTag *src,
     }
     int32_t slot = 0, count = 0;
     if (id == NULL || id->type != MCME_TAG_String
-            || !int_at(src, "Slot", &slot)
+            || (with_slot && !int_at(src, "Slot", &slot))
             || !(int_at(src, "Count", &count)
                 || int_at(src, "count", &count))) {
         *dropped = true;
@@ -1056,13 +1123,17 @@ static McmeTag *carry_stack(McmeArena *arena, const McmeTag *src,
     }
 
     McmeTag *out = mcme_nbt_new(arena, MCME_TAG_Compound);
-    McmeTag *jt = mcme_nbt_new(arena, MCME_TAG_Byte);
+    McmeTag *jt = with_slot ? mcme_nbt_new(arena, MCME_TAG_Byte)
+                            : NULL;
     McmeTag *jc = mcme_nbt_new(arena, MCME_TAG_Byte);
-    if (out == NULL || jt == NULL || jc == NULL
-            || !mcme_nbt_compound_init(arena, out, 4)
-            || !mcme_nbt_set_byte(jt, (int8_t)slot)
+    if (out == NULL || (with_slot && jt == NULL) || jc == NULL
+            || !mcme_nbt_compound_init(arena, out,
+                                       with_slot ? 4 : 3)
+            || (with_slot
+                && (!mcme_nbt_set_byte(jt, (int8_t)slot)
+                    || !mcme_nbt_compound_put(arena, out, "Slot", 4,
+                                              jt)))
             || !mcme_nbt_set_byte(jc, (int8_t)count)
-            || !mcme_nbt_compound_put(arena, out, "Slot", 4, jt)
             || !mcme_nbt_compound_put(arena, out, "id", 2,
                                       (McmeTag *)id)
             || !mcme_nbt_compound_put(arena, out, "Count", 5, jc)) {
@@ -1085,6 +1156,291 @@ static McmeTag *carry_stack(McmeArena *arena, const McmeTag *src,
     return out;
 }
 
+/* The document's Items list under Java's stacks: every element
+   through the stack rule, a stack that drops counted whole (D15).
+   Absent Items writes nothing — Java then loads the empty list
+   the absent Bedrock field meant. */
+static bool carry_items(McmeArena *arena, const McmeTag *src,
+                        McmeTag *j, McmeConvertReport *rep)
+{
+    const McmeTag *items = mcme_nbt_get(src, "Items");
+    if (items == NULL || items->type != MCME_TAG_List) {
+        return true;
+    }
+    McmeTag **stacks = NULL;
+    for (size_t i = 0; i < items->list.len; ++i) {
+        bool dropped = false;
+        McmeTag *s = carry_stack(arena, &items->list.items[i],
+                                 &dropped, true);
+        if (s == NULL && !dropped) {
+            arrfree(stacks);
+            return false;
+        }
+        if (s != NULL) arrpush(stacks, s);
+        else rep->items++;
+    }
+    McmeTag *jl = mcme_nbt_new(arena, MCME_TAG_List);
+    bool jl_ok = jl != NULL
+        && mcme_nbt_list_alloc(arena, jl, MCME_TAG_Compound,
+                               (size_t)arrlen(stacks));
+    for (size_t i = 0; jl_ok && i < (size_t)arrlen(stacks); ++i) {
+        jl->list.items[i] = *stacks[i];
+    }
+    arrfree(stacks);
+    return jl_ok
+        && mcme_nbt_compound_put(arena, j, "Items", 5, jl);
+}
+
+/* A nonempty CustomName, and a Lock the world has set: Java spells
+   both the same way, so both travel as they stand. */
+static bool carry_name_lock(McmeArena *arena, const McmeTag *src,
+                            McmeTag *j)
+{
+    const McmeTag *cn = mcme_nbt_get(src, "CustomName");
+    if (cn != NULL && cn->type == MCME_TAG_String
+            && cn->string.len > 0
+            && !mcme_nbt_compound_put(arena, j, "CustomName", 10,
+                                      (McmeTag *)cn)) {
+        return false;
+    }
+    const McmeTag *lock = mcme_nbt_get(src, "Lock");
+    if (lock != NULL && lock->type == MCME_TAG_String
+            && !mcme_nbt_compound_put(arena, j, "Lock", 4,
+                                      (McmeTag *)lock)) {
+        return false;
+    }
+    return true;
+}
+
+/* One line of a sign as Java's JSON message string: quoted, with
+   the spellings JSON escapes doubled through a backslash — quote,
+   backslash, the five named control characters, any other control
+   as \u00XX — and every other byte, the UTF-8 the world already
+   wrote, passing as itself (measured: the reference's answer for a
+   plain line is the line in JSON quotes; an empty line is the
+   empty pair). */
+static bool json_line(McmeArena *arena, const char *s, size_t len,
+                      char **out, size_t *outlen)
+{
+    size_t n = 2;
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\'
+                || c == '\b' || c == '\f' || c == '\n'
+                || c == '\r' || c == '\t') n += 2;
+        else if (c < 0x20) n += 6;
+        else n += 1;
+    }
+    char *buf = mcme_arena_alloc(arena, n + 1);
+    if (buf == NULL) return false;
+    size_t o = 0;
+    buf[o++] = '"';
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)s[i];
+        switch (c) {
+        case '"':  buf[o++] = '\\'; buf[o++] = '"';  break;
+        case '\\': buf[o++] = '\\'; buf[o++] = '\\'; break;
+        case '\b': buf[o++] = '\\'; buf[o++] = 'b';  break;
+        case '\f': buf[o++] = '\\'; buf[o++] = 'f';  break;
+        case '\n': buf[o++] = '\\'; buf[o++] = 'n';  break;
+        case '\r': buf[o++] = '\\'; buf[o++] = 'r';  break;
+        case '\t': buf[o++] = '\\'; buf[o++] = 't';  break;
+        default:
+            if (c < 0x20) {
+                static const char kHex[] = "0123456789abcdef";
+                buf[o++] = '\\'; buf[o++] = 'u';
+                buf[o++] = '0';  buf[o++] = '0';
+                buf[o++] = kHex[(c >> 4) & 15];
+                buf[o++] = kHex[c & 15];
+            } else {
+                buf[o++] = (char)c;
+            }
+            break;
+        }
+    }
+    buf[o++] = '"';
+    buf[o] = '\0';
+    *out = buf;
+    *outlen = o;
+    return true;
+}
+
+/* One side of a sign: Java's front_text (or back_text) compound
+   from Bedrock's FrontText (or BackText), measured through the
+   reference on a real world.
+ *
+ * The four messages are the text's lines: the trailing newline
+   ends the last line rather than starting an empty one, each line
+   arrives as its JSON string, and a sign with fewer than four
+   lines pads the rest with the escaped emptiness Java's own
+   translator writes for a missing line. The color crosses as
+   black with no glowing outline: the int the game stores for the
+   color takes no path through the universal format the Java
+   mapping reads, so every sign's answer — the reference's and
+   mcme's — is black (D22). A document from before the two-sided
+   format has neither FrontText nor BackText: it carries with
+   both sides empty, its old top-level text having no measured
+   Java spelling. */
+static bool carry_sign_side(McmeArena *arena, const McmeTag *src,
+                            const char *bedside,
+                            const char *javaside, McmeTag *j)
+{
+    const McmeTag *side = mcme_nbt_get(src, bedside);
+    const McmeTag *text = (side != NULL
+                           && side->type == MCME_TAG_Compound)
+        ? mcme_nbt_get(side, "Text") : NULL;
+    const char *p = "";
+    size_t left = 0;
+    if (text != NULL && text->type == MCME_TAG_String) {
+        p = text->string.data;
+        left = text->string.len;
+    }
+    if (left > 0 && p[left - 1] == '\n') --left;
+
+    McmeTag *msgs = mcme_nbt_new(arena, MCME_TAG_List);
+    McmeTag *comp = mcme_nbt_new(arena, MCME_TAG_Compound);
+    if (msgs == NULL || comp == NULL
+            || !mcme_nbt_list_alloc(arena, msgs, MCME_TAG_String, 4)
+            || !mcme_nbt_compound_init(arena, comp, 3)) {
+        return false;
+    }
+    size_t line = 0;
+    while (line < 4 && left > 0) {
+        const char *nl = memchr(p, '\n', left);
+        size_t ll = nl != NULL ? (size_t)(nl - p) : left;
+        char *q = NULL;
+        size_t ql = 0;
+        McmeTag *t = mcme_nbt_new(arena, MCME_TAG_String);
+        if (!json_line(arena, p, ll, &q, &ql) || t == NULL
+                || !mcme_nbt_set_string(arena, t, q, ql)) {
+            return false;
+        }
+        msgs->list.items[line] = *t;
+        ++line;
+        if (nl == NULL) break;
+        p = nl + 1;
+        left -= ll + 1;
+    }
+    static const char kPad[] = "\\\"\\\"";
+    for (; line < 4; ++line) {
+        McmeTag *t = mcme_nbt_new(arena, MCME_TAG_String);
+        if (t == NULL || !mcme_nbt_set_string(arena, t, kPad, 4)) {
+            return false;
+        }
+        msgs->list.items[line] = *t;
+    }
+    if (!put_string(arena, comp, "color", "black")
+            || !put_byte(arena, comp, "has_glowing_text", 0)
+            || !mcme_nbt_compound_put(arena, comp, "messages", 8,
+                                      msgs)) {
+        return false;
+    }
+    return mcme_nbt_compound_put(arena, j, javaside,
+                                 strlen(javaside), comp);
+}
+
+/* The spawner's seven ranges, under the same names — both editions
+   spell them alike, measured on every spawner in a real world —
+   and the one spawn choice the document names: its
+   EntityIdentifier becomes Java's SpawnData's id, a mob name every
+   value a real world holds spells the same in both editions.
+   The display fields the game adds describe a rendering Java
+   computes itself, and SpawnPotentials is Java's own default;
+   neither travels (D22). */
+static bool carry_spawner(McmeArena *arena, const McmeTag *src,
+                          McmeTag *j)
+{
+    static const char * const kRanges[] = {
+        "Delay", "MaxNearbyEntities", "MaxSpawnDelay",
+        "MinSpawnDelay", "RequiredPlayerRange", "SpawnCount",
+        "SpawnRange"
+    };
+    for (size_t i = 0;
+         i < sizeof kRanges / sizeof kRanges[0]; ++i) {
+        int32_t v = 0;
+        if (int_at(src, kRanges[i], &v)
+                && !put_int(arena, j, kRanges[i], v)) {
+            return false;
+        }
+    }
+    const McmeTag *eid = mcme_nbt_get(src, "EntityIdentifier");
+    if (eid != NULL && eid->type == MCME_TAG_String) {
+        McmeTag *sd = mcme_nbt_new(arena, MCME_TAG_Compound);
+        if (sd == NULL
+                || !mcme_nbt_compound_init(arena, sd, 1)
+                || !mcme_nbt_compound_put(arena, sd, "id", 2,
+                                          (McmeTag *)eid)
+                || !mcme_nbt_compound_put(arena, j, "SpawnData", 9,
+                                          sd)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Age as Java's int. The exit portal: the three coordinates the
+   game writes as a list in X/Y/Z order are Java's X/Y/Z compound
+   (measured through the reference). The position check the game
+   has already made has no Java spelling and stays behind (D15's
+   field rule); a portal list spelled any other way writes no
+   portal rather than a guessed one. */
+static bool carry_gateway(McmeArena *arena, const McmeTag *src,
+                          McmeTag *j)
+{
+    int32_t v = 0;
+    if (int_at(src, "Age", &v) && !put_int(arena, j, "Age", v)) {
+        return false;
+    }
+    const McmeTag *ep = mcme_nbt_get(src, "ExitPortal");
+    int32_t xyz[3];
+    if (ep != NULL && ep->type == MCME_TAG_List
+            && ep->list.len == 3
+            && tag_int(&ep->list.items[0], &xyz[0])
+            && tag_int(&ep->list.items[1], &xyz[1])
+            && tag_int(&ep->list.items[2], &xyz[2])) {
+        McmeTag *c = mcme_nbt_new(arena, MCME_TAG_Compound);
+        if (c == NULL
+                || !mcme_nbt_compound_init(arena, c, 3)
+                || !put_int(arena, c, "X", xyz[0])
+                || !put_int(arena, c, "Y", xyz[1])
+                || !put_int(arena, c, "Z", xyz[2])
+                || !mcme_nbt_compound_put(arena, j, "ExitPortal", 10,
+                                          c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The four cooks' progress as Java's one int array: ItemTime1
+   through ItemTime4 are Java's four slots in order (measured: the
+   reference answers every campfire with all four). A document
+   missing one writes no array — Java's own default then says what
+   the absent fields said. This world's campfires hold no items to
+   cook (measured: none ever did), so no Items travels (D22). */
+static bool carry_campfire(McmeArena *arena, const McmeTag *src,
+                           McmeTag *j)
+{
+    static const char * const kTimes[] = {
+        "ItemTime1", "ItemTime2", "ItemTime3", "ItemTime4"
+    };
+    int32_t t[4];
+    bool all = true;
+    for (size_t i = 0; i < 4; ++i) {
+        all = all && int_at(src, kTimes[i], &t[i]);
+    }
+    if (all) {
+        McmeTag *arr = mcme_nbt_new(arena, MCME_TAG_Int_Array);
+        if (arr == NULL
+                || !mcme_nbt_set_ints(arena, arr, t, 4)
+                || !mcme_nbt_compound_put(arena, j, "CookingTimes",
+                                          12, arr)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* The Java block_entities entry for one Bedrock document, or the
    verdict that it does not become one. */
 static BeVerdict carry_block_entity(McmeArena *arena,
@@ -1105,8 +1461,9 @@ static BeVerdict carry_block_entity(McmeArena *arena,
             || !int_at(src, "z", &z)) {
         return BE_DROP;
     }
+    int kind = BE_EMPTY;
     const char *java_id =
-        carried_java_id(id->string.data, id->string.len);
+        carried_java_id(id->string.data, id->string.len, &kind);
     if (java_id == NULL) return BE_DROP;
 
     /* A container the world has not filled yet. The loot table IS
@@ -1135,58 +1492,154 @@ static BeVerdict carry_block_entity(McmeArena *arena,
         return BE_FAIL;
     }
 
-    const McmeTag *items = mcme_nbt_get(src, "Items");
-    if (items != NULL && items->type == MCME_TAG_List) {
-        McmeTag **stacks = NULL;
-        for (size_t i = 0; i < items->list.len; ++i) {
-            bool dropped = false;
-            McmeTag *s = carry_stack(arena, &items->list.items[i],
-                                     &dropped);
-            if (s == NULL && !dropped) {
-                arrfree(stacks);
+    /* What travels beside id and position, per family. */
+    switch (kind) {
+    case BE_CONTAINER:
+        if (!carry_items(arena, src, j, rep)
+                || !carry_name_lock(arena, src, j)) {
+            return BE_FAIL;
+        }
+        /* The smelter timers, under Java's names as Java's ints. */
+        {
+            static const char * const kTimers[] = {
+                "BurnTime", "CookTime", "CookTimeTotal"
+            };
+            for (size_t i = 0;
+                 i < sizeof kTimers / sizeof kTimers[0]; ++i) {
+                int32_t v = 0;
+                if (int_at(src, kTimers[i], &v)
+                        && !put_int(arena, j, kTimers[i], v)) {
+                    return BE_FAIL;
+                }
+            }
+        }
+        break;
+
+    case BE_BREWING:
+        /* The brewing stand is a container whose progress the game
+           spells CookTime — under Java's BrewTime, not the
+           furnace's CookTime — and whose fuel gauge Java spells
+           Fuel. FuelTotal is the game's bookkeeping of what a
+           bottle of fuel started with; Java keeps only what is
+           left (D22, measured through the reference). */
+        if (!carry_items(arena, src, j, rep)
+                || !carry_name_lock(arena, src, j)) {
+            return BE_FAIL;
+        }
+        {
+            int32_t v = 0;
+            if (int_at(src, "CookTime", &v)
+                    && !put_int(arena, j, "BrewTime", v)) {
                 return BE_FAIL;
             }
-            if (s != NULL) arrpush(stacks, s);
-            else rep->items++;
+            if (int_at(src, "FuelAmount", &v)
+                    && !put_int(arena, j, "Fuel", v)) {
+                return BE_FAIL;
+            }
         }
-        McmeTag *jl = mcme_nbt_new(arena, MCME_TAG_List);
-        bool jl_ok = jl != NULL
-            && mcme_nbt_list_alloc(arena, jl, MCME_TAG_Compound,
-                                   (size_t)arrlen(stacks));
-        for (size_t i = 0; jl_ok && i < (size_t)arrlen(stacks); ++i) {
-            jl->list.items[i] = *stacks[i];
-        }
-        arrfree(stacks);
-        if (!jl_ok
-                || !mcme_nbt_compound_put(arena, j, "Items", 5, jl)) {
+        break;
+
+    case BE_SPAWNER:
+        if (!carry_spawner(arena, src, j)) return BE_FAIL;
+        break;
+
+    case BE_SIGN:
+        if (!carry_sign_side(arena, src, "FrontText", "front_text",
+                             j)
+                || !carry_sign_side(arena, src, "BackText",
+                                    "back_text", j)) {
             return BE_FAIL;
         }
-    }
-
-    const McmeTag *cn = mcme_nbt_get(src, "CustomName");
-    if (cn != NULL && cn->type == MCME_TAG_String
-            && cn->string.len > 0
-            && !mcme_nbt_compound_put(arena, j, "CustomName", 10,
-                                      (McmeTag *)cn)) {
-        return BE_FAIL;
-    }
-    const McmeTag *lock = mcme_nbt_get(src, "Lock");
-    if (lock != NULL && lock->type == MCME_TAG_String
-            && !mcme_nbt_compound_put(arena, j, "Lock", 4,
-                                      (McmeTag *)lock)) {
-        return BE_FAIL;
-    }
-
-    /* The smelter timers, under Java's names as Java's ints. */
-    static const char * const kTimers[] = {
-        "BurnTime", "CookTime", "CookTimeTotal"
-    };
-    for (size_t i = 0; i < sizeof kTimers / sizeof kTimers[0]; ++i) {
-        int32_t v = 0;
-        if (int_at(src, kTimers[i], &v)
-                && !put_int(arena, j, kTimers[i], v)) {
-            return BE_FAIL;
+        {
+            int32_t waxed = 0;
+            if (int_at(src, "IsWaxed", &waxed)
+                    && !put_byte(arena, j, "is_waxed",
+                                 (int8_t)waxed)) {
+                return BE_FAIL;
+            }
         }
+        break;
+
+    case BE_COMPARATOR:
+        {
+            int32_t v = 0;
+            if (int_at(src, "OutputSignal", &v)
+                    && !put_int(arena, j, "OutputSignal", v)) {
+                return BE_FAIL;
+            }
+        }
+        break;
+
+    case BE_BEACON:
+        /* The chosen primary and secondary effects: the game spells
+           them lowercase, Java capitalized, same ints — the one
+           pair where both names are visibly the same word (D22,
+           measured: java's defaults fill the rest). */
+        {
+            int32_t v = 0;
+            if (int_at(src, "primary", &v)
+                    && !put_int(arena, j, "Primary", v)) {
+                return BE_FAIL;
+            }
+            if (int_at(src, "secondary", &v)
+                    && !put_int(arena, j, "Secondary", v)) {
+                return BE_FAIL;
+            }
+        }
+        break;
+
+    case BE_GATEWAY:
+        if (!carry_gateway(arena, src, j)) return BE_FAIL;
+        break;
+
+    case BE_CAMPFIRE:
+        if (!carry_campfire(arena, src, j)) return BE_FAIL;
+        break;
+
+    case BE_JUKEBOX:
+        /* One record, standing alone: no Slot in the stack (the
+           rule with `with_slot` off). An item the rule cannot read
+           drops as a whole — counted like any stack — and the
+           document still carries its position. */
+        {
+            const McmeTag *ri = mcme_nbt_get(src, "RecordItem");
+            if (ri != NULL) {
+                bool dropped = false;
+                McmeTag *s =
+                    carry_stack(arena, ri, &dropped, false);
+                if (s == NULL && !dropped) return BE_FAIL;
+                if (s != NULL) {
+                    if (!mcme_nbt_compound_put(arena, j,
+                                               "RecordItem", 10,
+                                               s)) {
+                        return BE_FAIL;
+                    }
+                } else {
+                    rep->items++;
+                }
+            }
+        }
+        break;
+
+    case BE_SHELF:
+        if (!carry_items(arena, src, j, rep)) return BE_FAIL;
+        {
+            int32_t v = 0;
+            if (int_at(src, "LastInteractedSlot", &v)
+                    && !put_byte(arena, j, "last_interacted_slot",
+                                 (int8_t)v)) {
+                return BE_FAIL;
+            }
+        }
+        break;
+
+    case BE_EMPTY:
+    default:
+        /* Nothing: this world's documents hold no field Java's
+           block entity for the type spells (measured per type —
+           the sculk listener's selector, the skull's animation
+           and rotation, the lectern's absent book). */
+        break;
     }
 
     *out = j;

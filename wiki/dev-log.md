@@ -9,6 +9,79 @@ Status vocabulary:
 
 ---
 
+## 2026-10-16 — The rest of the block entities: 7,067 documents into Java's lists, 21 ids from 10
+
+### Built
+
+- The carry table grows from the containers to every family the
+  reference answers for (D22), each row carrying a kind:
+  containers keep D15's fields, the shulker box joins them; the
+  brewing stand's clock under `BrewTime` and gauge under `Fuel`;
+  the spawner's seven shared-name ranges and one `SpawnData{id}`
+  from `EntityIdentifier`; both sign sides as four JSON messages
+  split on newlines with the escaped-empty pad, black and no glow
+  beside them, `is_waxed`; the comparator's `OutputSignal`; the
+  beacon's `primary`/`secondary` as `Primary`/`Secondary`; the
+  gateway's `Age` and `ExitPortal` list as an `X`/`Y`/`Z`
+  compound; the campfire's four `ItemTime`s as `CookingTimes`; the
+  jukebox's record through the stack rule without a `Slot`; the
+  bookshelf's `last_interacted_slot`; and the empty tier — sculk
+  trio, lectern, skull, bell, enchanting table, daylight detector,
+  end portal — id and position alone, measured to hold nothing
+  else.
+- `carry_block_entity` grew a per-kind switch over one base
+  compound (id, x, y, z); D15's two gates — coordinates that name
+  a block, no `LootTable` — stand before it unchanged. The stack
+  rule gained its `with_slot` argument, and a `json_line` helper
+  quotes one sign line the way JSON spells it (UTF-8 passes,
+  control characters by name or `\u00XX`).
+- The report struct's comments now name what carries (D15 + D22)
+  and add the LootTable reason the dropped count always counted.
+
+### Measured
+
+- The real store, release: rc=0, 1m57 twice, the two output trees
+  byte-identical (one md5). Three fields move, each predicted
+  before the run and matched exactly: `block_entities_carried`
+  4,194 → **11,261** (+7,067 — 4,376 empty-tier, 1,711 spawners,
+  263 campfires, 262 signs, 231 comparators, 102 shulker boxes, 98
+  brewing stands, 16 gateways, 4 jukeboxes, 3 bookshelves, 1
+  beacon), `skipped.block_entities` 21,214 → **14,147**, and
+  `skipped.items` 896 → **964** (+68 stacks inside the newly
+  carried families). Every other count is unmoved.
+- The predictor reproduces D21's four pins before predicting: all
+  7,071 records read through mcme's own whole-record reader (7,054
+  OK, 17 refusing — their 169 documents counted as 17), the
+  subchunk columns from the scan's own rule, giving 25,408 counted
+  (4,194 + 21,214) and items 896 to the document. The split
+  between carried and dropped then falls out of the rules: only a
+  document in a converting chunk with a readable record can carry
+  — the 7,067 gained are all inside them.
+- The sign's color is the reference's measured answer, not a
+  choice: the game's int takes no path through the universal
+  format, so every sign crosses as black with no glow — mcme
+  mirrors it as constants and says so in D22.
+
+### Method notes
+
+- SNBT's two escapes (`\"` and `\\`) cannot spell a newline, so
+  the modern sign's text is `mcme_nbt_set_string`'d onto the tag
+  after the parse — a fabrication technique the pin needs, not a
+  parser gap.
+- `mcme_nbt_compound_put`'s key length is a claim the path lookup
+  checks: writing `ExitPortal` as 11 (it is 10) failed every
+  gateway pin while the field was there all along. The pins found
+  it; the audit that followed checked every new literal.
+- Predicting document counts needs mcme's own reader, not the
+  oracle's: amulet parses 169 documents mcme's whole-record rule
+  refuses, and each refusal counts once. The probe links the
+  built objects and prints per-record status and counts; the
+  mirror over amulet's parse supplies the ids.
+- Gates: 5 suites PASS under `./rebuild.sh test`, `./nob test` and
+  `./rebuild.sh release test`; battery 11/11 rc=0; ref_convert 12
+  checks (the store check now fabricates seven D22 documents, the
+  entities fixture's sign carries); `tests/` clean.
+
 ## 2026-10-15 — The other dimensions: 9,442 chunks in DIM-1 and DIM1, 105,168 keys out of `other`
 
 ### Built

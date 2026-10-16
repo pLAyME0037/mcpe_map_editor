@@ -144,13 +144,18 @@ WANT_REPORT = {
     "chunks": 5,
     "subchunks": 10,
     "blocks": 36864,
-    "block_entities_carried": 1,   # the nether's own document
+    # the nether's own documents (D22): the container beside the
+    # sign, spawner, campfire, gateway, lectern and jukebox the
+    # check fabricates there
+    "block_entities_carried": 7,
     "ticks_carried": 4,
     "biomes_carried": 383,
     "heightmaps_carried": 2,       # overworld base 100, nether 0
     "skipped": {
         "biomes": 386,
-        "block_entities": 1,       # the nether orphan's document
+        # the nether orphan's document, and the bed whose color
+        # keeps it out of the list (D22's coupling count)
+        "block_entities": 2,
         "chunk_data": 1,           # its dimension's version key
         "entities": 1,             # its dimension's entity list
         "heightmaps": 6,
@@ -173,13 +178,17 @@ WANT_ENTITIES_REPORT = {
     "chunks": 3,
     "subchunks": 3,
     "blocks": 12288,
-    "block_entities_carried": 3,
+    # D22: the fixture's sign carries — its old-format text has no
+    # measured Java spelling, so it arrives with both sides empty
+    # beside the two chests and the furnace
+    "block_entities_carried": 4,
     "ticks_carried": 0,
     "biomes_carried": 0,
     "heightmaps_carried": 0,
     "skipped": {
         "biomes": 0,
-        "block_entities": 2,
+        # the frame (D15) — the sign no longer among them (D22)
+        "block_entities": 1,
         "chunk_data": 0,
         "entities": 0,
         "heightmaps": 3,
@@ -195,19 +204,57 @@ WANT_ENTITIES_REPORT = {
 # ("Chest", "BlastFurnace"; every document in a real world uses it)
 # and the namespaced spelling the frozen fixture holds
 # ("minecraft:chest"). Java's answer is the namespaced id beside
-# each; every other document drops and counts (decisions.md#D15).
+# each, and the family's kind says what travels beside id and
+# position (decisions.md#D15, #D22). Every other document drops and
+# counts.
 CARRY_IDS = {
-    "chest": "minecraft:chest",
-    "trappedchest": "minecraft:trapped_chest",
-    "enderchest": "minecraft:ender_chest",
-    "barrel": "minecraft:barrel",
-    "hopper": "minecraft:hopper",
-    "furnace": "minecraft:furnace",
-    "blastfurnace": "minecraft:blast_furnace",
-    "smoker": "minecraft:smoker",
-    "dispenser": "minecraft:dispenser",
-    "dropper": "minecraft:dropper",
+    # D15: the containers — Items, CustomName, Lock, the smelter
+    # timers
+    "chest": ("minecraft:chest", "container"),
+    "trappedchest": ("minecraft:trapped_chest", "container"),
+    "enderchest": ("minecraft:ender_chest", "container"),
+    "barrel": ("minecraft:barrel", "container"),
+    "hopper": ("minecraft:hopper", "container"),
+    "furnace": ("minecraft:furnace", "container"),
+    "blastfurnace": ("minecraft:blast_furnace", "container"),
+    "smoker": ("minecraft:smoker", "container"),
+    "dispenser": ("minecraft:dispenser", "container"),
+    "dropper": ("minecraft:dropper", "container"),
+    # D22: the non-container families
+    "shulkerbox": ("minecraft:shulker_box", "container"),
+    "brewingstand": ("minecraft:brewing_stand", "brewing"),
+    "mobspawner": ("minecraft:mob_spawner", "spawner"),
+    "sign": ("minecraft:sign", "sign"),
+    "hangingsign": ("minecraft:hanging_sign", "sign"),
+    "comparator": ("minecraft:comparator", "comparator"),
+    "beacon": ("minecraft:beacon", "beacon"),
+    "endgateway": ("minecraft:end_gateway", "gateway"),
+    "campfire": ("minecraft:campfire", "campfire"),
+    "sculksensor": ("minecraft:sculk_sensor", "empty"),
+    "sculkcatalyst": ("minecraft:sculk_catalyst", "empty"),
+    "sculkshrieker": ("minecraft:sculk_shrieker", "empty"),
+    "jukebox": ("minecraft:jukebox", "jukebox"),
+    "chiseledbookshelf": ("minecraft:chiseled_bookshelf", "shelf"),
+    "lectern": ("minecraft:lectern", "empty"),
+    "skull": ("minecraft:skull", "empty"),
+    "bell": ("minecraft:bell", "empty"),
+    "enchanttable": ("minecraft:enchanting_table", "empty"),
+    "daylightdetector": ("minecraft:daylight_detector", "empty"),
+    "endportal": ("minecraft:end_portal", "empty"),
 }
+
+
+def _carry_entry(doc_id):
+    """The mapping's row for this document's id, or None. The
+    namespaced spelling is the short one with the prefix stripped,
+    compared without case: "minecraft:chest" and "Chest" are the
+    same container in two writers' hands."""
+    if not isinstance(doc_id, str):
+        return None
+    short = doc_id
+    if short.startswith("minecraft:"):
+        short = short[len("minecraft:"):]
+    return CARRY_IDS.get(short.lower())
 
 
 def java_id(doc_id):
@@ -215,12 +262,14 @@ def java_id(doc_id):
     spelling is the short one with the prefix stripped, compared
     without case: "minecraft:chest" and "Chest" are the same
     container in two writers' hands."""
-    if not isinstance(doc_id, str):
-        return None
-    short = doc_id
-    if short.startswith("minecraft:"):
-        short = short[len("minecraft:"):]
-    return CARRY_IDS.get(short.lower())
+    entry = _carry_entry(doc_id)
+    return entry[0] if entry else None
+
+
+def be_kind(doc_id) -> str:
+    """What travels beside id and position for this family (D22)."""
+    entry = _carry_entry(doc_id)
+    return entry[1] if entry else "empty"
 
 
 def _log(msg: str) -> None:
@@ -468,13 +517,18 @@ def put_biome_record(db, cx: int, cz: int, dim: int,
     db.put(_record_key(cx, cz, dim, 0x2B), payload)
 
 
-def put_be_record(db, cx: int, cz: int, dim: int, snbt: str) -> None:
-    """One block-entity record on the copy: the document with its
-    own coordinates, little-endian, under the chunk's key in its own
-    dimension (D21)."""
-    t = amulet_nbt.from_snbt(snbt)
-    db.put(_record_key(cx, cz, dim, 0x31),
-           t.to_nbt(compressed=False, little_endian=True))
+def put_be_record(db, cx: int, cz: int, dim: int,
+                  *snbts: str) -> None:
+    """One block-entity record on the copy: the documents with
+    their own coordinates, in the order given, little-endian, under
+    the chunk's key in its own dimension (D21). A record is the
+    documents concatenated — the way the game stores them — so one
+    call places them all together, in record order."""
+    payload = b"".join(
+        amulet_nbt.from_snbt(s).to_nbt(compressed=False,
+                                       little_endian=True)
+        for s in snbts)
+    db.put(_record_key(cx, cz, dim, 0x31), payload)
 
 
 def biome_record_chunk() -> bytes:
@@ -719,10 +773,14 @@ def _container_cells(bio) -> list:
 
 def plain(v):
     """The value as plain Python: NBT tags unboxed all the way
-    down, so two documents from two editions compare as data."""
+    down, so two documents from two editions compare as data. A
+    tag's unboxing can be an array — Java's int arrays arrive as
+    one — and plain Python means the list it holds."""
     if hasattr(v, "tag") and not hasattr(v, "py_data"):
         v = v.tag        # a NamedTag is the document, not the tag
     v = py(v)
+    if isinstance(v, numpy.ndarray):
+        return v.tolist()
     if isinstance(v, dict):
         return {k: plain(x) for k, x in v.items()}
     if isinstance(v, list):
@@ -808,52 +866,172 @@ def _stack_bookkeeping(k, v) -> bool:
     return False
 
 
+def _java_stack(s, with_slot=True):
+    """One stack under Java's spelling (D15's rule, D22's
+    no-Slot variant): Slot/id/Count from either of Bedrock's two
+    spellings — Name/Count/Damage as the game writes it,
+    id/count/damage as the frozen fixture holds it — a nonzero
+    damage becoming Java's tag.Damage, and a stack holding item
+    data mcme cannot translate not half-written: None, and the
+    caller counts it. `with_slot` is how the stack sits in a list;
+    a jukebox's record stands alone (D22)."""
+    sid = s.get("Name")
+    if not isinstance(sid, str):
+        sid = s.get("id")
+    count = s.get("Count")
+    if not isinstance(count, int):
+        count = s.get("count")
+    if (not isinstance(sid, str) or not isinstance(count, int)
+            or (with_slot and not isinstance(s.get("Slot"), int))):
+        return None
+    if any(k not in ("Slot", "Name", "id", "Count", "count",
+                     "Damage", "damage")
+           and not _stack_bookkeeping(k, v)
+           for k, v in s.items()):
+        return None
+    stack = {}
+    if with_slot:
+        stack["Slot"] = s["Slot"]
+    stack["id"] = sid
+    stack["Count"] = count
+    damage = None
+    for dk in ("Damage", "damage"):
+        if isinstance(s.get(dk), int):
+            damage = s[dk]
+            break
+    if damage:
+        stack["tag"] = {"Damage": int(damage)}
+    return stack
+
+
+def _items_field(c) -> list:
+    """The Items list as Java holds it: every element through the
+    stack rule, a stack that cannot translate left out entirely."""
+    if not isinstance(c.get("Items"), list):
+        return None
+    stacks = []
+    for s in c["Items"]:
+        stack = _java_stack(s)
+        if stack is not None:
+            stacks.append(stack)
+    return stacks
+
+
+_PAD = "\\\"\\\""
+
+
+def _sign_side(side) -> dict:
+    """One side of a sign as Java spells it (D22, measured
+    through the reference on a real world): four messages from the
+    text's lines — the trailing newline ends the last line rather
+    than starting an empty one, each line its JSON string — padded
+    with the escaped emptiness Java's own translator writes for a
+    missing line, beside the color black and no glowing outline
+    (the game's color int takes no path through the universal
+    format the Java mapping reads, so every sign's answer is
+    black)."""
+    text = ""
+    if isinstance(side, dict) and isinstance(side.get("Text"), str):
+        text = side["Text"]
+    lines = text.split("\n") if text else []
+    if lines and lines[-1] == "":
+        lines.pop()
+    lines = lines[:4]
+    msgs = [json.dumps(s, ensure_ascii=False) for s in lines]
+    msgs += [_PAD] * (4 - len(msgs))
+    return {"color": "black", "has_glowing_text": 0,
+            "messages": msgs}
+
+
 def want_java_doc(doc) -> dict:
-    """D15's mapping, spelled from the source document: Java's id
-    for the container, and the block's own coordinates; the stacks
-    under Slot/id/Count from either of Bedrock's two spellings —
-    Name/Count/Damage as the game writes it, id/count/damage as
-    the frozen fixture holds it — a nonzero damage becoming Java's
-    tag.Damage, and a stack carrying item data mcme cannot
-    translate dropping out of the list entirely; a nonempty
-    CustomName; a Lock; the smelter timers as ints."""
+    """The mapping's answer, spelled from the source document: the
+    family's Java id and the block's own coordinates for every
+    carried document, and beside them what each family's Java
+    spelling has — the containers' Items/CustomName/Lock and the
+    smelter timers (D15); the brewing stand's progress under
+    BrewTime and fuel under Fuel; the spawner's seven ranges and
+    its one SpawnData; the sign's two text sides and is_waxed; the
+    comparator's signal; the beacon's two chosen effects under
+    Java's capitals; the gateway's age and exit portal; the four
+    cooks' progress as one int array; the jukebox's record without
+    a Slot; the bookshelf's last-touched slot; and nothing beside
+    id and position for the types whose Java block entity answers
+    with them alone (D22)."""
     c = plain(doc)
     out = {"id": java_id(c["id"]), "x": c["x"], "y": c["y"],
            "z": c["z"]}
-    if isinstance(c.get("Items"), list):
-        stacks = []
-        for s in c["Items"]:
-            sid = s.get("Name")
-            if not isinstance(sid, str):
-                sid = s.get("id")
-            count = s.get("Count")
-            if not isinstance(count, int):
-                count = s.get("count")
-            if (not isinstance(sid, str) or not isinstance(count, int)
-                    or not isinstance(s.get("Slot"), int)):
-                continue
-            if any(k not in ("Slot", "Name", "id", "Count", "count",
-                             "Damage", "damage")
-                   and not _stack_bookkeeping(k, v)
-                   for k, v in s.items()):
-                continue
-            stack = {"Slot": s["Slot"], "id": sid, "Count": count}
-            damage = None
-            for dk in ("Damage", "damage"):
-                if isinstance(s.get(dk), int):
-                    damage = s[dk]
-                    break
-            if damage:
-                stack["tag"] = {"Damage": int(damage)}
-            stacks.append(stack)
-        out["Items"] = stacks
-    if c.get("CustomName"):
-        out["CustomName"] = c["CustomName"]
-    if isinstance(c.get("Lock"), str):
-        out["Lock"] = c["Lock"]
-    for k in ("BurnTime", "CookTime", "CookTimeTotal"):
-        if isinstance(c.get(k), int):
-            out[k] = int(c[k])
+    kind = be_kind(c["id"])
+
+    if kind == "container":
+        items = _items_field(c)
+        if items is not None:
+            out["Items"] = items
+        if c.get("CustomName"):
+            out["CustomName"] = c["CustomName"]
+        if isinstance(c.get("Lock"), str):
+            out["Lock"] = c["Lock"]
+        for k in ("BurnTime", "CookTime", "CookTimeTotal"):
+            if isinstance(c.get(k), int):
+                out[k] = int(c[k])
+    elif kind == "brewing":
+        items = _items_field(c)
+        if items is not None:
+            out["Items"] = items
+        if c.get("CustomName"):
+            out["CustomName"] = c["CustomName"]
+        if isinstance(c.get("Lock"), str):
+            out["Lock"] = c["Lock"]
+        if isinstance(c.get("CookTime"), int):
+            out["BrewTime"] = int(c["CookTime"])
+        if isinstance(c.get("FuelAmount"), int):
+            out["Fuel"] = int(c["FuelAmount"])
+    elif kind == "spawner":
+        for k in ("Delay", "MaxNearbyEntities", "MaxSpawnDelay",
+                  "MinSpawnDelay", "RequiredPlayerRange",
+                  "SpawnCount", "SpawnRange"):
+            if isinstance(c.get(k), int):
+                out[k] = int(c[k])
+        if isinstance(c.get("EntityIdentifier"), str):
+            out["SpawnData"] = {"id": c["EntityIdentifier"]}
+    elif kind == "sign":
+        out["front_text"] = _sign_side(c.get("FrontText"))
+        out["back_text"] = _sign_side(c.get("BackText"))
+        if isinstance(c.get("IsWaxed"), int):
+            out["is_waxed"] = int(c["IsWaxed"])
+    elif kind == "comparator":
+        if isinstance(c.get("OutputSignal"), int):
+            out["OutputSignal"] = int(c["OutputSignal"])
+    elif kind == "beacon":
+        if isinstance(c.get("primary"), int):
+            out["Primary"] = int(c["primary"])
+        if isinstance(c.get("secondary"), int):
+            out["Secondary"] = int(c["secondary"])
+    elif kind == "gateway":
+        if isinstance(c.get("Age"), int):
+            out["Age"] = int(c["Age"])
+        ep = c.get("ExitPortal")
+        if (isinstance(ep, list) and len(ep) == 3
+                and all(isinstance(v, int) for v in ep)):
+            out["ExitPortal"] = {"X": int(ep[0]), "Y": int(ep[1]),
+                                 "Z": int(ep[2])}
+    elif kind == "campfire":
+        times = [c.get(f"ItemTime{i}") for i in (1, 2, 3, 4)]
+        if all(isinstance(v, int) for v in times):
+            out["CookingTimes"] = [int(v) for v in times]
+    elif kind == "jukebox":
+        ri = c.get("RecordItem")
+        if isinstance(ri, dict):
+            stack = _java_stack(ri, with_slot=False)
+            if stack is not None:
+                out["RecordItem"] = stack
+    elif kind == "shelf":
+        items = _items_field(c)
+        if items is not None:
+            out["Items"] = items
+        if isinstance(c.get("LastInteractedSlot"), int):
+            out["last_interacted_slot"] = int(
+                c["LastInteractedSlot"])
+    # kind == "empty": id and position are all (D22)
     return out
 
 
@@ -1130,12 +1308,43 @@ def main() -> int:
                 '{currentTick:20,tickList:['
                 '{blockState:{name:"minecraft:stone",states:{},'
                 'version:17959425},time:30L,x:101,y:64,z:101}]}')
-            # The nether's two block-entity documents: one whose
-            # chunk converts (carried), one whose chunk holds no
-            # subchunks (counted) — neither may reach the
-            # overworld's lists at the same coordinates.
+            # The nether's block-entity documents: the container
+            # whose chunk converts (carried), one whose chunk holds
+            # no subchunks (counted) — neither may reach the
+            # overworld's lists at the same coordinates — and D22's
+            # families beside the first: a sign with both sides, a
+            # spawner with its choice, the four cooks' times, a
+            # gateway's portal, a lectern that answers with
+            # position alone, a jukebox's record, and a bed whose
+            # color lives in the document while its name lives in
+            # the block (counted, not carried).
             put_be_record(tdb, 0, 0, 1,
-                          '{id: "minecraft:chest", x: 3, y: 70, z: 4}')
+                          '{id: "minecraft:chest", x: 3, y: 70, '
+                          'z: 4}',
+                          '{id: "Sign", x: 5, y: 71, z: 7, '
+                          'IsWaxed: 1b, FrontText: {Text: "hello", '
+                          'SignTextColor: -16777216}, BackText: '
+                          '{Text: "", SignTextColor: -16777216}}',
+                          '{id: "MobSpawner", x: 6, y: 71, z: 7, '
+                          'Delay: 20s, MaxNearbyEntities: 6s, '
+                          'MaxSpawnDelay: 800s, MinSpawnDelay: '
+                          '200s, RequiredPlayerRange: 16s, '
+                          'SpawnCount: 4s, SpawnRange: 4s, '
+                          'EntityIdentifier: "minecraft:zombie", '
+                          'DisplayEntityScale: 1.0f}',
+                          '{id: "Campfire", x: 7, y: 71, z: 7, '
+                          'ItemTime1: 1, ItemTime2: 2, ItemTime3: '
+                          '3, ItemTime4: 4}',
+                          '{id: "EndGateway", x: 8, y: 71, z: 7, '
+                          'Age: 9, ExitPortal: [4, 5, 6], '
+                          'EndGatewayBadPosChecked: 1b}',
+                          '{id: "Lectern", x: 9, y: 71, z: 7}',
+                          '{id: "Jukebox", x: 10, y: 71, z: 7, '
+                          'RecordItem: {Name: '
+                          '"minecraft:music_disc_cat", Count: 1b, '
+                          'Damage: 0s, WasPickedUp: 0b}}',
+                          '{id: "Bed", x: 11, y: 71, z: 7, '
+                          'color: 5b}')
             put_be_record(tdb, 6, 6, 1,
                           '{id: "minecraft:chest", x: 99, y: 70, '
                           'z: 100}')
@@ -1423,9 +1632,10 @@ def main() -> int:
                     f"chunk (dim {dim}, {cx}, {cz}) block_entities "
                     f"is {got}, want {want}")
         checks += 1
-        _log("ok — the nether's document arrives in DIM-1 with the "
-             "mapping's fields, and no list reaches across "
-             "dimensions at shared coordinates")
+        _log("ok — the nether's documents arrive in DIM-1 with "
+             "the mapping's fields — D22's families beside the "
+             "container — and no list reaches across dimensions "
+             "at shared coordinates")
 
         # ---- block entities: the carry against the fixture's own
         # documents (D15) ------------------------------------------
@@ -1448,10 +1658,11 @@ def main() -> int:
                 f"entities report is {be_report}, want at least "
                 f"{WANT_ENTITIES_REPORT}")
         checks += 1
-        _log("ok — the entities fixture's report counts three "
+        _log("ok — the entities fixture's report counts four "
              "carried documents (the nether's own beside the "
-             "overworld's two), the sign and the frame it drops, "
-             "and nothing skipped besides")
+             "overworld's two), the sign among them with empty "
+             "sides and the frame still dropped, and nothing "
+             "skipped besides")
 
         # And the output's list against the source's records: each
         # carried document with its mapping's fields spelled out,
@@ -1478,8 +1689,9 @@ def main() -> int:
                     f"is {got}, want {want}")
         checks += 1
         _log("ok — every carried document arrives with the mapping's "
-             "fields (id, x/y/z, Items Slot/id/Count, the smelter "
-             "timers) and every dropped one stays away")
+             "fields (id, x/y/z, and beside them what each family "
+             "spells: Items, timers, messages, SpawnData) and "
+             "every dropped one stays away")
 
         # ---- level.dat: the fields that must travel ---------------
         data_out = load_level(os.path.join(out, "level.dat"), False,

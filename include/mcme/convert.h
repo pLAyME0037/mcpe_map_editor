@@ -27,11 +27,14 @@ typedef struct {
     size_t blocks;            /* non-air positions the output holds       */
     size_t block_entities_carried;
                               /* block-entity documents written to the
-                                 output's block_entities list             */
+                                 output's block_entities list — id and
+                                 position beside what each family's own
+                                 Java spelling holds (D15, D22)           */
     size_t block_entities;    /* block-entity documents not carried: an
                                  id with no Java spelling mcme trusts, a
-                                 document with no coordinates, or a
-                                 record that will not decode (counted
+                                 document with no coordinates, a document
+                                 the world has not filled (a LootTable),
+                                 or a record that will not decode (counted
                                  once — half a record is not a count)     */
     size_t items;             /* item stacks not carried: a stack whose
                                  fields the mapping cannot translate —

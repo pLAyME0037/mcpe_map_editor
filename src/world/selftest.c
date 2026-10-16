@@ -5424,15 +5424,21 @@ static void test_convert_carry(void)
     /* The record, in both spellings of Bedrock's own, through the
        write API and as the game's bytes. Four of the five docs
        put through the write API carry namespaced ids, the furnace
-       the bare savegame one — put takes both; the three appended
-       below are the game's bytes — short savegame
-       ids, Name/Count stacks — and all carry the same answer.
-       Carried: both chests, the furnace, the short-id chest, the
-       short-id trapped chest. Dropped and counted: the sign, the
-       frame (no coordinates), the not-yet-filled loot chest. One
-       stack inside the first chest carries an enchantment list, so
-       that stack drops and the count says so — no half-translated
-       item leaves. */
+       the bare savegame one — put takes both; the rest are the
+       game's bytes — short savegame ids, Name/Count stacks — and
+       all carry the same answer.
+       Carried: both chests, the old-format sign (its text has no
+       measured Java spelling, so it travels with both sides empty
+       — D22), the furnace, the short-id chest, the short-id
+       trapped chest, and the fourteen family documents appended
+       below. Dropped and counted: the frame (no coordinates), the
+       not-yet-filled loot chest, and the four with no Java
+       counterpart (bed and banner keep their color in the
+       document, the piston arm has no Java block entity, the
+       vault's block Java 1.20 does not know). One stack inside
+       the first chest carries an enchantment list, so that stack
+       drops and the count says so — no half-translated item
+       leaves. */
     McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
     struct {
         const char *snbt;
@@ -5507,6 +5513,53 @@ static void test_convert_carry(void)
         "{id: \"TrappedChest\", x: 62, y: 10, z: 7, Items: "
         "[{Slot: 0b, Name: \"minecraft:gold_ingot\", Count: 7b, "
         "Damage: 0s, WasPickedUp: 0b}]}",
+
+        /* D22: the non-container families, in the game's own
+           spelling — a container of one stack, a brewing stand
+           whose progress Java spells BrewTime, a spawner choosing
+           a mob both editions name alike, and the types whose
+           Java block entity answers with only id and position. */
+        "{id: \"ShulkerBox\", x: 48, y: 10, z: 8, Items: "
+        "[{Slot: 0b, Name: \"minecraft:map\", Count: 1b, "
+        "Damage: 0s, WasPickedUp: 0b}]}",
+        "{id: \"BrewingStand\", x: 49, y: 10, z: 8, "
+        "CookTime: 12s, FuelAmount: 3s, FuelTotal: 20s}",
+        "{id: \"MobSpawner\", x: 50, y: 10, z: 8, Delay: 20s, "
+        "MaxNearbyEntities: 6s, MaxSpawnDelay: 800s, "
+        "MinSpawnDelay: 200s, RequiredPlayerRange: 16s, "
+        "SpawnCount: 4s, SpawnRange: 4s, EntityIdentifier: "
+        "\"minecraft:spider\", DisplayEntityScale: 1.0}",
+        "{id: \"Comparator\", x: 52, y: 10, z: 8, "
+        "OutputSignal: 5s}",
+        "{id: \"Beacon\", x: 55, y: 10, z: 8, primary: 1, "
+        "secondary: 2}",
+        "{id: \"EndGateway\", x: 59, y: 10, z: 8, Age: 5, "
+        "ExitPortal: [1, 2, 3], EndGatewayBadPosChecked: 1b}",
+        "{id: \"Campfire\", x: 48, y: 12, z: 8, ItemTime1: 1, "
+        "ItemTime2: 2, ItemTime3: 3, ItemTime4: 4}",
+        "{id: \"Jukebox\", x: 49, y: 12, z: 8, RecordItem: "
+        "{Name: \"minecraft:music_disc_cat\", Count: 1b, "
+        "Damage: 0s, WasPickedUp: 0b}}",
+        "{id: \"ChiseledBookshelf\", x: 50, y: 12, z: 8, "
+        "LastInteractedSlot: 2, Items: [{Slot: 1b, Name: "
+        "\"minecraft:book\", Count: 1b, Damage: 0s, "
+        "WasPickedUp: 0b}]}",
+        "{id: \"Lectern\", x: 51, y: 12, z: 8}",
+        "{id: \"Skull\", x: 52, y: 12, z: 8, SkullType: 5b, "
+        "Rotation: 180.0f, MouthMoving: 0b}",
+        "{id: \"SculkSensor\", x: 55, y: 12, z: 8, "
+        "VibrationListener: {selector: {}}}",
+        "{id: \"HangingSign\", x: 59, y: 12, z: 8, FrontText: "
+        "{Text: \"hi\", SignTextColor: -16777216}}",
+
+        /* D22: counted, not carried — no Java block entity for
+           the piston arm; bed and banner keep their color in the
+           document while the name lives in the block; the vault's
+           block does not exist in Java 1.20. */
+        "{id: \"Bed\", x: 48, y: 14, z: 8, color: 3b}",
+        "{id: \"Banner\", x: 49, y: 14, z: 8, Base: 13}",
+        "{id: \"PistonArm\", x: 50, y: 14, z: 8}",
+        "{id: \"Vault\", x: 51, y: 14, z: 8}",
     };
     McmeBuffer record;
     mcme_buffer_init(&record);
@@ -5541,6 +5594,42 @@ static void test_convert_carry(void)
                                      encoded.len));
             mcme_buffer_free(&encoded);
         }
+
+        /* A modern two-sided sign whose front text holds a real
+           newline — SNBT's two escapes cannot spell one, so the
+           string is set after parsing. The interior newline splits
+           the lines; the text's end does not open a trailing
+           empty one (D22). */
+        {
+            static const char kSign[] =
+                "{id: \"Sign\", x: 53, y: 12, z: 8, IsWaxed: 1b, "
+                "FrontText: {Text: \"placeholder\", SignTextColor: "
+                "-16777216}, BackText: {Text: \"x\", SignTextColor: "
+                "-16777216}}";
+            McmeTag *entity = NULL;
+            CHECK(mcme_nbt_parse_snbt(arena, kSign, strlen(kSign),
+                                      &entity));
+            CHECK(entity != NULL);
+            const McmeTag *ft = mcme_nbt_get(entity, "FrontText");
+            CHECK(ft != NULL && ft->type == MCME_TAG_Compound);
+            McmeTag *txt = (McmeTag *)mcme_nbt_get(ft, "Text");
+            CHECK(txt != NULL && txt->type == MCME_TAG_String);
+            CHECK(mcme_nbt_set_string(arena, txt, "line1\nline2",
+                                      11));
+            McmeNbtDoc doc;
+            doc.arena = arena;
+            doc.root = entity;
+            doc.root_name.data = (char *)"";
+            doc.root_name.len = 0;
+            doc.little_endian = true;
+            McmeBuffer encoded;
+            mcme_buffer_init(&encoded);
+            CHECK(mcme_nbt_write_binary(&doc, &encoded));
+            CHECK(mcme_buffer_append(&record, encoded.data,
+                                     encoded.len));
+            mcme_buffer_free(&encoded);
+        }
+
         CHECK(mcme_leveldb_put(rdb, rkey, rklen, record.data,
                                record.len));
         mcme_leveldb_close(rdb);
@@ -5564,8 +5653,9 @@ static void test_convert_carry(void)
     CHECK(rep.chunks == 1);
     CHECK(rep.subchunks == 1);
     CHECK(rep.blocks == 4096);
-    CHECK(rep.block_entities_carried == 5);
-    CHECK(rep.block_entities == 3);   /* sign, frame, loot chest */
+    CHECK(rep.block_entities_carried == 20);
+    CHECK(rep.block_entities == 6);   /* frame, loot chest, bed,
+                                         banner, piston arm, vault */
     CHECK(rep.items == 1);            /* the enchanted stack */
     CHECK(rep.water_positions == 1);  /* the water over the stone */
     CHECK(rep.legacy_subchunks == 0);
@@ -5606,8 +5696,8 @@ static void test_convert_carry(void)
             const McmeTag *bel = mcme_nbt_path(root,
                                                "block_entities");
             CHECK_MSG(bel != NULL && bel->type == MCME_TAG_List
-                      && bel->list.len == 5,
-                      "block_entities holds %zu entries, want 5",
+                      && bel->list.len == 20,
+                      "block_entities holds %zu entries, want 20",
                       (bel != NULL && bel->type == MCME_TAG_List)
                           ? bel->list.len : (size_t)0);
             const McmeTag *chest = mcme_nbt_path(root,
@@ -5668,53 +5758,284 @@ static void test_convert_carry(void)
                   && strcmp(f->string.data,
                             "minecraft:coal") == 0);
 
-            /* the furnace's timers, as Java's ints */
+            /* The old-format sign: its top-level text has no
+               measured Java spelling, so the document carries
+               with both sides empty — four escaped-empty messages
+               each, no is_waxed (D22) */
             f = mcme_nbt_path(root, "block_entities.2.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:sign") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.2.x"), -1) == 57);
+            f = mcme_nbt_path(root,
+                "block_entities.2.front_text.messages.0");
+            CHECK_MSG(f != NULL && f->type == MCME_TAG_String
+                      && strcmp(f->string.data, "\\\"\\\"") == 0,
+                      "the old sign's front message is not the "
+                      "escaped-empty pad");
+            f = mcme_nbt_path(root,
+                "block_entities.2.back_text.messages.3");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data, "\\\"\\\"") == 0);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.2.is_waxed") == NULL);
+
+            /* the furnace's timers, as Java's ints */
+            f = mcme_nbt_path(root, "block_entities.3.id");
             CHECK(f != NULL && f->type == MCME_TAG_String
                   && strcmp(f->string.data,
                             "minecraft:furnace") == 0);
             CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
-                "block_entities.2.BurnTime"), -1) == 100);
+                "block_entities.3.BurnTime"), -1) == 100);
             CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
-                "block_entities.2.CookTime"), -1) == 40);
+                "block_entities.3.CookTime"), -1) == 40);
 
             /* the game's short id, out under Java's namespaced
                answer: "Chest" and "minecraft:chest" are the same
                container in two writers' hands */
-            f = mcme_nbt_path(root, "block_entities.3.id");
+            f = mcme_nbt_path(root, "block_entities.4.id");
             CHECK(f != NULL && f->type == MCME_TAG_String
                   && strcmp(f->string.data,
                             "minecraft:chest") == 0);
             CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
-                "block_entities.3.x"), -1) == 60);
+                "block_entities.4.x"), -1) == 60);
             /* its emoji CustomName — standard UTF-8 in, the same
                text out: a record of four-byte strings decodes */
             f = mcme_nbt_path(root,
-                              "block_entities.3.CustomName");
+                              "block_entities.4.CustomName");
             CHECK_MSG(f != NULL && f->type == MCME_TAG_String
                       && f->string.len == 4
                       && memcmp(f->string.data,
                                 "\xF0\x9F\xA6\xB4", 4) == 0,
                       "the emoji CustomName did not survive the "
                       "record read");
-            items = mcme_nbt_path(root, "block_entities.3.Items");
+            items = mcme_nbt_path(root, "block_entities.4.Items");
             CHECK(items != NULL && items->type == MCME_TAG_List
                   && items->list.len == 1);
             CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
-                "block_entities.3.Items.0.Count"), -1) == 2);
-            f = mcme_nbt_path(root, "block_entities.3.Items.0.id");
+                "block_entities.4.Items.0.Count"), -1) == 2);
+            f = mcme_nbt_path(root, "block_entities.4.Items.0.id");
             CHECK(f != NULL && f->type == MCME_TAG_String
                   && strcmp(f->string.data,
                             "minecraft:emerald") == 0);
 
             /* TrappedChest, the game's spelling, out as Java's
                trapped_chest — the loot chest between them dropped */
-            f = mcme_nbt_path(root, "block_entities.4.id");
+            f = mcme_nbt_path(root, "block_entities.5.id");
             CHECK(f != NULL && f->type == MCME_TAG_String
                   && strcmp(f->string.data,
                             "minecraft:trapped_chest") == 0);
             CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
-                "block_entities.4.Items.0.Count"), -1) == 7);
+                "block_entities.5.Items.0.Count"), -1) == 7);
+
+            /* D22's families, in record order after them: the
+               container with the game's short id, the brewing
+               stand, the spawner, the two empty-position types
+               with fields, and the rest. */
+            /* 6: shulker_box keeps its one stack */
+            f = mcme_nbt_path(root, "block_entities.6.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:shulker_box") == 0);
+            f = mcme_nbt_path(root,
+                              "block_entities.6.Items.0.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:map") == 0);
+
+            /* 7: brewing — progress under BrewTime, fuel under
+               Fuel; the furnace's CookTime is not its progress
+               and FuelTotal stays behind */
+            f = mcme_nbt_path(root, "block_entities.7.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:brewing_stand") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.7.BrewTime"), -1) == 12);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.7.Fuel"), -1) == 3);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.7.CookTime") == NULL);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.7.FuelTotal") == NULL);
+
+            /* 8: the spawner's ranges under the same names, the
+               mob under SpawnData; the display fields and Java's
+               own SpawnPotentials default stay behind */
+            f = mcme_nbt_path(root, "block_entities.8.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:mob_spawner") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.8.Delay"), -1) == 20);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.8.MaxSpawnDelay"), -1) == 800);
+            f = mcme_nbt_path(root,
+                              "block_entities.8.SpawnData.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:spider") == 0);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.8.SpawnPotentials") == NULL);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.8.DisplayEntityScale") == NULL);
+
+            /* 9: the comparator's signal */
+            f = mcme_nbt_path(root, "block_entities.9.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:comparator") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.9.OutputSignal"), -1) == 5);
+
+            /* 10: the beacon's two chosen effects under Java's
+               capitals; Java fills the rest itself */
+            f = mcme_nbt_path(root, "block_entities.10.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:beacon") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.10.Primary"), -1) == 1);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.10.Secondary"), -1) == 2);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.10.Levels") == NULL);
+
+            /* 11: the gateway's age and the exit portal as X/Y/Z */
+            f = mcme_nbt_path(root, "block_entities.11.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:end_gateway") == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.11.Age"), -1) == 5);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.11.ExitPortal.X"), -1) == 1);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.11.ExitPortal.Y"), -1) == 2);
+            CHECK(mcme_nbt_int_or(mcme_nbt_path(root,
+                "block_entities.11.ExitPortal.Z"), -1) == 3);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.11.EndGatewayBadPosChecked")
+                  == NULL);
+
+            /* 12: the four cooks' progress as Java's one int
+               array, in ItemTime order */
+            f = mcme_nbt_path(root, "block_entities.12.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:campfire") == 0);
+            {
+                const McmeTag *ct = mcme_nbt_path(root,
+                    "block_entities.12.CookingTimes");
+                CHECK(ct != NULL
+                      && ct->type == MCME_TAG_Int_Array
+                      && ct->ints.len == 4
+                      && ct->ints.data[0] == 1
+                      && ct->ints.data[1] == 2
+                      && ct->ints.data[2] == 3
+                      && ct->ints.data[3] == 4);
+            }
+
+            /* 13: the jukebox's record — the stack rule without
+               a Slot, which is where a record stands */
+            f = mcme_nbt_path(root, "block_entities.13.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:jukebox") == 0);
+            f = mcme_nbt_path(root,
+                              "block_entities.13.RecordItem.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:music_disc_cat") == 0);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.13.RecordItem.Count"), -1) == 1);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.13.RecordItem.Slot") == NULL);
+
+            /* 14: the bookshelf's last-touched slot and stack */
+            f = mcme_nbt_path(root, "block_entities.14.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:chiseled_bookshelf") == 0);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.14.last_interacted_slot"),
+                -1) == 2);
+            f = mcme_nbt_path(root,
+                              "block_entities.14.Items.0.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:book") == 0);
+
+            /* 15-17: the types whose Java block entity answers
+               with id and position alone */
+            f = mcme_nbt_path(root, "block_entities.15.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:lectern") == 0);
+            f = mcme_nbt_path(root, "block_entities.16.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:skull") == 0);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.16.Rotation") == NULL);
+            f = mcme_nbt_path(root, "block_entities.17.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:sculk_sensor") == 0);
+            CHECK(mcme_nbt_path(root,
+                  "block_entities.17.VibrationListener") == NULL);
+
+            /* 18: the hanging sign, one line, three pads */
+            f = mcme_nbt_path(root, "block_entities.18.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:hanging_sign") == 0);
+            f = mcme_nbt_path(root,
+                              "block_entities.18.front_text.messages.0");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data, "\"hi\"") == 0);
+            f = mcme_nbt_path(root,
+                              "block_entities.18.front_text.messages.1");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data, "\\\"\\\"") == 0);
+
+            /* 19: the modern sign — the interior newline splits
+               two lines, the text's end opens no third; back has
+               one; is_waxed crossed */
+            f = mcme_nbt_path(root, "block_entities.19.id");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "minecraft:sign") == 0);
+            f = mcme_nbt_path(root,
+                "block_entities.19.front_text.messages.0");
+            CHECK_MSG(f != NULL && f->type == MCME_TAG_String
+                      && strcmp(f->string.data,
+                                "\"line1\"") == 0,
+                      "the sign's first line is not its JSON "
+                      "string");
+            f = mcme_nbt_path(root,
+                "block_entities.19.front_text.messages.1");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data,
+                            "\"line2\"") == 0);
+            f = mcme_nbt_path(root,
+                "block_entities.19.front_text.messages.2");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data, "\\\"\\\"") == 0);
+            f = mcme_nbt_path(root,
+                "block_entities.19.back_text.messages.0");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data, "\"x\"") == 0);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.19.front_text.has_glowing_text"),
+                -1) == 0);
+            f = mcme_nbt_path(root,
+                "block_entities.19.front_text.color");
+            CHECK(f != NULL && f->type == MCME_TAG_String
+                  && strcmp(f->string.data, "black") == 0);
+            CHECK(mcme_nbt_byte_or(mcme_nbt_path(root,
+                "block_entities.19.is_waxed"), -1) == 1);
         }
         mcme_arena_free(out_arena);
     }
