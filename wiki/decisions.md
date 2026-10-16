@@ -1501,3 +1501,97 @@ PyMCTranslate's bedrock 1.12 tables change their answers, or the
 game grows a new val-bearing entry shape — the pin re-measures all
 three every battery run, and the table regenerates from the same
 enumeration.
+
+## D25 — Convert carries the pre-palette payloads: two planes, two eras, 128 delta rows
+
+**What the reference does, measured from the flat branch down.**
+A pre-palette payload (versions 0, 2-7) is the version byte, 4096
+block ids, then 2048 data nibbles — low nibble first, cell i's
+nibble in byte i/2 — and amulet's loader reads exactly those bytes
+as `combined = id << 4 | data`, one palette entry per distinct
+pair behind cells offset past its air seed. mcme reads the same
+bytes the same way into one synthesized layer whose entries are
+the cells' own blocks spelled the way the loader spells them:
+`name` from the bedrock 1.12 numerical map (six ids — 210, 211,
+212, 217, 230, 242 — spell `minecraft:numerical`, the
+placeholder the reference passes through), the data as `val`, and
+the payload's era packed as `version` (`major << 24 | minor << 16`:
+16842752 for payloads 0-5, 16908288 for 6-7). The era is amulet's
+own `min(chunk_version_to_max[V][1], world)` capped at
+`(1,12,999)` — V 0-5 resolves to bedrock 1.1.0, 6-7 to 1.2.0 —
+and the V that matters is the payload byte, which for flat-era
+worlds is also the first byte of the chunk-version record the
+game keeps under a 0x2c key. The pin re-derives all eight stamps
+from amulet's table every battery run and maps them to eras
+explicitly: an int is a DataVersion on any other path, so the
+stamp is never looked up through `get_version(int)`. The
+reference's rule for the entries the loader itself spells: a
+numeric `version` on a `{name, val}` entry anchors there and beats
+the cap branch; a val without one is D24's cap chain exactly.
+
+**The deltas, enumerated whole.** Two eras × the 251 distinct
+names the numerical map spells × data 0-15 — 8,032 cells asked of
+the reference — yield **128 delta rows** (91 at era 1.1, 37 at
+1.2) where the era answer differs from the cap chain: sandstone
+val 3 stays `minecraft:sandstone` where the cap smooths it,
+jukebox val 0 keeps no record at era 1.1 while era 1.2 says
+`has_record: false` — the chain's own answer, hence not a delta
+there — and the rest. Rows are delta-only by construction: a cell
+the tables do not carry is answered by D24's chain, which is the
+reference's answer too, proven cell by cell in the pin. The
+generator's first cut emitted 336 rows; 208 were canonicalization
+artifacts — the chain replica compared the raw row property `"0"`
+against the era answer's canonical `"false"` — and the fix was in
+the replica, not the data.
+
+**The rule in mcme.** The payload byte picks the decode branch:
+versions 0, 2-7 read the two planes (bounds-checked by plane
+name, bytes past them the same tail refusal the palettized path
+makes) into one synthesized layer — first-seen (id, data) pairs
+as palette entries in cell order, `bits` the width that holds the
+slots, no index byte, one layer — and versions 1, 8, 9 are
+unchanged. The legacy translation branch gains one step: a
+numeric `version` on a val entry asks `flat_lookup(era, name,
+val)` first — the 128 rows sorted (era, name byte order, val),
+binary searched — and a miss falls to D24's chain exactly as the
+reference falls through; a version that is not a number, or any
+other version value, never reaches the lookup (the cap chain
+answers — the documented boundary against the real val-entry
+domain, where `version` is the entry's own anchor). The encoder's
+gate stands untouched: a flat payload decodes for reading and
+refuses to encode, loudly and before a byte is appended (D12) —
+the id-to-name composition is lossy for the six unmapped ids, and
+a loud refusal is how that gets noticed, never a half-write. A
+payload that fails the plane bounds or carries a version nothing
+decodes is refused and counted once: `legacy_subchunks` keeps its
+name and its CLI label and counts those; flat payloads that
+decode count as ordinary subchunks.
+
+**Fixture truth.** The copy gains four keys under the pre-1.18
+0x2c prefix, in the overworld's (0,0) at heights where no section
+and no biome array stand: payload 5 (era 1.1) carrying sandstone
+val 3, jukebox, an unmapped id and a log; payload 7 (era 1.2) the
+era-pair cells; plus two that must refuse — a payload cut inside
+its planes and a version nothing decodes. Report: `subchunks`
+10 → 12, `blocks` 40,960 → 49,152, `legacy_subchunks` 0 → 2,
+everything else unchanged; every position of both flat payloads
+compares clean, and the era answers differ from the chain exactly
+where the 128 rows say they do.
+
+**Cost accepted.** 128 generated rows in translate.c, 256 id
+names and 8 era stamps in bedrock_chunk.c; `pin_flat_map` re-asks
+the reference for all 8,032 cells, the 256 ids against
+`ints_to_block`, and the eight stamps against amulet's own table
+every battery run. The real store holds only v9 payloads, so the
+flat tables answer nothing on the census store by construction
+and the release runs stay byte-identical to D23's. A flat payload
+under a 0x2f key is a documented boundary, not a handled case:
+the game cannot write it, and there the reference would answer
+from the chunk's version record while mcme answers from the
+payload byte — the fixture fabricates only the real shape, 0x2c.
+
+**Reverses if:** amulet's flat branch changes shape,
+PyMCTranslate's 1.1 and 1.2 tables change their answers, or the
+game grows a flat-era payload the two measured eras do not cover
+— the pin re-measures all three every battery run, and the tables
+regenerate from the same enumeration.

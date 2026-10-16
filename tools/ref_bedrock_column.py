@@ -57,17 +57,26 @@ def _log(msg: str) -> None:
     print(f"ref_bedrock_column: {msg}", file=sys.stderr)
 
 
-def chunk_key(x: int, z: int, cy: int, dimension: int = 0) -> bytes:
+def chunk_key(x: int, z: int, cy: int, dimension: int = 0,
+              tag: int = 0x2F) -> bytes:
+    """A subchunk key: the prefix the game spelled either way —
+    0x2f from 1.18, 0x2c before it (D25) — with cy's byte last."""
     k = struct.pack("<ii", x, z)
     if dimension != 0:
         k += struct.pack("<i", dimension)
-    return k + bytes([0x2F, cy & 0xFF])
+    return k + bytes([tag, cy & 0xFF])
 
 
 def decode_payload(iface, payload: bytes):
     """Wrapper bytes stripped, then every layer through amulet's
     loader. Returns (version, layers) as [(blocks, palette)]; an
-    empty layer list is the all-air marker."""
+    empty layer list is the all-air marker. The pre-palette
+    versions (D25) go through amulet's flat branch whole: one
+    layer of cells offset past its air seed, and the combined
+    palette of air seed plus (id, data) tuples behind them — the
+    caller normalizes those into the entries the loader would
+    spell. A payload cut short or carrying an unknown version
+    raises, which is the reference's own refusal."""
     v = payload[0]
     if v == 1:
         count, rest = 1, payload[1:]
@@ -75,6 +84,17 @@ def decode_payload(iface, payload: bytes):
         count, rest = payload[1], payload[2:]
     elif v == 9:
         count, rest = payload[1], payload[3:]
+    elif v in (0, 2, 3, 4, 5, 6, 7):
+        # The two planes exactly — bounds and tail the way the
+        # decoder rules them, so a refusal here and mcme's agree.
+        if len(payload) != 1 + 4096 + 2048:
+            raise AssertionError(
+                f"flat payload of {len(payload)} bytes, want 6145")
+        subchunks, palette = iface._load_subchunks({0: payload})
+        blocks = subchunks.get(0)
+        if blocks is None:
+            raise AssertionError("a flat payload decoded to no layer")
+        return v, [(blocks, palette)]
     else:
         raise AssertionError(f"wrapper version {v}")
     layers = []

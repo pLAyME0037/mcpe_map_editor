@@ -9,6 +9,93 @@ Status vocabulary:
 
 ---
 
+## 2026-10-16 — The pre-palette carry: two planes, two eras, 128 delta rows
+
+### Built
+
+- bedrock_chunk.c grows the GENERATED NUMERICAL MAP (256 id-to-name
+  rows from the reference's own ints_to_block, six ids spelling
+  `minecraft:numerical`) and GENERATED FLAT ERAS (payload byte to
+  packed era stamp), and `mcme_bedrock_subchunk_decode` gains the
+  flat branch: versions 0, 2-7 are 4096 block ids then 2048 data
+  nibbles — low nibble first, the bytes amulet's flat branch reads
+  — composed into one synthesized layer: first-seen (id, data)
+  pairs as palette entries `{name, val, version}` stamped with the
+  payload's era, `bits` the width that holds the slots, no index
+  byte, one layer. Cut short or past the planes it is refused by
+  plane name; the encoder's gate is untouched — flat decodes,
+  never encodes, before a byte is appended (D12).
+- translate.c grows the GENERATED FLAT MAP: 128 delta rows sorted
+  (era, name byte order, val), with `flat_lookup` beside
+  `legacy_lookup`. The legacy branch in `mcme_translate_block`
+  gains one step: a numeric `version` on a `{name, val}` entry
+  anchors at its era first, a miss falls to D24's chain exactly as
+  the reference falls through; the shape gates are unchanged.
+- The header doc in bedrock_chunk.h is rewritten around the two
+  formats: the palettized inversion contract, and the pre-palette
+  note — read for reading, refused on the way out, with the six
+  unmapped ids sharing one name as the reason it can never be
+  otherwise.
+- tools/ref_convert.py: `decode_payload` gains the flat branch
+  through amulet's own loader (bounds and tail the way mcme rules
+  them); `load_input` reads either subchunk prefix — 0x2f and the
+  pre-1.18 0x2c — normalizes amulet's flat palette into
+  loader-shaped `{name, val, version}` entries and carries the
+  payload's era beside the layers; the block loop routes flat
+  cells through `Reference.answer_flat`; the copy fabricates two
+  flat payloads and two refusals under 0x2c; `pin_flat_map` re-asks
+  8,032 cells, the 256 ids and the eight era stamps, and asserts
+  every row is a real delta in search order.
+- Tests: `test_subchunk_flat` pins a full 6,145-byte payload —
+  four synthesized pairs in first-seen cell order, era 1.1 stamps
+  on v5 and era 1.2 on v7, indices and bits, the encode refusal
+  appending nothing, and the three refusals (id plane, nibble
+  plane, tail); the translate pins add sandstone val 3 at era 1.1
+  against the cap's smooth_sandstone, the stampless and
+  other-version boundary answers, jukebox at both eras, and the
+  numerical placeholder. The old `{0x05,0,0}` refusal pin keeps
+  failing, now for the truncated-flat reason, and its comment
+  says so.
+
+### Measured
+
+- The flat branch: `data[0] in {0,2..7}` -> 4096 ids + 2048
+  nibbles, `combined = id << 4 | data`, cells read plane byte
+  `(x << 8) | (z << 4) | y` — mcme's own XZY index, identity, so
+  both decoders compose the same pair from the same bytes. The
+  era is `min(chunk_version_to_max[V][1], world)` capped at
+  `(1,12,999)` — V 0-5 -> bedrock_1_1_0, V 6-7 -> bedrock_1_2_0 —
+  V being the payload byte, which for flat-era worlds is also the
+  first byte of the chunk-version record under the game's 0x2c
+  key. Packed stamps 16842752 / 16908288; the pin maps stamps to
+  tables explicitly, never through `get_version(int)` — int means
+  DataVersion on every other path.
+- The enumeration: 2 eras x 251 distinct id-map names x data 0-15
+  = 8,032 cells -> **128 deltas** (91 era A, 37 era B); the flat
+  chain at the cap equals D24's legacy rule on all 4,000 mapped
+  pairs; the six unmapped ids (210, 211, 212, 217, 230, 242)
+  answer `minecraft:numerical` and pass through. The generator's
+  first cut emitted 336 rows; 208 were canonicalization artifacts
+  — the chain replica compared raw `"0"` against canonical
+  `"false"` — fixed in the replica, and the 128 real deltas
+  re-spliced.
+- 385,287 real-world subchunk keys, all v9: the flat tables
+  answer nothing on the census store by construction.
+
+### Cross-check
+
+- 5 suites PASS under all three gates (`./rebuild.sh test`,
+  `./nob test`, `./rebuild.sh release test`); battery 11/11 rc=0
+  with ref_convert reporting "the flat map's 128 era rows, all
+  256 numerical ids, both era stamps per payload version and every
+  unrowed cell answer the way the reference answers" (14 checks);
+  goldens untouched (`git status tests/` empty).
+- Real world (the census snapshot, which holds no flat payload):
+  two release runs, rc=0, each byte-identical to D23's run — every
+  file's bytes equal and the JSON reports byte-identical — so the
+  new decode path costs nothing where there is nothing to decode,
+  and no cross-entry delta is claimed.
+
 ## 2026-10-16 — The `{name, val}` carry: 2,330 rows, five defaults, a section written where air stood
 
 ### Built

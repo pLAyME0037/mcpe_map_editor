@@ -36,6 +36,367 @@ static bool need(const uint8_t *data, size_t size, size_t pos, size_t n,
     return false;
 }
 
+/* ---- BEGIN GENERATED NUMERICAL MAP ----
+ * The bedrock 1.12 numerical map as the reference's own
+ * ints_to_block reads it (D25): id -> name over all 256 ids, the
+ * name half of a pre-palette cell's composition. The cell's data
+ * nibble becomes the synthesized entry's `val` and the payload's
+ * era its `version`; translate.c answers the pair through the
+ * flat/legacy tables. Six ids (210, 211, 212, 217, 230, 242) are
+ * not in the map — they answer as the minecraft:numerical
+ * placeholder the reference passes through, and mcme's
+ * unknown-block policy keeps that name and drops the states.
+ * tools/ref_convert.py re-pins every id on every battery run. */
+static const char *const kFlatIds[256] = {
+    "minecraft:air",
+    "minecraft:stone",
+    "minecraft:grass",
+    "minecraft:dirt",
+    "minecraft:cobblestone",
+    "minecraft:planks",
+    "minecraft:sapling",
+    "minecraft:bedrock",
+    "minecraft:flowing_water",
+    "minecraft:water",
+    "minecraft:flowing_lava",
+    "minecraft:lava",
+    "minecraft:sand",
+    "minecraft:gravel",
+    "minecraft:gold_ore",
+    "minecraft:iron_ore",
+    "minecraft:coal_ore",
+    "minecraft:log",
+    "minecraft:leaves",
+    "minecraft:sponge",
+    "minecraft:glass",
+    "minecraft:lapis_ore",
+    "minecraft:lapis_block",
+    "minecraft:dispenser",
+    "minecraft:sandstone",
+    "minecraft:noteblock",
+    "minecraft:bed",
+    "minecraft:golden_rail",
+    "minecraft:detector_rail",
+    "minecraft:sticky_piston",
+    "minecraft:web",
+    "minecraft:tallgrass",
+    "minecraft:deadbush",
+    "minecraft:piston",
+    "minecraft:pistonArmCollision",
+    "minecraft:wool",
+    "minecraft:element_0",
+    "minecraft:yellow_flower",
+    "minecraft:red_flower",
+    "minecraft:brown_mushroom",
+    "minecraft:red_mushroom",
+    "minecraft:gold_block",
+    "minecraft:iron_block",
+    "minecraft:double_stone_slab",
+    "minecraft:stone_slab",
+    "minecraft:brick_block",
+    "minecraft:tnt",
+    "minecraft:bookshelf",
+    "minecraft:mossy_cobblestone",
+    "minecraft:obsidian",
+    "minecraft:torch",
+    "minecraft:fire",
+    "minecraft:mob_spawner",
+    "minecraft:oak_stairs",
+    "minecraft:chest",
+    "minecraft:redstone_wire",
+    "minecraft:diamond_ore",
+    "minecraft:diamond_block",
+    "minecraft:crafting_table",
+    "minecraft:wheat",
+    "minecraft:farmland",
+    "minecraft:furnace",
+    "minecraft:lit_furnace",
+    "minecraft:standing_sign",
+    "minecraft:wooden_door",
+    "minecraft:ladder",
+    "minecraft:rail",
+    "minecraft:stone_stairs",
+    "minecraft:wall_sign",
+    "minecraft:lever",
+    "minecraft:stone_pressure_plate",
+    "minecraft:iron_door",
+    "minecraft:wooden_pressure_plate",
+    "minecraft:redstone_ore",
+    "minecraft:lit_redstone_ore",
+    "minecraft:unlit_redstone_torch",
+    "minecraft:redstone_torch",
+    "minecraft:stone_button",
+    "minecraft:snow_layer",
+    "minecraft:ice",
+    "minecraft:snow",
+    "minecraft:cactus",
+    "minecraft:clay",
+    "minecraft:reeds",
+    "minecraft:jukebox",
+    "minecraft:fence",
+    "minecraft:pumpkin",
+    "minecraft:netherrack",
+    "minecraft:soul_sand",
+    "minecraft:glowstone",
+    "minecraft:portal",
+    "minecraft:lit_pumpkin",
+    "minecraft:cake",
+    "minecraft:unpowered_repeater",
+    "minecraft:powered_repeater",
+    "minecraft:invisibleBedrock",
+    "minecraft:trapdoor",
+    "minecraft:monster_egg",
+    "minecraft:stonebrick",
+    "minecraft:brown_mushroom_block",
+    "minecraft:red_mushroom_block",
+    "minecraft:iron_bars",
+    "minecraft:glass_pane",
+    "minecraft:melon_block",
+    "minecraft:pumpkin_stem",
+    "minecraft:melon_stem",
+    "minecraft:vine",
+    "minecraft:fence_gate",
+    "minecraft:brick_stairs",
+    "minecraft:stone_brick_stairs",
+    "minecraft:mycelium",
+    "minecraft:waterlily",
+    "minecraft:nether_brick",
+    "minecraft:nether_brick_fence",
+    "minecraft:nether_brick_stairs",
+    "minecraft:nether_wart",
+    "minecraft:enchanting_table",
+    "minecraft:brewing_stand",
+    "minecraft:cauldron",
+    "minecraft:end_portal",
+    "minecraft:end_portal_frame",
+    "minecraft:end_stone",
+    "minecraft:dragon_egg",
+    "minecraft:redstone_lamp",
+    "minecraft:lit_redstone_lamp",
+    "minecraft:dropper",
+    "minecraft:activator_rail",
+    "minecraft:cocoa",
+    "minecraft:sandstone_stairs",
+    "minecraft:emerald_ore",
+    "minecraft:ender_chest",
+    "minecraft:tripwire_hook",
+    "minecraft:tripWire",
+    "minecraft:emerald_block",
+    "minecraft:spruce_stairs",
+    "minecraft:birch_stairs",
+    "minecraft:jungle_stairs",
+    "minecraft:command_block",
+    "minecraft:beacon",
+    "minecraft:cobblestone_wall",
+    "minecraft:flower_pot",
+    "minecraft:carrots",
+    "minecraft:potatoes",
+    "minecraft:wooden_button",
+    "minecraft:skull",
+    "minecraft:anvil",
+    "minecraft:trapped_chest",
+    "minecraft:light_weighted_pressure_plate",
+    "minecraft:heavy_weighted_pressure_plate",
+    "minecraft:unpowered_comparator",
+    "minecraft:powered_comparator",
+    "minecraft:daylight_detector",
+    "minecraft:redstone_block",
+    "minecraft:quartz_ore",
+    "minecraft:hopper",
+    "minecraft:quartz_block",
+    "minecraft:quartz_stairs",
+    "minecraft:double_wooden_slab",
+    "minecraft:wooden_slab",
+    "minecraft:stained_hardened_clay",
+    "minecraft:stained_glass_pane",
+    "minecraft:leaves2",
+    "minecraft:log2",
+    "minecraft:acacia_stairs",
+    "minecraft:dark_oak_stairs",
+    "minecraft:slime",
+    "minecraft:glow_stick",
+    "minecraft:iron_trapdoor",
+    "minecraft:prismarine",
+    "minecraft:seaLantern",
+    "minecraft:hay_block",
+    "minecraft:carpet",
+    "minecraft:hardened_clay",
+    "minecraft:coal_block",
+    "minecraft:packed_ice",
+    "minecraft:double_plant",
+    "minecraft:standing_banner",
+    "minecraft:wall_banner",
+    "minecraft:daylight_detector_inverted",
+    "minecraft:red_sandstone",
+    "minecraft:red_sandstone_stairs",
+    "minecraft:double_stone_slab2",
+    "minecraft:stone_slab2",
+    "minecraft:spruce_fence_gate",
+    "minecraft:birch_fence_gate",
+    "minecraft:jungle_fence_gate",
+    "minecraft:dark_oak_fence_gate",
+    "minecraft:acacia_fence_gate",
+    "minecraft:repeating_command_block",
+    "minecraft:chain_command_block",
+    "minecraft:hard_glass_pane",
+    "minecraft:hard_stained_glass_pane",
+    "minecraft:chemical_heat",
+    "minecraft:spruce_door",
+    "minecraft:birch_door",
+    "minecraft:jungle_door",
+    "minecraft:acacia_door",
+    "minecraft:dark_oak_door",
+    "minecraft:grass_path",
+    "minecraft:frame",
+    "minecraft:chorus_flower",
+    "minecraft:purpur_block",
+    "minecraft:colored_torch_rg",
+    "minecraft:purpur_stairs",
+    "minecraft:colored_torch_bp",
+    "minecraft:undyed_shulker_box",
+    "minecraft:end_bricks",
+    "minecraft:frosted_ice",
+    "minecraft:end_rod",
+    "minecraft:end_gateway",
+    "minecraft:numerical",
+    "minecraft:numerical",
+    "minecraft:numerical",
+    "minecraft:magma",
+    "minecraft:nether_wart_block",
+    "minecraft:red_nether_brick",
+    "minecraft:bone_block",
+    "minecraft:numerical",
+    "minecraft:shulker_box",
+    "minecraft:purple_glazed_terracotta",
+    "minecraft:white_glazed_terracotta",
+    "minecraft:orange_glazed_terracotta",
+    "minecraft:magenta_glazed_terracotta",
+    "minecraft:light_blue_glazed_terracotta",
+    "minecraft:yellow_glazed_terracotta",
+    "minecraft:lime_glazed_terracotta",
+    "minecraft:pink_glazed_terracotta",
+    "minecraft:gray_glazed_terracotta",
+    "minecraft:silver_glazed_terracotta",
+    "minecraft:cyan_glazed_terracotta",
+    "minecraft:numerical",
+    "minecraft:blue_glazed_terracotta",
+    "minecraft:brown_glazed_terracotta",
+    "minecraft:green_glazed_terracotta",
+    "minecraft:red_glazed_terracotta",
+    "minecraft:black_glazed_terracotta",
+    "minecraft:concrete",
+    "minecraft:concretePowder",
+    "minecraft:chemistry_table",
+    "minecraft:underwater_torch",
+    "minecraft:chorus_plant",
+    "minecraft:stained_glass",
+    "minecraft:numerical",
+    "minecraft:podzol",
+    "minecraft:beetroot",
+    "minecraft:stonecutter",
+    "minecraft:glowingobsidian",
+    "minecraft:netherreactor",
+    "minecraft:info_update",
+    "minecraft:info_update2",
+    "minecraft:movingBlock",
+    "minecraft:observer",
+    "minecraft:structure_block",
+    "minecraft:hard_glass",
+    "minecraft:hard_stained_glass",
+    "minecraft:reserved6",
+};
+/* ---- END GENERATED NUMERICAL MAP ---- */
+
+/* ---- BEGIN GENERATED FLAT ERAS ----
+ * Which era stamp each pre-palette payload version answers at
+ * (D25): a 0x2c key's payload byte doubles as the chunk version,
+ * amulet caps the anchor at 1.12, and through its chunk-version
+ * table every payload 0-5 resolves to bedrock (1,1,0) and 6-7 to
+ * bedrock (1,2,0) in any world that can hold the chunk. The
+ * stamps are those eras' packed block versions
+ * (major<<24 | minor<<16); index 1 is the palettized version 1,
+ * which never reaches this table. Re-derived from amulet's own
+ * tables on every battery run (tools/ref_convert.py). */
+static const int32_t kFlatEra[8] = {
+    16842752, 0, 16842752, 16842752, 16842752, 16842752, 16908288, 16908288
+};
+/* ---- END GENERATED FLAT ERAS ---- */
+
+static uint8_t bits_for(size_t max_index);
+
+/* One synthesized palette entry for a pre-palette cell: the 1.12
+   numerical name, the data nibble as `val`, the payload's era as
+   `version` — the three fields translate.c reads to answer the
+   cell where the reference answers it (D25). */
+static bool synthesize_flat(McmeNbtDoc *out, McmeArena *arena,
+                            uint8_t id, unsigned data, int32_t era)
+{
+    const char *name = kFlatIds[id];
+    McmeTag *doc = mcme_nbt_new(arena, MCME_TAG_Compound);
+    McmeTag *nm = mcme_nbt_new(arena, MCME_TAG_String);
+    McmeTag *val = mcme_nbt_new(arena, MCME_TAG_Int);
+    McmeTag *ver = mcme_nbt_new(arena, MCME_TAG_Int);
+    if (doc == NULL || nm == NULL || val == NULL || ver == NULL)
+        return false;
+    if (!mcme_nbt_compound_init(arena, doc, 3)
+            || !mcme_nbt_set_string(arena, nm, name, strlen(name))
+            || !mcme_nbt_set_int(val, (int32_t)data)
+            || !mcme_nbt_set_int(ver, era)
+            || !mcme_nbt_compound_put(arena, doc, "name", 4, nm)
+            || !mcme_nbt_compound_put(arena, doc, "val", 3, val)
+            || !mcme_nbt_compound_put(arena, doc, "version", 7, ver)) {
+        return false;
+    }
+    memset(out, 0, sizeof *out);
+    out->arena = arena;
+    out->root = doc;
+    out->little_endian = true;
+    return true;
+}
+
+/* The two planes as one synthesized layer. Cells map to their
+   pair's slot in first-seen order; `bits` is the width that holds
+   those indices, the rule set() writes — the model's bookkeeping
+   only, because the encoder refuses a version this function
+   produces. The planes are bounds-checked by the caller. */
+static bool decode_flat(McmeBedrockLayer *layer, McmeArena *arena,
+                        const uint8_t *p, uint8_t version)
+{
+    static const size_t ncell = MCME_BEDROCK_SUBCHUNK_BLOCKS;
+    const uint8_t *ids = p + 1;
+    const uint8_t *nib = p + 1 + ncell;
+    int32_t era = kFlatEra[version];
+
+    uint16_t *indices = mcme_arena_alloc(arena, ncell * sizeof *indices);
+    int32_t *slot_of = mcme_arena_alloc(arena, ncell * sizeof *slot_of);
+    McmeNbtDoc *palette = mcme_arena_alloc(arena, ncell * sizeof *palette);
+    if (indices == NULL || slot_of == NULL || palette == NULL)
+        return false;
+    for (size_t i = 0; i < ncell; ++i) slot_of[i] = -1;
+
+    size_t palette_len = 0;
+    for (size_t i = 0; i < ncell; ++i) {
+        uint8_t id = ids[i];
+        unsigned data = (i & 1) ? (nib[i / 2] >> 4) : (nib[i / 2] & 15u);
+        int32_t pair = (int32_t)id * 16 + (int32_t)data;
+        if (slot_of[pair] < 0) {
+            if (!synthesize_flat(&palette[palette_len], arena, id, data,
+                                 era)) {
+                return false;
+            }
+            slot_of[pair] = (int32_t)palette_len;
+            ++palette_len;
+        }
+        indices[i] = (uint16_t)slot_of[pair];
+    }
+
+    layer->bits = bits_for(palette_len - 1);
+    layer->indices = indices;
+    layer->palette_len = palette_len;
+    layer->palette = palette;
+    return true;
+}
+
 bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
                                   const void *data, size_t size)
 {
@@ -53,6 +414,7 @@ bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
     uint8_t version = p[0];
     size_t layer_count;
     bool has_index = false;
+    bool flat = false;
     int8_t index = 0;
 
     switch (version) {
@@ -75,10 +437,24 @@ bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
         has_index = true;
         pos = 3;
         break;
-    case 0: case 2: case 3: case 4: case 5: case 6: case 7:
-        mcme_set_error("subchunk: legacy pre-palette version %u (raw id/data "
-                       "planes) is not supported", version);
-        return false;
+    case 0: case 2: case 3: case 4: case 5: case 6: case 7: {
+        /* The pre-palette format (D25): one plane of 4096 block ids
+           then 2048 bytes of data nibbles, low nibble first — the
+           bytes amulet's flat branch reads, the same way. No
+           storage count, no Y index: one implicit layer. */
+        if (!need(p, size, 1, MCME_BEDROCK_SUBCHUNK_BLOCKS,
+                  "the block id plane of the pre-palette format"))
+            return false;
+        if (!need(p, size, 1 + MCME_BEDROCK_SUBCHUNK_BLOCKS,
+                  MCME_BEDROCK_SUBCHUNK_BLOCKS / 2,
+                  "the data nibble plane of the pre-palette format"))
+            return false;
+        flat = true;
+        layer_count = 1;
+        pos = 1 + MCME_BEDROCK_SUBCHUNK_BLOCKS
+                    + MCME_BEDROCK_SUBCHUNK_BLOCKS / 2;
+        break;
+    }
     default:
         mcme_set_error("subchunk: unknown version %u", version);
         return false;
@@ -92,7 +468,9 @@ bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
     }
 
     /* --- Layers -------------------------------------------------------- */
-    for (size_t i = 0; i < layer_count; ++i) {
+    if (flat && !decode_flat(&layers[0], arena, p, version)) return false;
+    size_t paletted = flat ? 0 : layer_count;
+    for (size_t i = 0; i < paletted; ++i) {
         if (!need(p, size, pos, 1, "a layer header")) return false;
         uint8_t header = p[pos];
 

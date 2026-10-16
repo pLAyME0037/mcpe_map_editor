@@ -23,7 +23,14 @@ What is compared:
              a `val` — answers the loader's own `block_data` rule
              at the 1.12 cap (D24): its section is written
              beside the others and every position compares like
-             any other. The second layer carries
+             any other. A pre-palette payload (versions 0, 2-7,
+             under the pre-1.18 0x2c prefix) decodes into cells
+             the loader would spell `block_data` with no version
+             of their own (D25), and those anchor at the payload's
+             own era instead of the cap: payloads 0-5 answer at
+             bedrock 1.1.0, 6-7 at 1.2.0 — the mirror's
+             answer_flat against mcme's era rows and their
+             fall-through to D24's chain. The second layer carries
              as the Java `waterlogged` property only where the
              reference gives the block that property
              (decisions.md#D15) — the fixture's water stands over
@@ -34,8 +41,12 @@ What is compared:
              differently over the same NBT meaning.
 
   REPORT   — the JSON counts, exact: five chunks across three
-             dimensions, ten subchunks, 40960 blocks, the nether's
-             own document carried, and the skips the fixture
+             dimensions, twelve subchunks (ten palettized, two
+             fabricated flat), 49152 blocks, the nether's own
+             document carried, the two fabricated payloads that
+             must refuse and count `legacy_subchunks` (a flat one
+             cut inside its planes, a version nothing decodes),
+             and the skips the fixture
              carries (the key of a dimension
              beyond the game's three, the 3280 water positions) —
              plus the tick records this tool fabricates on the
@@ -126,6 +137,28 @@ DIM_CHUNKS = {
 DIM_DIR = {0: "", 1: "DIM-1", 2: "DIM1"}
 DIM_FLOOR = {0: -4, 1: 0, 2: 0}   # yPos: the floor section
 
+# The eras a pre-palette payload answers at (D25). Those payloads
+# carry no block version of their own, so amulet's block_data
+# branch caps at min(chunk_game_version, 1.12) — and the chunk's
+# game version comes from the payload byte itself (a 0x2c key's
+# payload doubles as the chunk-version record), which through
+# chunk_version_to_max_version and PyMCTranslate's nearest-version
+# rule resolves to bedrock (1,1,0) for payloads 0-5 and bedrock
+# (1,2,0) for 6-7 in any world that can hold them. The keys are
+# the packed block-version spelling mcme's decoder stamps into the
+# synthesized entry's `version` field: major<<24 | minor<<16.
+FLAT_ERA = {
+    (1 << 24) | (1 << 16): (1, 1, 999),   # 16842752 -> bedrock_1_1_0
+    (1 << 24) | (2 << 16): (1, 2, 999),   # 16908288 -> bedrock_1_2_0
+}
+FLAT_PAYLOAD_ERAS = {0: (1 << 24) | (1 << 16),
+                     2: (1 << 24) | (1 << 16),
+                     3: (1 << 24) | (1 << 16),
+                     4: (1 << 24) | (1 << 16),
+                     5: (1 << 24) | (1 << 16),
+                     6: (1 << 24) | (2 << 16),
+                     7: (1 << 24) | (2 << 16)}
+
 
 def region_path(world: str, dim: int, cx: int, cz: int) -> str:
     """The output region file a dimension keeps this chunk in: the
@@ -141,13 +174,14 @@ WANT_REPORT = {
     "to": "java/1.20",
     # five chunks across three dimensions (D21): the overworld's
     # two, the fixture's nether key at (0,0), the nether and end
-    # chunks fabricated at (1,-2); ten subchunks; the two extra
+    # chunks fabricated at (1,-2); twelve subchunks; the two extra
     # parity payloads of 4096 cells apiece over the fixture's
     # 24576, plus the v1 legacy subchunk's own 4096 (D24 — it
-    # writes its section now).
+    # writes its section now), plus the two fabricated flat
+    # payloads of 4096 cells apiece (D25 — they decode).
     "chunks": 5,
-    "subchunks": 10,
-    "blocks": 40960,
+    "subchunks": 12,
+    "blocks": 49152,
     # the nether's own documents (D22): the container beside the
     # sign, spawner, campfire, gateway, lectern and jukebox the
     # check fabricates there
@@ -170,8 +204,10 @@ WANT_REPORT = {
         "entities": 3,
         "heightmaps": 6,
         "items": 0,
-        # the v1 subchunk's `{name, val}` palette carries now (D24)
-        "legacy_subchunks": 0,
+        # the v1 subchunk's `{name, val}` palette carries now (D24);
+        # the two payloads fabricated to refuse (D25): a flat one
+        # cut inside its planes, a version nothing decodes
+        "legacy_subchunks": 2,
         "other": 1,                # the dimension beyond the three
         "ticks": 5,
         "water_positions": 3280,
@@ -332,6 +368,9 @@ class Reference:
         self._legacy: dict = {}
         self._defaults: dict = {}
         self._waterlog: dict = {}
+        self._flat: dict = {}
+        self._eras: dict = {}
+        self._flat_names: dict = {}
 
     def _translate(self, name: str, states: dict, bed=None):
         ns, base = name.split(":", 1)
@@ -393,6 +432,46 @@ class Reference:
             self._waterlog[name] = bool(
                 self._java.is_waterloggable(name))
         return self._waterlog[name]
+
+    def answer_flat(self, name: str, val: int, era: int):
+        """(java name, properties, defaults) for one pre-palette
+        cell (D25): the val branch's own rule — the loader spells
+        the cell `block_data` — anchored at the payload's era
+        instead of the 1.12 cap, because a flat subchunk's cells
+        carry no version of their own and the chunk-game version
+        that anchors them comes from the payload byte. Past the
+        anchor the val branch's rules hold: what the spec leaves
+        untranslated passes through, and mcme's unknown policy
+        keeps the name and drops the states."""
+        if era not in FLAT_ERA:
+            raise AssertionError(f"unknown flat era {era:#x}")
+        key = (era, name, val)
+        if key not in self._flat:
+            if era not in self._eras:
+                self._eras[era] = \
+                    self._cap._translation_manager.get_version(
+                        "bedrock", FLAT_ERA[era])
+            out_name, props, unknown = self._translate(
+                name, {"block_data": amulet_nbt.IntTag(val)},
+                bed=self._eras[era])
+            if unknown or "block_data" in props:
+                self._flat[key] = (name, {}, {})
+            else:
+                self._flat[key] = (out_name, canon(props), {})
+        return self._flat[key]
+
+    def flat_name(self, block_id: int) -> str:
+        """The name the reference gives a pre-palette cell's id
+        (D25): ints_to_block is its own id leg — the 1.12.0
+        numerical map, the same Version the cap resolves to and
+        the one flat tuples always convert through (bedrock
+        __init__.py's `or 17563649`). Ids that map does not hold
+        answer as the minecraft:numerical placeholder."""
+        if block_id not in self._flat_names:
+            b = self._cap.block.ints_to_block(block_id, 0)
+            self._flat_names[block_id] = \
+                f"{b.namespace}:{b.base_name}"
+        return self._flat_names[block_id]
 
     def biome(self, bedrock_id: int) -> str:
         """The Java biome name for a Bedrock biome id, through the
@@ -490,16 +569,68 @@ def entry_of(entry):
     return name, {}, None
 
 
-def load_input(world: str):
+def put_flat(db, cx: int, cz: int, dim: int, cy: int, version: int,
+             cells: dict) -> None:
+    """A pre-palette subchunk under the pre-1.18 prefix (D25): the
+    payload byte, 4096 block ids, then 2048 data nibbles low nibble
+    first — the bytes both decoders read. A cell's pair sits at its
+    XZY index (i = x<<8 | z<<4 | y); `cells` spells
+    {(x, y, z): (id, data)} and every other cell is air."""
+    ids = bytearray(4096)
+    nib = bytearray(2048)
+    for (x, y, z), (bid, data) in cells.items():
+        i = (x << 8) | (z << 4) | y
+        ids[i] = bid
+        if i & 1:
+            nib[i >> 1] = (nib[i >> 1] & 0x0F) | (data << 4)
+        else:
+            nib[i >> 1] = (nib[i >> 1] & 0xF0) | data
+    db.put(chunk_key(cx, cz, cy, dim, tag=0x2C),
+           bytes([version]) + bytes(ids) + bytes(nib))
+
+
+def _flat_pair(item):
+    """One of amulet's flat palette entries — ((version, block),) —
+    as (id, data). The loader's air seed carries a Block instead of
+    the pair and is never referenced by the cells."""
+    _version, block = item[0]
+    if isinstance(block, tuple):
+        return int(block[0]), int(block[1])
+    return 0, 0
+
+
+def synthesize_flat(palette, ref, era: int):
+    """amulet's flat palette — its seed and the (id, data) tuples —
+    as the loader would spell each cell's entry: {name, val,
+    version} (D25), the same three fields mcme's decoder composes
+    and entry_of reads. Positions stay put — the cells were
+    offset past the seed by the loader."""
+    out = []
+    for item in palette:
+        bid, data = _flat_pair(item)
+        comp = amulet_nbt.CompoundTag()
+        comp["name"] = amulet_nbt.StringTag(ref.flat_name(bid))
+        comp["val"] = amulet_nbt.IntTag(data)
+        comp["version"] = amulet_nbt.IntTag(era)
+        out.append(amulet_nbt.NamedTag(comp))
+    return out
+
+
+def load_input(world: str, ref):
     """The fixture's stored subchunks, read from the COPIED store:
-    (dim, cx, cz, cy) -> (kind, layers) where kind is 'ok', or
-    'legacy' for a version-1 payload whose `{name, val}` entries
-    answer through the loader's rule (D24) — its layers compare
-    like any other's — and layers is the subchunk's full list of
-    (blocks, palette) pairs — the second layer is the waterlogging
-    half D15 folds into the Java property. The key speaks its own
-    dimension (D21): the three dimensions keep separate chunks even
-    where they share coordinates."""
+    (dim, cx, cz, cy) -> (kind, layers, era). `kind` is 'ok' for a
+    modern palettized payload, 'legacy' for a version-1 payload
+    whose `{name, val}` entries answer through the loader's rule
+    (D24) — its layers compare like any other's — and 'flat' for
+    a pre-palette payload (D25), where `era` names the packed
+    block version its cells answer at. layers is the subchunk's
+    full list of (blocks, palette) pairs — the second layer is
+    the waterlogging half D15 folds into the Java property — with
+    a flat palette already normalized into loader-shaped
+    {name, val, version} entries. Payloads that do not decode are
+    absent: the report counts them (legacy_subchunks). The key
+    speaks its own dimension (D21), and either subchunk prefix is
+    read — 0x2f from 1.18, 0x2c before it."""
     from amulet.libs.leveldb import LevelDB
     from amulet.level.formats.leveldb_world.interface.chunk.leveldb_8 import (
         LevelDB8Interface,
@@ -512,15 +643,31 @@ def load_input(world: str):
         for dim, chunks in DIM_CHUNKS.items():
             for cx, cz in chunks:
                 for cy in range(-5, 6):
-                    try:
-                        payload = db.get(chunk_key(cx, cz, cy, dim))
-                    except KeyError:
+                    payload = None
+                    for tag in (0x2F, 0x2C):
+                        try:
+                            payload = db.get(chunk_key(cx, cz, cy, dim,
+                                                       tag=tag))
+                            break
+                        except KeyError:
+                            continue
+                    if payload is None:
                         continue
-                    version, layers = decode_payload(iface, payload)
-                    if version == 1:
-                        subs[(dim, cx, cz, cy)] = ("legacy", layers)
+                    try:
+                        version, layers = decode_payload(iface, payload)
+                    except Exception:
+                        continue    # a refusal; the report counts it
+                    if version in (0, 2, 3, 4, 5, 6, 7):
+                        era = FLAT_PAYLOAD_ERAS[version]
+                        blocks, palette = layers[0]
+                        subs[(dim, cx, cz, cy)] = (
+                            "flat",
+                            [(blocks, synthesize_flat(palette, ref, era))],
+                            era)
+                    elif version == 1:
+                        subs[(dim, cx, cz, cy)] = ("legacy", layers, None)
                     else:
-                        subs[(dim, cx, cz, cy)] = ("ok", layers)
+                        subs[(dim, cx, cz, cy)] = ("ok", layers, None)
     finally:
         db.close()
     return subs
@@ -1124,6 +1271,9 @@ ROW_RE = re.compile(
 BIOME_ROW_RE = re.compile(r'\{\s*(-?\d+),\s*"([^"]+)"\s*\}')
 LEGACY_ROW_RE = re.compile(
     r'\{"([^"]+)", (-?\d+), "([^"]+)", (\d+), \{(.*)\}\},')
+FLAT_ROW_RE = re.compile(
+    r'\{(\d+), "([^"]+)", (-?\d+), "([^"]+)", (\d+), \{(.*)\}\},')
+FLAT_ID_RE = re.compile(r'"([^"]+)",')
 LEGACY_DEF_RE = re.compile(r'\{"([^"]+)", "([^"]+)", (\d+), \{(.*)\}\},')
 LEGACY_PROP_RE = re.compile(r'\{"([^"]*)","([^"]*)"\}')
 NUMERIC = (amulet_nbt.ByteTag, amulet_nbt.IntTag, amulet_nbt.ShortTag,
@@ -1361,6 +1511,162 @@ def pin_legacy_map(ref) -> int:
     return len(rows)
 
 
+def pin_flat_map(ref) -> int:
+    """The generated flat tables re-pinned against the reference
+    (D25): every id the numerical map names is the reference's own
+    ints_to_block answer; every era stamp per payload version is
+    what amulet's own chunk-version table anchors at, and what the
+    mirror's own constant says; every era row is answer_flat's
+    answer for its (era, name, val) and differs from what D24's
+    chain would say there; and every cell over the id map's whole
+    domain that carries no row is exactly what the chain says —
+    which answer_flat says is the era's answer too
+    (decisions.md#D25)."""
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        os.pardir)
+    with open(os.path.join(root, "src", "world", "bedrock_chunk.c"),
+              encoding="utf-8") as f:
+        bsrc = f.read()
+    with open(os.path.join(root, "src", "translate", "translate.c"),
+              encoding="utf-8") as f:
+        tsrc = f.read()
+
+    # ---- the id map: 256 names, the reference's own id leg ----
+    for marker in ("---- BEGIN GENERATED NUMERICAL MAP ----",
+                   "---- END GENERATED NUMERICAL MAP ----",
+                   "---- BEGIN GENERATED FLAT ERAS ----",
+                   "---- END GENERATED FLAT ERAS ----"):
+        if marker not in bsrc:
+            raise AssertionError(
+                "the generated flat tables' markers are missing "
+                f"from bedrock_chunk.c: {marker}")
+    ids_part = bsrc.split("---- BEGIN GENERATED NUMERICAL MAP ----", 1)[1] \
+        .split("---- END GENERATED NUMERICAL MAP ----", 1)[0] \
+        .split("kFlatIds[256] = {", 1)[1].split("\n};", 1)[0]
+    ids = FLAT_ID_RE.findall(ids_part)
+    if len(ids) != 256:
+        raise AssertionError(
+            f"the numerical map holds {len(ids)} names, want 256")
+    for i, nm in enumerate(ids):
+        want = ref.flat_name(i)
+        if nm != want:
+            raise AssertionError(
+                f"numerical id {i}: the table says {nm}, the "
+                f"reference answers {want}")
+
+    # ---- the era stamps: amulet's own chunk-version table ----
+    eras_part = bsrc.split("---- BEGIN GENERATED FLAT ERAS ----", 1)[1] \
+        .split("kFlatEra[8] = {", 1)[1].split("\n};", 1)[0]
+    stamps = [int(v) for v in re.findall(r"-?\d+", eras_part)]
+    if len(stamps) != 8:
+        raise AssertionError(
+            f"the flat era table holds {len(stamps)} stamps, want 8")
+    from amulet.level.formats.leveldb_world.interface.chunk \
+        .leveldb_chunk_versions import chunk_version_to_max_version
+    dir_era = {"bedrock_1_1_0": (1 << 24) | (1 << 16),
+               "bedrock_1_2_0": (1 << 24) | (2 << 16)}
+    world, cap = (1, 20, 80), (1, 12, 999)
+    tm = ref._cap._translation_manager
+    for v in range(8):
+        if v == 1:                     # the palettized version 1
+            want_stamp = 0
+        else:
+            game = min(chunk_version_to_max_version[v][1], world)
+            vo = tm.get_version("bedrock", min(game, cap))
+            d = vo._version_path.split("/")[-1]
+            if d not in dir_era:
+                raise AssertionError(
+                    f"payload {v}: the reference anchors at {d}, "
+                    f"not one of the two measured flat eras — the "
+                    f"measurement is invalid, not the table")
+            want_stamp = dir_era[d]
+            if FLAT_PAYLOAD_ERAS.get(v) != want_stamp:
+                raise AssertionError(
+                    f"payload {v}: the mirror stamps "
+                    f"{FLAT_PAYLOAD_ERAS.get(v):#x}, amulet answers "
+                    f"{want_stamp:#x}")
+        if stamps[v] != want_stamp:
+            raise AssertionError(
+                f"payload {v}: the table stamps {stamps[v]:#x}, "
+                f"the reference anchors at {want_stamp:#x}")
+
+    # ---- the era rows, and the chain they stand beside ----
+    for marker in ("---- BEGIN GENERATED FLAT MAP ----",
+                   "---- END GENERATED FLAT MAP ----"):
+        if marker not in tsrc:
+            raise AssertionError(
+                "the generated flat map's markers are missing "
+                f"from translate.c: {marker}")
+    rows_part = tsrc.split("---- BEGIN GENERATED FLAT MAP ----", 1)[1] \
+        .split("kFlatMap[] = {", 1)[1].split("\n};", 1)[0]
+    rows = FLAT_ROW_RE.findall(rows_part)
+    if not rows:
+        raise AssertionError("the generated flat map holds no rows")
+    order = [(int(r[0]), r[1], int(r[2])) for r in rows]
+    if order != sorted(order):
+        raise AssertionError(
+            "the flat map is not sorted by (era, name, val); the "
+            "lookup's binary search walks that order")
+
+    # The chain exactly as C walks it: the legacy rows, then the
+    # five defaults, then the name alone (mcme's unknown-block
+    # policy) — read out of the same table pin_legacy_map pins.
+    lbody = tsrc.split("---- BEGIN GENERATED LEGACY MAP ----", 1)[1] \
+        .split("---- END GENERATED LEGACY MAP ----", 1)[0]
+    lrows = LEGACY_ROW_RE.findall(
+        lbody.split("kLegacyMap[] = {", 1)[1].split("\n};", 1)[0])
+    ldefs = LEGACY_DEF_RE.findall(
+        lbody.split("kLegacyDefaults[] = {", 1)[1].split("\n};", 1)[0])
+    lmap = {(nm, int(v)): (to, canon(dict(LEGACY_PROP_RE.findall(props))))
+            for nm, v, to, n, props in lrows}
+    dmap = {nm: (to, canon(dict(LEGACY_PROP_RE.findall(props))))
+            for nm, to, n, props in ldefs}
+
+    def chain(name, val):
+        hit = lmap.get((name, val))
+        if hit is None:
+            hit = dmap.get(name)
+        return hit if hit is not None else (name, {})
+
+    fmap = {}
+    for era, nm, v, to, n, props in rows:
+        pr = dict(LEGACY_PROP_RE.findall(props))
+        if len(pr) != int(n):
+            raise AssertionError(
+                f"flat row {era}/{nm}/{v}: {n} properties claimed, "
+                f"{len(pr)} written")
+        key = (int(era), nm, int(v))
+        if key in fmap:
+            raise AssertionError(f"flat row written twice: {key}")
+        fmap[key] = (to, canon(pr))
+
+    # The whole cell domain of the id map: a rowed cell answers at
+    # its era, an unrowed cell answers through the chain — and
+    # answer_flat calls both the reference's own answer.
+    asked = 0
+    for era in sorted(FLAT_ERA):
+        for nm in sorted(set(ids)):
+            for val in range(16):
+                asked += 1
+                want = ref.answer_flat(nm, val, era)
+                have = fmap.get((era, nm, val), chain(nm, val))
+                if (want[0], want[1]) != have:
+                    raise AssertionError(
+                        f"flat {era:#x}/{nm}/{val}: the reference "
+                        f"answers {(want[0], want[1])}, the tables "
+                        f"say {have}")
+    # And every row is a real delta: without it the chain would
+    # say something else.
+    for (era, nm, val), row in fmap.items():
+        if era not in FLAT_ERA:
+            raise AssertionError(f"flat row at unknown era {era:#x}")
+        if chain(nm, val) == row:
+            raise AssertionError(
+                f"flat {era:#x}/{nm}/{val}: a row the cap chain "
+                f"already says — deltas only")
+    return len(rows)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mcme", required=True)
@@ -1439,6 +1745,29 @@ def main() -> int:
             parity = tdb.get(chunk_key(0, 0, 0, 1))
             tdb.put(chunk_key(1, -2, 0, 1), parity)
             tdb.put(chunk_key(1, -2, 0, 2), parity)
+            # ---- D25: pre-palette subchunks under the pre-1.18
+            # prefix, and payloads that must refuse and count ------
+            # Two flat payloads in the overworld's own (0,0), at
+            # heights where no section and no biome array stand:
+            # payload 5 (era 1.1) and payload 7 (era 1.2), each
+            # carrying the cells that separate the eras' answers
+            # from the 1.12 cap chain — sandstone data 3, jukebox,
+            # a log — plus an id the numerical map does not hold,
+            # which passes through as minecraft:numerical.
+            put_flat(tdb, 0, 0, 0, 3, 5, {
+                (0, 0, 0): (24, 3), (1, 0, 0): (84, 0),
+                (2, 0, 0): (210, 5), (3, 0, 0): (17, 4),
+            })
+            put_flat(tdb, 0, 0, 0, 5, 7, {
+                (0, 0, 0): (24, 3), (1, 0, 0): (84, 0),
+                (2, 0, 0): (17, 1),
+            })
+            # Two payloads that must refuse and count once each
+            # (D12): a flat one cut inside its planes, and a version
+            # nothing decodes.
+            tdb.put(chunk_key(0, 0, 6, 0, tag=0x2C),
+                    bytes([0x05]) + bytes(4096))
+            tdb.put(chunk_key(0, 0, 7, 0, tag=0x2C), bytes([0x0A]))
             # One column at 300 — inside the overworld's 384, past
             # the nether's 256 — so the map drops while the floor
             # stratum's cells still cross (D20's halves per
@@ -1547,8 +1876,8 @@ def main() -> int:
 
         # ---- blocks: the reference and the walk, position by
         # position ------------------------------------------------
-        subs = load_input(in_world)
         ref = Reference()
+        subs = load_input(in_world, ref)
         mismatches = []
         compared = 0
         all_chunks = [(d, cx, cz) for d, cs in DIM_CHUNKS.items()
@@ -1559,24 +1888,22 @@ def main() -> int:
             if tag is None:
                 raise AssertionError(
                     f"no output chunk (dim {dim}, {cx}, {cz})")
-            ok_cys = sorted(
-                cy for (d, a, b, cy), (kind, _) in subs.items()
-                if (d, a, b) == (dim, cx, cz) and kind == "ok")
-            legacy_cys = sorted(
-                cy for (d, a, b, cy), (kind, _) in subs.items()
-                if (d, a, b) == (dim, cx, cz) and kind == "legacy")
+            stored_cys = sorted(
+                cy for (d, a, b, cy) in subs
+                if (d, a, b) == (dim, cx, cz))
             out_ys = sorted(s["Y"].py_data for s in tag["sections"])
             # Every stored subchunk has a position the map answers
-            # with a block — the v1 legacy one since D24 — so all of
-            # them store a section; an all-air one would not.
-            stored_cys = sorted(ok_cys + legacy_cys)
+            # with a block — the v1 legacy one since D24, the flat
+            # ones since D25 — so all of them store a section; an
+            # all-air one would not, and a payload that refused
+            # decode is absent from both sides of this comparison.
             if out_ys != stored_cys:
                 raise AssertionError(
                     f"chunk ({cx}, {cz}) stores sections {out_ys}, "
                     f"want every stored subchunk {stored_cys}")
 
             for cy in stored_cys:
-                layers = subs[(dim, cx, cz, cy)][1]
+                kind, layers, era = subs[(dim, cx, cz, cy)]
                 blocks, palette = layers[0]
                 arr = numpy.asarray(blocks).reshape(16, 16, 16)
                 # The second layer, when the subchunk stores one: a
@@ -1595,8 +1922,12 @@ def main() -> int:
                         for lz in range(16):
                             name, states, val = entry_of(
                                 palette[int(arr[lx][ly][lz])])
-                            want_name, want, default = ref.answer(
-                                name, states, val)
+                            if kind == "flat":
+                                want_name, want, default = \
+                                    ref.answer_flat(name, val, era)
+                            else:
+                                want_name, want, default = ref.answer(
+                                    name, states, val)
                             if (l1_arr is not None
                                     and entry_of(l1_palette[int(
                                         l1_arr[lx][ly][lz])])[0]
@@ -1913,6 +2244,14 @@ def main() -> int:
         _log(f"ok — the legacy map's {pinned_legacy} rows and their "
              "five defaults all answer the way the reference "
              "answers, in the order the lookup walks")
+
+        # ---- the generated flat tables, against the reference ----
+        pinned_flat = pin_flat_map(ref)
+        checks += 1
+        _log(f"ok — the flat map's {pinned_flat} era rows, all 256 "
+              "numerical ids, both era stamps per payload version "
+              "and every unrowed cell answer the way the reference "
+              "answers, in the order the lookup walks")
 
         # ---- the documented refusals -------------------------------
         # a --to that names no edition: usage

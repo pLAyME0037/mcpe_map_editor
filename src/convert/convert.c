@@ -2001,8 +2001,10 @@ static bool convert_chunk(McmeLevelDb *db, const char *out,
         McmeBedrockSubchunk sc;
         if (!mcme_bedrock_subchunk_decode(&sc, arena, val.data,
                                           val.len)) {
-            /* A payload this build does not decode — the pre-palette
-               versions — drops the subchunk as air, counted (D12). */
+            /* A payload this build does not decode — a version
+               nothing decodes, a payload cut short or with a tail
+               (the pre-palette versions decode, D25) — drops the
+               subchunk as air, counted (D12). */
             mcme_buffer_free(&val);
             mcme_clear_error();
             rep->legacy_subchunks++;

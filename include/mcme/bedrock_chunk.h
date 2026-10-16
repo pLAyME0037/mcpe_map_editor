@@ -6,17 +6,20 @@
  * binary wrapper around one or more *paletted storage* layers, each holding
  * 4096 block indices plus the palette those indices point into. This module
  * decodes that payload into a model and encodes a model back into payload
- * bytes; the two are inverses, byte for byte, which is what the golden
- * fixtures assert against the reference's own payloads.
+ * bytes; for every palettized payload the two are inverses, byte for byte,
+ * which is what the golden fixtures assert against the reference's own
+ * payloads. The one documented exception is the pre-palette format, which
+ * decodes for reading and refuses to encode (below) — the header's flat
+ * note.
  *
  * The format, as settled by minecraft.wiki's Bedrock level-format page, by
  * Tommaso Checchi's paletted-storage write-up, and by the two independent
  * disk readers this tree was validated against (amulet-core 1.9.50 and
  * mcbe-leveldb 1.23.0 — all three agree, including on the odd cases):
  *
- *   byte 0        subchunk version: 1, 8 or 9
- *                 0-7 are the legacy pre-palette format (raw id/data planes)
- *                 and are REFUSED here, loudly, rather than misparsed
+ *   byte 0        subchunk version: 1, 8 or 9 — paletted storage, as below
+ *                 0, 2-7 are the pre-palette format, decoded into one
+ *                 synthesized layer (the flat note under this list)
  *   byte 1        storage-layer count       (version 1 omits this: it is 1)
  *   byte 2        signed subchunk Y index   (version 9 only, 1.18.2+)
  *
@@ -47,6 +50,27 @@
  * A layer count of 0 (version 8/9) is a legal "this subchunk is all air"
  * marker and decodes to zero layers.
  *
+ * The pre-palette payloads (versions 0, 2-7) have none of that wrapper:
+ * the version byte, then exactly 4096 block ids, then exactly 2048 bytes
+ * of data nibbles — cell i's nibble in byte i/2's low half when i is even
+ * and its high half when it is odd, the order amulet's flat branch reads
+ * them in — and nothing else. They decode into one synthesized layer
+ * (D25): each distinct (id, data) pair becomes one palette entry, the
+ * id's name from the bedrock 1.12 numerical map (GENERATED NUMERICAL
+ * MAP, bedrock_chunk.c — six ids spell `minecraft:numerical`, the
+ * placeholder the reference passes through) as the entry's `name`, the
+ * data as `val`, and the payload's era as `version` (GENERATED FLAT
+ * ERAS) — the three fields translate.c reads to answer the cell where
+ * the reference answers it. Cells point at their pair's slot in
+ * first-seen order, `bits` is the width that holds those slots,
+ * `layer_count` is 1 and `has_index` false. A payload cut short fails
+ * the bounds check by plane name; bytes past the two planes fail the
+ * same tail rule the palettized path uses. These payloads never encode:
+ * the encoder's version gate refuses them loudly, which is the intended
+ * asymmetry — the composition answers flat cells, it is not a shape the
+ * encoder can name back to planes (the six unmapped ids share one name,
+ * so their identity would not survive anyway).
+ *
  * The payload reaching this module is the store value verbatim:
  * chunk payload values are stored uncompressed (the fork's
  * compression lives inside the database's table blocks, not in
@@ -54,8 +78,9 @@
  * here.
  *
  * Strictness is deliberate. Everything is bounds-checked, and anything this
- * decoder does not fully understand — legacy versions, unknown widths,
- * runtime palettes, an empty palette, trailing bytes after the last layer —
+ * decoder does not fully understand — an unknown version, unknown widths,
+ * runtime palettes, an empty palette, a pre-palette payload cut short or
+ * carrying a tail, trailing bytes after the last layer —
  * is an error naming what was found, not a best-effort guess. An editor that
  * guesses here writes the guess back to someone's world. The cost is that a
  * real world containing one of these refuses to decode that subchunk with a
@@ -82,7 +107,8 @@ typedef struct {
 } McmeBedrockLayer;
 
 typedef struct {
-    uint8_t  version;       /* 1, 8 or 9 as stored */
+    uint8_t  version;       /* the payload's byte: 1, 8, 9, or a pre-palette
+                               version that carries one synthesized layer  */
     bool     has_index;     /* version 9 carries the subchunk's own Y index */
     int8_t   index;         /* valid when has_index; not range-checked here */
     size_t   layer_count;   /* 0 means the all-air marker */
@@ -107,9 +133,13 @@ bool mcme_bedrock_subchunk_decode(McmeBedrockSubchunk *out, McmeArena *arena,
 /*
  * Encodes a model back into payload bytes, appended to `out`.
  *
- * The contract is inversion: for every payload decode() accepts,
+ * The contract is inversion: for every palettized payload decode() accepts,
  * encode(decode(payload)) reproduces it byte for byte, padding excepted
- * (below). That holds because the encoder writes what the model *records*
+ * (below). The pre-palette payloads are the one exception — decode()
+ * accepts them for reading and this function refuses them at the gate
+ * below, so a flat world is never written back as flat (the header's flat
+ * note). Otherwise the contract holds because the encoder writes what the
+ * model *records*
  * rather than re-deriving it: `bits` is the stored width, never recomputed
  * from the palette — a two-entry palette stored at width 16 round-trips as
  * width 16 — and palette documents are forced little-endian regardless of

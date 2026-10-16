@@ -2054,8 +2054,8 @@ static void test_subchunk_refusals(void)
     { static const uint8_t b[] = { 0x08 }; REFUSE(b, sizeof b); }
     { static const uint8_t b[] = { 0x09, 1 }; REFUSE(b, sizeof b); }
 
-    /* Versions this build does not decode: the legacy flat format and
-       anything invented after 9. */
+    /* Refused payloads: a pre-palette payload cut off inside its planes
+       (D25 — the planes themselves decode), and anything invented after 9. */
     { static const uint8_t b[] = { 0x05, 0, 0 }; REFUSE(b, sizeof b); }
     { static const uint8_t b[] = { 0x0a, 0, 0 }; REFUSE(b, sizeof b); }
 
@@ -2299,6 +2299,141 @@ static void test_subchunk_refusals(void)
     }
 
 #undef REFUSE
+    mcme_arena_free(arena);
+}
+
+/* ========================================================================
+ * Pre-palette payloads: the planes decode, everything around them refuses
+ * ======================================================================== */
+
+/* The pre-palette format (D25): a payload byte in {0, 2-7}, then 4096
+   block ids, then 2048 data nibbles, low nibble first — the bytes
+   amulet's flat branch reads, the same way, cell i's pair composed into
+   one synthesized palette entry: the id's name from the 1.12 numerical
+   map, the data as `val`, the payload's era as `version`. The encoder
+   refuses the model whole: reading a flat world is supported, writing
+   it back as flat never is. */
+static void test_subchunk_flat(void)
+{
+    printf("  subchunk flat (pre-palette)\n");
+
+    static const int32_t era_a = 16842752;   /* "1.1.0.0": payloads 0-5 */
+    static const int32_t era_b = 16908288;   /* "1.2.0.0": payloads 6-7 */
+
+    /* 4096 ids, 2048 nibbles, plus one spare byte so the tail rule can
+       be fed a real overflow. Cell i = (x<<8)|(z<<4)|y, the XZY order
+       the palettized indices already use. */
+    static uint8_t b[1 + 4096 + 2048 + 1];
+    memset(b, 0, sizeof b);
+    b[0] = 0x05;
+    b[1 + 0] = 1;                    /* cell 0,0,0: stone            */
+    b[1 + 1] = 24;                   /* cell 0,0,1: sandstone        */
+    b[1 + 3] = 210;                  /* cell 0,1,1: not in the map   */
+    b[1 + 4096 + 0] = 0x30;          /* cell 1 (odd): data 3, high
+                                        nibble of byte 0             */
+    b[1 + 4096 + 1] = 0x50;          /* cell 3 (odd): data 5         */
+
+    McmeArena *arena = mcme_arena_new();
+    McmeBedrockSubchunk sc;
+
+    if (!mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b - 1)) {
+        g_failed++;
+        printf("  FAIL %s:%d flat payload refused: %s\n",
+               __FILE__, __LINE__, mcme_last_error());
+        mcme_arena_free(arena);
+        return;
+    }
+    CHECK(sc.version == 0x05);
+    CHECK(sc.layer_count == 1);
+    CHECK(!sc.has_index);
+    CHECK(sc.layers[0].palette_len == 4);
+    CHECK(sc.layers[0].bits == 2);       /* bits_for(3): the width that
+                                            holds the largest slot    */
+    CHECK(sc.layers[0].indices[0] == 0);
+    CHECK(sc.layers[0].indices[1] == 1);
+    CHECK(sc.layers[0].indices[2] == 2);
+    CHECK(sc.layers[0].indices[3] == 3);
+    CHECK(sc.layers[0].indices[4095] == 2);   /* the last cell: air    */
+
+    {   /* The four pairs, first-seen order, each stamped era A. */
+        static const struct {
+            size_t    slot;
+            const char *name;
+            int32_t   val;
+        } want[] = {
+            {0, "minecraft:stone", 0},
+            {1, "minecraft:sandstone", 3},
+            {2, "minecraft:air", 0},
+            {3, "minecraft:numerical", 5},
+        };
+        for (size_t k = 0; k < sizeof want / sizeof want[0]; ++k) {
+            const McmeTag *doc = sc.layers[0].palette[want[k].slot].root;
+            const McmeTag *nm = doc ? mcme_nbt_get(doc, "name") : NULL;
+            CHECK(nm != NULL && nm->type == MCME_TAG_String);
+            CHECK(nm->string.len == strlen(want[k].name)
+                  && memcmp(nm->string.data, want[k].name,
+                            nm->string.len) == 0);
+            CHECK(mcme_nbt_int_or(mcme_nbt_get(doc, "val"), -1)
+                  == want[k].val);
+            CHECK(mcme_nbt_int_or(mcme_nbt_get(doc, "version"), -1)
+                  == era_a);
+            CHECK(sc.layers[0].palette[want[k].slot].little_endian);
+        }
+    }
+
+    {   /* Refused on the way out, before one byte is appended. */
+        McmeBuffer enc;
+        mcme_buffer_init(&enc);
+        CHECK_MSG(!mcme_bedrock_subchunk_encode(&sc, &enc),
+                  "encode accepted a pre-palette model");
+        CHECK_MSG(enc.len == 0, "a refused encode appended bytes");
+        CHECK_MSG(mcme_last_error()[0] != '\0',
+                  "encode refusal with empty message");
+        mcme_clear_error();
+        mcme_buffer_free(&enc);
+    }
+    mcme_arena_free(arena);
+
+    /* Payload 6 answers at era B (D25): the same planes, all air,
+       every entry stamped 1.2 instead of 1.1. */
+    memset(b, 0, sizeof b);
+    b[0] = 0x07;
+    arena = mcme_arena_new();
+    if (!mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b - 1)) {
+        g_failed++;
+        printf("  FAIL %s:%d payload 6 refused: %s\n",
+               __FILE__, __LINE__, mcme_last_error());
+        mcme_arena_free(arena);
+        return;
+    }
+    CHECK(sc.version == 0x07);
+    CHECK(sc.layer_count == 1 && !sc.has_index);
+    CHECK(sc.layers[0].palette_len == 1);
+    {
+        const McmeTag *doc = sc.layers[0].palette[0].root;
+        const McmeTag *nm = doc ? mcme_nbt_get(doc, "name") : NULL;
+        CHECK(nm != NULL && nm->type == MCME_TAG_String
+              && nm->string.len == 13
+              && memcmp(nm->string.data, "minecraft:air", 13) == 0);
+        CHECK(mcme_nbt_int_or(mcme_nbt_get(doc, "version"), -1) == era_b);
+    }
+    mcme_arena_free(arena);
+
+    /* Cut short: the id plane, then the nibble plane — each refused by
+       plane name — and one byte past the planes, which a tolerant
+       decoder would drop on the way back out. */
+    arena = mcme_arena_new();
+    memset(b, 0, sizeof b);
+    b[0] = 0x05;
+    CHECK(!mcme_bedrock_subchunk_decode(&sc, arena, b, 4096));
+    CHECK(strstr(mcme_last_error(), "block id plane") != NULL);
+    mcme_clear_error();
+    CHECK(!mcme_bedrock_subchunk_decode(&sc, arena, b, 1 + 4096 + 2047));
+    CHECK(strstr(mcme_last_error(), "data nibble plane") != NULL);
+    mcme_clear_error();
+    CHECK(!mcme_bedrock_subchunk_decode(&sc, arena, b, sizeof b));
+    CHECK(strstr(mcme_last_error(), "trailing bytes") != NULL);
+    mcme_clear_error();
     mcme_arena_free(arena);
 }
 
@@ -4430,6 +4565,32 @@ static void test_translate(void)
     check_translate(arena,
         "{name:\"minecraft:stone\",val:2147483648L}",
         "{Name: \"minecraft:stone\"}");
+    /* The flat era (D25): a pre-palette cell's entry carries the
+       payload's era as `version`, and the answer anchors there —
+       sandstone val 3 is plain sandstone at era 1.1 but the cap
+       chain's smooth_sandstone without the stamp, and also with
+       any other version (a real val entry's anchor, where one
+       would be read). Jukebox val 0 keeps no record at era 1.1;
+       era 1.2 and the stampless chain both say has_record false
+       — the fall-through the era's delta rows leave to D24's
+       table. The id map's placeholder passes through. */
+    check_translate(arena,
+        "{name:\"minecraft:sandstone\",val:3,version:16842752}",
+        "{Name: \"minecraft:sandstone\"}");
+    check_translate(arena, "{name:\"minecraft:sandstone\",val:3}",
+        "{Name: \"minecraft:smooth_sandstone\"}");
+    check_translate(arena,
+        "{name:\"minecraft:sandstone\",val:3,version:17694720}",
+        "{Name: \"minecraft:smooth_sandstone\"}");
+    check_translate(arena,
+        "{name:\"minecraft:jukebox\",val:0,version:16842752}",
+        "{Name: \"minecraft:jukebox\"}");
+    check_translate(arena,
+        "{name:\"minecraft:jukebox\",val:0,version:16908288}",
+        "{Name: \"minecraft:jukebox\", Properties: {has_record: \"false\"}}");
+    check_translate(arena,
+        "{name:\"minecraft:numerical\",val:5,version:16842752}",
+        "{Name: \"minecraft:numerical\"}");
     /* An entry with neither field is modern — no states to carry —
        and its `version` never gated it. */
     check_translate(arena, "{name:\"minecraft:stone\",states:{}}",
@@ -6368,6 +6529,7 @@ int mcme_test_world(void)
     test_bedrock_keys();
     test_bedrock_subchunks();
     test_subchunk_refusals();
+    test_subchunk_flat();
     test_biome_record();
     test_bedrock_inventory();
     test_bedrock_write();

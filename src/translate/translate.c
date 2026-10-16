@@ -2868,6 +2868,165 @@ static const struct LegacyDefault kLegacyDefaults[] = {
 };
 /* ---- END GENERATED LEGACY MAP ---- */
 
+/* ---- BEGIN GENERATED FLAT MAP ----
+ * The pre-palette cells' era rows (D25): a flat payload (versions
+ * 0, 2-7) carries no block version of its own, so the decoder
+ * stamps the payload's era into the synthesized entry's `version`
+ * and the answer anchors there — the reference's own anchor for
+ * such a chunk, min(chunk_game_version, 1.12) with the payload
+ * byte doubling as the chunk version, which through amulet's
+ * chunk-version table resolves to bedrock (1,1,0) for payloads
+ * 0-5 and bedrock (1,2,0) for 6-7. Rows below are the deltas:
+ * where the era's answer differs from the cap chain above, keyed
+ * (era, name, val) in that order. A cell with no row answers
+ * through the chain exactly as a versionless val entry does (D24)
+ * — which is the reference's answer too, verified over the whole
+ * (era, name, val) domain of the id map by tools/ref_convert.py
+ * on every battery run. The id->name half of the composition
+ * lives with the decoder (GENERATED NUMERICAL MAP, bedrock_chunk.c):
+ * a cell's name comes from the 1.12 numerical map, its data
+ * nibble is the val. */
+struct FlatRow {
+    int32_t     era;       /* the stamped block version            */
+    const char *from;      /* the cell's name, from the id map     */
+    int32_t     val;       /* the cell's data nibble               */
+    const char *to;        /* Java's Name                          */
+    size_t      nprops;
+    struct LegacyProp props[7];
+};
+
+static const struct FlatRow kFlatMap[] = {
+    {16842752, "minecraft:cauldron", 9, "minecraft:cauldron", 0, {}},
+    {16842752, "minecraft:cauldron", 10, "minecraft:cauldron", 0, {}},
+    {16842752, "minecraft:cauldron", 11, "minecraft:cauldron", 0, {}},
+    {16842752, "minecraft:cauldron", 12, "minecraft:cauldron", 0, {}},
+    {16842752, "minecraft:cauldron", 13, "minecraft:cauldron", 0, {}},
+    {16842752, "minecraft:cauldron", 14, "minecraft:cauldron", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 2, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 3, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 4, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 5, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 6, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 7, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 8, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 9, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 10, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 11, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 12, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:cobblestone_wall", 13, "minecraft:cobblestone_wall", 0, {}},
+    {16842752, "minecraft:double_stone_slab2", 5, "minecraft:double_stone_slab2", 0, {}},
+    {16842752, "minecraft:double_stone_slab2", 6, "minecraft:double_stone_slab2", 0, {}},
+    {16842752, "minecraft:double_stone_slab2", 7, "minecraft:double_stone_slab2", 0, {}},
+    {16842752, "minecraft:double_stone_slab2", 13, "minecraft:double_stone_slab2", 0, {}},
+    {16842752, "minecraft:double_stone_slab2", 14, "minecraft:double_stone_slab2", 0, {}},
+    {16842752, "minecraft:double_stone_slab2", 15, "minecraft:double_stone_slab2", 0, {}},
+    {16842752, "minecraft:jukebox", 0, "minecraft:jukebox", 0, {}},
+    {16842752, "minecraft:quartz_block", 3, "minecraft:quartz_block", 0, {}},
+    {16842752, "minecraft:quartz_block", 7, "minecraft:quartz_block", 0, {}},
+    {16842752, "minecraft:quartz_block", 11, "minecraft:quartz_block", 0, {}},
+    {16842752, "minecraft:red_flower", 9, "minecraft:red_flower", 0, {}},
+    {16842752, "minecraft:red_flower", 10, "minecraft:red_flower", 0, {}},
+    {16842752, "minecraft:red_sandstone", 3, "minecraft:red_sandstone", 0, {}},
+    {16842752, "minecraft:sandstone", 3, "minecraft:sandstone", 0, {}},
+    {16842752, "minecraft:stained_glass", 0, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 1, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 2, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 3, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 4, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 5, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 6, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 7, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 8, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 9, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 10, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 11, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 12, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 13, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 14, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass", 15, "minecraft:stained_glass", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 0, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 1, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 2, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 3, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 4, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 5, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 6, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 7, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 8, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 9, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 10, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 11, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 12, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 13, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 14, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:stained_glass_pane", 15, "minecraft:stained_glass_pane", 0, {}},
+    {16842752, "minecraft:standing_banner", 0, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 1, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 2, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 3, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 4, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 5, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 6, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 7, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 8, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 9, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 10, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 11, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 12, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 13, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 14, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:standing_banner", 15, "minecraft:standing_banner", 0, {}},
+    {16842752, "minecraft:stone_slab2", 5, "minecraft:stone_slab2", 0, {}},
+    {16842752, "minecraft:stone_slab2", 6, "minecraft:stone_slab2", 0, {}},
+    {16842752, "minecraft:stone_slab2", 7, "minecraft:stone_slab2", 0, {}},
+    {16842752, "minecraft:stone_slab2", 13, "minecraft:stone_slab2", 0, {}},
+    {16842752, "minecraft:stone_slab2", 14, "minecraft:stone_slab2", 0, {}},
+    {16842752, "minecraft:stone_slab2", 15, "minecraft:stone_slab2", 0, {}},
+    {16842752, "minecraft:undyed_shulker_box", 0, "minecraft:undyed_shulker_box", 0, {}},
+    {16842752, "minecraft:wall_banner", 2, "minecraft:wall_banner", 0, {}},
+    {16842752, "minecraft:wall_banner", 3, "minecraft:wall_banner", 0, {}},
+    {16842752, "minecraft:wall_banner", 4, "minecraft:wall_banner", 0, {}},
+    {16842752, "minecraft:wall_banner", 5, "minecraft:wall_banner", 0, {}},
+    {16908288, "minecraft:cauldron", 9, "minecraft:cauldron", 0, {}},
+    {16908288, "minecraft:cauldron", 10, "minecraft:cauldron", 0, {}},
+    {16908288, "minecraft:cauldron", 11, "minecraft:cauldron", 0, {}},
+    {16908288, "minecraft:cauldron", 12, "minecraft:cauldron", 0, {}},
+    {16908288, "minecraft:cauldron", 13, "minecraft:cauldron", 0, {}},
+    {16908288, "minecraft:cauldron", 14, "minecraft:cauldron", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 2, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 3, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 4, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 5, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 6, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 7, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 8, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 9, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 10, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 11, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 12, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:cobblestone_wall", 13, "minecraft:cobblestone_wall", 0, {}},
+    {16908288, "minecraft:double_stone_slab2", 5, "minecraft:double_stone_slab2", 0, {}},
+    {16908288, "minecraft:double_stone_slab2", 6, "minecraft:double_stone_slab2", 0, {}},
+    {16908288, "minecraft:double_stone_slab2", 7, "minecraft:double_stone_slab2", 0, {}},
+    {16908288, "minecraft:double_stone_slab2", 13, "minecraft:double_stone_slab2", 0, {}},
+    {16908288, "minecraft:double_stone_slab2", 14, "minecraft:double_stone_slab2", 0, {}},
+    {16908288, "minecraft:double_stone_slab2", 15, "minecraft:double_stone_slab2", 0, {}},
+    {16908288, "minecraft:quartz_block", 3, "minecraft:quartz_block", 0, {}},
+    {16908288, "minecraft:quartz_block", 7, "minecraft:quartz_block", 0, {}},
+    {16908288, "minecraft:quartz_block", 11, "minecraft:quartz_block", 0, {}},
+    {16908288, "minecraft:red_flower", 9, "minecraft:red_flower", 0, {}},
+    {16908288, "minecraft:red_flower", 10, "minecraft:red_flower", 0, {}},
+    {16908288, "minecraft:red_sandstone", 3, "minecraft:red_sandstone", 0, {}},
+    {16908288, "minecraft:sandstone", 3, "minecraft:sandstone", 0, {}},
+    {16908288, "minecraft:stone_slab2", 5, "minecraft:stone_slab2", 0, {}},
+    {16908288, "minecraft:stone_slab2", 6, "minecraft:stone_slab2", 0, {}},
+    {16908288, "minecraft:stone_slab2", 7, "minecraft:stone_slab2", 0, {}},
+    {16908288, "minecraft:stone_slab2", 13, "minecraft:stone_slab2", 0, {}},
+    {16908288, "minecraft:stone_slab2", 14, "minecraft:stone_slab2", 0, {}},
+    {16908288, "minecraft:stone_slab2", 15, "minecraft:stone_slab2", 0, {}},
+};
+/* ---- END GENERATED FLAT MAP ---- */
+
 /* The legacy lookup: the explicit (name, val) rows first — a
    composite key the binary search walks in the table's (name, val)
    order — then the name's default row, which answers every val the
@@ -2934,6 +3093,50 @@ static bool legacy_lookup(const char *name, size_t name_len,
     return false;
 }
 
+/* The flat lookup: the era rows above, keyed (era, name, val) in
+   the order the binary search walks. `era` is the stamped block
+   version the decoder wrote into the entry's `version` field —
+   only the two stamps that name a measured flat era ever match;
+   any other version (a real val entry with one, none in any store
+   in hand) falls through to the cap chain, where D24 measured it.
+   False means the era claims nothing for this cell: the caller
+   answers through legacy_lookup exactly as for a versionless val
+   entry, which is the reference's answer too (D25). */
+static bool flat_lookup(int64_t era, const char *name, size_t name_len,
+                        int64_t val, struct LegacyAnswer *out)
+{
+    if (val < INT32_MIN || val > INT32_MAX) return false;
+    int32_t v = (int32_t)val;
+    size_t rows = sizeof kFlatMap / sizeof kFlatMap[0];
+    size_t lo = 0, hi = rows;
+    while (lo < hi) {                   /* lower bound of (era, name, val) */
+        size_t mid = lo + (hi - lo) / 2;
+        const struct FlatRow *r = &kFlatMap[mid];
+        int c = 0;
+        if ((int64_t)r->era < era) c = -1;
+        else if ((int64_t)r->era > era) c = 1;
+        else c = name_cmp_from(r->from, name, name_len);
+        if (c == 0) c = (r->val < v) ? -1 : (r->val > v) ? 1 : 0;
+        if (c < 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo < rows) {
+        const struct FlatRow *r = &kFlatMap[lo];
+        if ((int64_t)r->era == era
+                && name_cmp_from(r->from, name, name_len) == 0
+                && r->val == v) {
+            out->to = r->to;
+            out->to_len = strlen(r->to);
+            out->props = r->props;
+            out->nprops = r->nprops;
+            return true;
+        }
+    }
+    return false;
+}
+
 McmeTag *mcme_translate_block(McmeArena *arena, const McmeTag *entry)
 {
     if (arena == NULL || entry == NULL) {
@@ -2955,10 +3158,17 @@ McmeTag *mcme_translate_block(McmeArena *arena, const McmeTag *entry)
         return NULL;
     }
 
-    /* The loader's own branch (D24): `states` present — or neither
-       field — is a modern entry, and `version` never gates it (the
-       loader does not read it). No `states` and a `val` is a legacy
-       pre-1.9 entry, answered through the generated table above. */
+    /* The loader's own branch (D24, D25): the entry's SHAPE gates
+       modern against legacy — `states` present, or neither field,
+       is a modern entry and `version` never changes that. No
+       `states` and a `val` is a pre-1.9 entry the loader spells
+       `block_data`, and the entry's `version` then anchors the
+       answer the way the reference anchors one: the decoder's two
+       flat-era stamps answer through the flat table's deltas
+       first, any other version — the real val entries in every
+       store in hand carry none — and every cell without a delta
+       answer through the cap chain, which is the reference's own
+       answer for both (D24, D25). */
     const McmeTag *states = mcme_nbt_get(entry, "states");
     const McmeTag *val = mcme_nbt_get(entry, "val");
     if (states == NULL && val != NULL) {
@@ -2977,7 +3187,23 @@ McmeTag *mcme_translate_block(McmeArena *arena, const McmeTag *entry)
             return NULL;
         }
         struct LegacyAnswer ans;
-        if (!legacy_lookup(name, name_len, iv, &ans)) {
+        bool have = false;
+        const McmeTag *ver = mcme_nbt_get(entry, "version");
+        if (ver != NULL) {
+            switch (ver->type) {
+            case MCME_TAG_Byte:
+            case MCME_TAG_Short:
+            case MCME_TAG_Int:
+            case MCME_TAG_Long:
+                have = flat_lookup(mcme_nbt_long_or(ver, 0), name,
+                                   name_len, iv, &ans);
+                break;
+            default:
+                break;
+            }
+        }
+        if (!have) have = legacy_lookup(name, name_len, iv, &ans);
+        if (!have) {
             /* Neither table holds the val: the reference passes the
                block through, and mcme's unknown-block policy drops
                the state it never learned — the name, no properties. */
