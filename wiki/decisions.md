@@ -1962,3 +1962,81 @@ model layer needs rotations applied at *this* layer rather than
 at mesh time, or a game format retires variants/multipart for
 something else entirely — in which case `pack info` and the index
 still stand and only `resolve_*` changes.
+
+## D31 — The model layer: the fold carries two keys
+
+**What the reference does.** `_recursive_load_block_model` in the
+reader's manager answers one model reference with a single merged
+dict, and the merge is far narrower than "merge the parent chain"
+suggests:
+
+- The reference splits the model path on its **first** `:`; with
+  no `:` the namespace defaults to `minecraft`.
+- A file the pack does not have answers the **empty dict**, not an
+  error — at any level of the chain, so an unknown parent
+  contributes nothing and the child still answers.
+- The parent chain folds **first**, then the current model merges
+  over the accumulated result, and only TWO keys are carried:
+  `textures` merges **per key** (the parent's dict is the base,
+  each child key overwrites that one key; keys the child does not
+  name survive, and a `"textures": {}` in the child still creates
+  the key), and `elements` overrides **wholesale** (whichever
+  model in the chain names it last contributes the entire list —
+  an empty list wipes it, and the value is taken at face value,
+  any JSON type, no validation).
+- Every other key — `display`, `gui_light`, `ambientocclusion`,
+  `parent` itself — is **discarded**. A model whose only content
+  is `display` folds to the empty object.
+
+Texture substitution is not part of this function: `#name`
+references are resolved by the mesh layer (`_load_block_model`)
+against the folded textures dict, so a fold here is the file's
+own truth with `#` refs as written.
+
+**What mcme does.** `src/resource/model.c` mirrors that fold —
+per-key textures, wholesale elements, the discard, the empty
+answer for a missing file at every level, the first-`: ` split
+with the minecraft default — into `mcme_model_load`, which
+returns the folded document as a heap `cJSON` object the caller
+releases with `cJSON_Delete` (every value a deep copy, so the
+answer stands alone). The index parses every model file under
+`assets/<ns>/models/` recursively — nested directories are part
+of the reference's own glob reach — and skips an unparseable one
+with a warning, the reference's loader catching that error per
+file too. The verb is `mcme model <pack-dir> <model-ref>`; its
+`--json` prints the bare folded document, the reference's own
+answer shape, and an empty fold is an answer that exits 0. A
+malformed reference is exit 1 (a typo must not read as "no such
+model"), a missing pack directory exit 2.
+
+**How parity was measured.** The fold is pure JSON, so no spy was
+needed: the pin calls `_recursive_load_block_model` directly — it
+IS the function mcme mirrors — and compares mcme's printed
+document, parsed back, dict for dict. `tools/ref_model.py` runs
+16 crafted probes (the three-deep chain, the empty-elements wipe,
+the discarded-keys model, the orphan, the cross-namespace parent,
+the bare-path default, non-string texture values, a top-level
+array, the unparseable file both readers skip), 241 probes over
+the reader's own `java_vanilla_fix` pack (every model file by
+`namespace:path` plus bare-path samples — real game data through
+both folds), and 4 usage refusals — 264 checks.
+
+**Out of domain, recorded.** Three shapes differ on purpose, each
+pinned against the reference's observable behavior rather than
+hidden: a `parent` that is not a string would raise on the
+reference's `.split` — mcme reads it as no parent (the pin
+asserts the reference raises `AttributeError`); a parent cycle
+would raise `RecursionError` there — mcme refuses by name, exit
+3; and a chain deeper than `MODEL_DEPTH_CAP` (64) is answered by
+the reference up to Python's recursion limit (~1000) — mcme
+refuses, exit 3, because a real pack's chains run a handful deep
+and the cap is the cycle guard that keeps mcme's stack bounded.
+Like D30, the index is a linear scan until the mesher arrives.
+
+**Reverses if:** pack stacking arrives (the reference lets later
+packs overwrite earlier ones; mcme takes one pack directory), a
+real pack needs `display` or `gui_light` to propagate up the
+chain (the reference's mesher never reads them from the fold, so
+this is not expected), or the mesh layer needs the fold to keep
+more than the two keys — in which case the fold widens and this
+entry is superseded.

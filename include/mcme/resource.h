@@ -156,4 +156,74 @@ bool mcme_blockstate_lookup(const McmeBlockstateIndex *index,
 /* Releases an answer and every string it owns. NULL is a no-op. */
 void mcme_blockstate_free(McmeBlockstate *state);
 
+/* ========================================================================
+ * Models — one file, every parent folded in (D31)
+ *
+ * A blockstate's selection names a model; the model itself is one
+ * JSON file under `assets/<ns>/models/<path>.json` that may name a
+ * `parent` above it. This layer reads the file the reference's
+ * `_recursive_load_block_model` returns: the parent chain folded
+ * into the child. The fold is narrower than it looks — the
+ * reference propagates only TWO keys up the chain, and the mirror
+ * is exact (decisions.md#D31):
+ *
+ *   - `textures` merges per KEY: the parent's dict is the base,
+ *     each child key overwrites that one key. Keys the child does
+ *     not name survive from the parent.
+ *   - `elements` overrides WHOLESALE: whichever model in the chain
+ *     names it last (nearest the child) contributes the entire
+ *     list; elements never merge element-by-element.
+ *   - Every other key — `display`, `gui_light`,
+ *     `ambientocclusion`, `parent` itself — is DISCARDED. A model
+ *     whose only content is `display` folds to the empty object.
+ *
+ * A reference that cannot find the file (or a parent in the chain)
+ * answers the empty object, not an error: the same file-missing →
+ * `{}` rule applies at every level, so a child with an unknown
+ * parent folds onto nothing rather than failing.
+ *
+ * A `#name` texture stays exactly as written. Substitution walks
+ * the textures dict at mesh time in the reference, one layer below
+ * this one; a merged model here is the file's own truth.
+ */
+
+/* The `struct cJSON` type is declared by third_party/cjson/cJSON.h.
+   We only forward-declare it here so this header does not depend
+   on cJSON. */
+struct cJSON;
+
+/* A pack's model index: every model JSON under `assets/<ns>/models/`
+   (nested directories included), parsed at open, by (namespace,
+   path). Opaque to callers. */
+typedef struct McmeModelIndex McmeModelIndex;
+
+/*
+ * Parses every model file under `<pack_dir>/assets/<ns>/models/`,
+ * nested paths included, the reference's recursive glob's own
+ * reach. A file that does not parse is skipped with a warning, the
+ * reference catching the JSON error per file the same way. A
+ * directory that is absent or unreadable contributes nothing — the
+ * empty index answers every query with the empty model, not a
+ * refusal; the CLI names a missing pack directory itself. Returns
+ * false only on a null argument or OOM, with mcme_last_error()
+ * saying which.
+ */
+bool mcme_model_index_open(const char *pack_dir, McmeModelIndex **out);
+
+/* Releases the index. NULL is a no-op. */
+void mcme_model_index_close(McmeModelIndex *index);
+
+/*
+ * Answers the merged model for `<namespace>:<path>`, or for a bare
+ * `<path>` (the caller passes NULL for the namespace to take the
+ * reference's default, `minecraft`). The result is a heap
+ * `struct cJSON` object the caller releases with cJSON_Delete —
+ * the empty object when neither the model nor any parent in its
+ * chain is in the index, exactly the reference's answer. Returns
+ * false only on a null argument or OOM; a model the index does not
+ * know is the empty object, not a failure.
+ */
+bool mcme_model_load(const McmeModelIndex *index, const char *namespace,
+                     const char *path, struct cJSON **out);
+
 #endif /* MCME_RESOURCE_H */

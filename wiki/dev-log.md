@@ -7,6 +7,81 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — The model layer: one file, every parent folded in
+
+### Built
+
+- Model folding (D31): `McmeModelIndex` parses every model JSON
+  under a pack's `assets/<ns>/models/` — nested directories
+  included, because models live at `block/banners/blue_2` depth —
+  skipping an unparseable one with a warning, the reference's
+  loader catching that error per file too, and `mcme_model_load`
+  answers one model reference with the folded document as a heap
+  `cJSON` object. The fold mirrors the reference's
+  `_recursive_load_block_model` rule for rule, narrowness and
+  all: the parent chain folds FIRST, then `textures` merge per key
+  over the accumulated dict (keys the child does not name survive
+  from the parent), then `elements` override WHOLESALE (whichever
+  model names them last contributes the whole list — an empty
+  list wipes it), and every other key — `display`, `gui_light`,
+  `parent` itself — is discarded, so a model whose only content is
+  `display` folds to the empty object. A file the index does not
+  have folds onto `{}` at any level of the chain, and `#name`
+  texture references stay exactly as written: substitution walks
+  the textures dict at mesh time, one layer below this one (which
+  corrects the D30 note that placed it here).
+- The verb `mcme model <pack-dir> <model-ref>`, `--json` printing
+  the bare folded document — the reference's own answer shape, so
+  the pin compares dict for dict — and human mode printing the
+  fold under its name, or `(nothing in this pack folds into this
+  model)` when the fold is empty, which is an answer and exits 0.
+  A malformed reference (empty namespace or path) is exit 1, a
+  missing pack directory exit 2, and a parent chain that will not
+  fold — a cycle, in practice — is the pack's bad data, exit 3.
+- The resource suite's third test pins every fold rule across
+  ~20 fixture files: the three-deep chain where textures
+  accumulate per key and elements come from the nearest ancestor,
+  the empty-elements wipe, the discarded-keys case, the orphan
+  with an unknown parent, non-string texture values riding along
+  at face value, the default-namespace resolution on both sides
+  of the `:` split — plus the two shapes where mcme answers where
+  the reference would crash: a parent cycle and a 71-deep chain,
+  each refused by name past the depth cap.
+- `tools/ref_model.py` needs no spy: the fold is pure JSON, so
+  the reference's `_recursive_load_block_model` is called
+  directly — it is the function mcme mirrors. 16 crafted probes,
+  241 over the reader's own `java_vanilla_fix` pack (every model
+  file by `namespace:path`, a sample also by bare path), the
+  three recorded differences each pinned against the reference's
+  observable behavior, and 4 usage refusals — 264 checks. The
+  traceback in its stderr is the reference logging the fixture
+  file that is deliberately not JSON; both readers skip it.
+- Gates: `./rebuild.sh test` PASS 5 suites; `./mcme selftest`
+  PASS 6 suites under the default ASan+UBSan+leak run; battery
+  14/14 rc=0 with `ref_model` added. Nothing under `tests/`
+  staged; the golden stores show no tracked changes.
+
+### Notes
+
+- The fold's narrowness is the layer's headline, and it is the
+  reference's own: only `textures` and `elements` ever travel up
+  a parent chain. The mesh layer never reads anything else from
+  the fold; `display` belongs to GUI rendering and a caller that
+  wants it reads the raw file. Recorded in decisions.md#D31
+  together with the two crash-to-answer substitutions and the
+  depth cap (64 here, Python's recursion limit ~1000 there — both
+  refuse cycles, differently).
+- The index stays a linear scan, as in D30: right for a verb, and
+  the hash arrives when the mesher does.
+
+### Next
+
+- The mesh layer: `_load_block_model` — `#reference` substitution
+  through the folded textures dict, elements → faces → vertices
+  with the blockstate selection's `x`/`y` rotation and `uvlock`
+  folded in, and the transparency flags. The atlas follows once
+  the mesh can name its textures.
+
 ## 2026-10-17 — The blockstates answer: the selection layer, decided alongside the reference
 
 ### Built

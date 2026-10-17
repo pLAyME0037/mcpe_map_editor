@@ -73,6 +73,10 @@ static void print_usage(FILE *out)
         "  blockstate <pack> <block>\n"
         "                    Which model(s) the pack's blockstates select\n"
         "                    for the block state — model, x, y, uvlock\n"
+        "  model <pack> <model-ref>\n"
+        "                    One model file with its parent chain\n"
+        "                    folded in: textures per key, elements\n"
+        "                    wholesale, everything else discarded\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -756,6 +760,96 @@ static int cmd_blockstate(const char *pack_dir, const char *spec)
 
     mcme_blockstate_free(&answer);
     mcme_arena_free(arena);
+    return MCME_OK;
+}
+
+/* ========================================================================
+ * model
+ *
+ * `mcme model <pack-dir> <model-ref>` — one model file with every
+ * parent folded in, the CLI face of the D31 layer. The fold is the
+ * reference reader's own answer: textures merge per key up the
+ * chain, elements override wholesale, every other key (display,
+ * gui_light, parent) is discarded. A model the pack does not hold
+ * answers the empty object `{}` and exits 0 — the reference's own
+ * answer for a missing file, at any level of the chain. The
+ * arguments refuse: a pack directory that does not exist is exit
+ * 2, a malformed reference exit 1, and a parent chain that will
+ * not fold (a cycle, in practice) is the pack's bad data, exit 3.
+ * ======================================================================== */
+
+static int cmd_model(const char *pack_dir, const char *ref)
+{
+    if (!mcme_fs_exists(pack_dir)) {
+        mcme_set_error("model: '%s' is not a directory", pack_dir);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    /* Split the reference the way the game writes it: an optional
+       `namespace:` prefix, defaulting to minecraft. An empty
+       namespace or path is a typo, refused here so it can never
+       read as "the pack holds no such model". */
+    char ns[256];
+    const char *base;
+    const char *colon = strchr(ref, ':');
+    if (colon) {
+        size_t ns_len = (size_t)(colon - ref);
+        if (ns_len == 0 || ns_len >= sizeof ns) {
+            mcme_set_error("model: reference '%s' has an empty or "
+                           "too-long namespace", ref);
+            return MCME_EXIT_USAGE;
+        }
+        memcpy(ns, ref, ns_len);
+        ns[ns_len] = '\0';
+        base = colon + 1;
+    } else {
+        snprintf(ns, sizeof ns, "minecraft");
+        base = ref;
+    }
+    if (*base == '\0') {
+        mcme_set_error("model: reference '%s' has an empty path", ref);
+        return MCME_EXIT_USAGE;
+    }
+
+    McmeModelIndex *index = NULL;
+    if (!mcme_model_index_open(pack_dir, &index)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("model: %s", why);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    struct cJSON *doc = NULL;
+    if (!mcme_model_load(index, ns, base, &doc)) {
+        /* The fold refused: the chain is too deep to be anything
+           but a cycle (an OOM would say so in the same message). */
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("model: %s", why);
+        mcme_model_index_close(index);
+        return MCME_EXIT_BAD_FORMAT;
+    }
+    mcme_model_index_close(index);
+
+    if (g_opts.json) {
+        /* The folded document IS the answer, so it is printed
+           bare: the same JSON the reference's own fold returns. */
+        char *text = cJSON_PrintUnformatted(doc);
+        printf("%s\n", text ? text : "{}");
+        if (text) cJSON_free(text);
+    } else {
+        printf("%s:%s", ns, base);
+        if (doc->child == NULL) {
+            printf("  (nothing in this pack folds into this model)\n");
+        } else {
+            printf("\n");
+            char *text = cJSON_Print(doc);
+            printf("%s\n", text ? text : "");
+            if (text) cJSON_free(text);
+        }
+    }
+
+    cJSON_Delete(doc);
     return MCME_OK;
 }
 
@@ -3374,6 +3468,15 @@ static int dispatch(int argc, char **argv)
             return MCME_EXIT_USAGE;
         }
         return cmd_blockstate(args[0], args[1]);
+    }
+
+    if (strcmp(cmd, "model") == 0) {
+        if (rest != 2) {
+            mcme_set_error("model: usage: mcme model "
+                           "<pack-dir> <model-ref>");
+            return MCME_EXIT_USAGE;
+        }
+        return cmd_model(args[0], args[1]);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can

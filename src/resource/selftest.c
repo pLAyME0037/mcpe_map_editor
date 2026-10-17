@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "mcme/core.h"
+#include "cJSON.h"
 
 /*
  * Resource pack manifest — the self-test.
@@ -365,10 +366,241 @@ static void test_blockstates(void)
     mcme_clear_error();
 }
 
+/* ========================================================================
+ * Model folding (D31).
+ *
+ * Every expectation below is the reference's own
+ * `_recursive_load_block_model` answer, rule for rule: the parent
+ * chain folds first and the child merges over it; textures merge
+ * per key (keys the child does not name survive from the parent);
+ * elements override wholesale (whichever model names them last
+ * contributes the whole list, an empty list included); every
+ * other key — display, gui_light, parent — is discarded; a file
+ * the index does not have, at any level, folds onto the empty
+ * object. Plus mcme's two recorded answers where the reference
+ * would crash: a non-string parent reads as no parent, and a
+ * chain deeper than the cap is a refusal.
+ * ======================================================================== */
+
+#define MFIXDIR "build/model_fixtures/pack"
+
+/* One load, compared against the expected fold as JSON. */
+static void expect_model(const McmeModelIndex *idx, const char *ns,
+                         const char *path, const char *want_json)
+{
+    struct cJSON *doc = NULL;
+    if (!mcme_model_load(idx, ns, path, &doc)) {
+        CHECK_MSG(false, "load %s:%s failed: %s", ns ? ns : "(default)",
+                  path, mcme_last_error());
+        return;
+    }
+    struct cJSON *want = cJSON_Parse(want_json);
+    CHECK_MSG(want != NULL, "bad expectation JSON: %s", want_json);
+    if (want) {
+        if (!cJSON_Compare(doc, want, true)) {
+            char *got = cJSON_PrintUnformatted(doc);
+            CHECK_MSG(false, "%s:%s folds to %s, want %s",
+                      ns ? ns : "(default)", path, got ? got : "?",
+                      want_json);
+            if (got) cJSON_free(got);
+        }
+        cJSON_Delete(want);
+    }
+    cJSON_Delete(doc);
+}
+
+static void test_models(void)
+{
+    printf("  resource (models)\n");
+
+    /* --- fixtures --- */
+    put(MFIXDIR "/assets/mc/models/block/base.json",
+        "{\"textures\":{\"top\":\"t/base_top\",\"side\":\"t/base_side\","
+          "\"bottom\":\"t/base_bottom\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16]}],"
+        "\"display\":{\"thirdperson\":{\"rotation\":[0,0,0]}}}");
+    /* Child over parent: textures per key, elements wholesale,
+       display and parent discarded. */
+    put(MFIXDIR "/assets/mc/models/block/child.json",
+        "{\"parent\":\"mc:block/base\","
+        "\"textures\":{\"top\":\"t/child_top\",\"side\":\"t/child_side\"},"
+        "\"elements\":[{\"from\":[1,1,1],\"to\":[2,2,2]}]}");
+    /* Child without elements: the parent's list survives. */
+    put(MFIXDIR "/assets/mc/models/block/noelem.json",
+        "{\"parent\":\"mc:block/base\",\"textures\":{\"top\":\"t/noelem_top\"}}");
+    /* Child with an EMPTY elements list: wholesale means the
+       parent's list is wiped, not merged. */
+    put(MFIXDIR "/assets/mc/models/block/wipe.json",
+        "{\"parent\":\"mc:block/base\",\"elements\":[]}");
+    /* A three-deep chain: nearest ancestor's keys win one by one. */
+    put(MFIXDIR "/assets/mc/models/block/grand.json",
+        "{\"parent\":\"mc:block/noelem\",\"textures\":{\"side\":\"t/grand_side\"}}");
+    /* Nothing but discarded keys folds to the empty object. */
+    put(MFIXDIR "/assets/mc/models/block/onlydisplay.json",
+        "{\"display\":{\"gui\":{\"rotation\":[1,0,0]}},\"gui_light\":\"front\"}");
+    /* An unknown parent folds onto nothing; the child still answers. */
+    put(MFIXDIR "/assets/mc/models/block/orphan.json",
+        "{\"parent\":\"mc:block/absent\",\"textures\":{\"a\":\"t/a\"}}");
+    /* Texture values ride along at face value: no validation here. */
+    put(MFIXDIR "/assets/mc/models/block/oddvalue.json",
+        "{\"textures\":{\"num\":42,\"flag\":true,\"none\":null}}");
+    /* A file that is not even an object: the reference's `in`
+       checks all miss, so it folds to the empty object. */
+    put(MFIXDIR "/assets/mc/models/block/junk.json", "[1,2]");
+    /* Not JSON at all: the index skips it with a warning, the
+       reference skipping it too, so it answers the empty model. */
+    put(MFIXDIR "/assets/mc/models/block/bad.json", "{oops");
+    /* A bare parent reference defaults to minecraft, the way the
+       reference's own split does. */
+    put(MFIXDIR "/assets/minecraft/models/block/leaf.json",
+        "{\"textures\":{\"leaf\":\"t/leaf\"}}");
+    put(MFIXDIR "/assets/minecraft/models/block/defns.json",
+        "{\"parent\":\"block/leaf\",\"textures\":{\"x\":\"t/defns_x\"}}");
+    /* A parent cycle: the reference would blow its Python stack;
+       mcme refuses by name past the depth cap. */
+    put(MFIXDIR "/assets/mc/models/block/loopa.json",
+        "{\"parent\":\"mc:block/loopb\"}");
+    put(MFIXDIR "/assets/mc/models/block/loopb.json",
+        "{\"parent\":\"mc:block/loopa\"}");
+    /* A chain deeper than MODEL_DEPTH_CAP, written before the
+       index opens so the whole chain is indexed. */
+    {
+        char body[256];
+        for (int i = 0; i <= 70; ++i) {
+            char file[512];
+            snprintf(file, sizeof file,
+                     MFIXDIR "/assets/mc/models/block/deep%d.json", i);
+            if (i < 70)
+                snprintf(body, sizeof body,
+                         "{\"parent\":\"mc:block/deep%d\"}", i + 1);
+            else
+                snprintf(body, sizeof body, "{\"textures\":{\"x\":\"t/x\"}}");
+            put(file, body);
+        }
+    }
+
+    McmeModelIndex *idx = NULL;
+    CHECK_MSG(mcme_model_index_open(MFIXDIR, &idx),
+              "index open: %s", mcme_last_error());
+    if (!idx) { mcme_clear_error(); return; }
+
+    /* --- the fold, rule for rule --- */
+
+    /* A chain of three: grandchild over parent over grandparent.
+       textures accumulate per key down the chain; elements come
+       from the nearest ancestor that names them. */
+    expect_model(idx, "mc", "block/grand",
+                 "{\"textures\":{\"top\":\"t/noelem_top\","
+                   "\"side\":\"t/grand_side\","
+                   "\"bottom\":\"t/base_bottom\"},"
+                 "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16]}]}");
+
+    /* Child over parent: every child key overwrites that one key,
+       the child's elements replace the list wholesale, and display
+       and parent are gone. */
+    expect_model(idx, "mc", "block/child",
+                 "{\"textures\":{\"top\":\"t/child_top\","
+                   "\"side\":\"t/child_side\",\"bottom\":\"t/base_bottom\"},"
+                 "\"elements\":[{\"from\":[1,1,1],\"to\":[2,2,2]}]}");
+
+    /* No elements in the child: the parent's list rides up. */
+    expect_model(idx, "mc", "block/noelem",
+                 "{\"textures\":{\"top\":\"t/noelem_top\","
+                   "\"side\":\"t/base_side\",\"bottom\":\"t/base_bottom\"},"
+                 "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16]}]}");
+
+    /* An EMPTY elements list still overrides wholesale. */
+    expect_model(idx, "mc", "block/wipe",
+                 "{\"textures\":{\"top\":\"t/base_top\","
+                   "\"side\":\"t/base_side\",\"bottom\":\"t/base_bottom\"},"
+                 "\"elements\":[]}");
+
+    /* Only discarded keys: the fold is the empty object, and an
+       empty fold is an answer, not a failure. */
+    expect_model(idx, "mc", "block/onlydisplay", "{}");
+
+    /* An unknown parent: the child folds onto nothing. */
+    expect_model(idx, "mc", "block/orphan",
+                 "{\"textures\":{\"a\":\"t/a\"}}");
+
+    /* No validation on values: a number, a boolean and a null ride
+       along exactly as written. */
+    expect_model(idx, "mc", "block/oddvalue",
+                 "{\"textures\":{\"num\":42,\"flag\":true,\"none\":null}}");
+
+    /* A non-object top level folds to the empty object. */
+    expect_model(idx, "mc", "block/junk", "{}");
+    /* The skipped unparseable file: the empty object. */
+    expect_model(idx, "mc", "block/bad", "{}");
+    /* No file at all: the empty object. */
+    expect_model(idx, "mc", "block/absent", "{}");
+    /* A namespace the pack does not hold: the empty object. */
+    expect_model(idx, "zz", "block/base", "{}");
+
+    /* The default namespace: NULL reads as minecraft, and a bare
+       parent reference resolves there too. */
+    expect_model(idx, NULL, "block/defns",
+                 "{\"textures\":{\"leaf\":\"t/leaf\",\"x\":\"t/defns_x\"}}");
+    /* The same model asked for by its explicit namespace. */
+    expect_model(idx, "minecraft", "block/defns",
+                 "{\"textures\":{\"leaf\":\"t/leaf\",\"x\":\"t/defns_x\"}}");
+
+    /* The parent's own path carries a namespace when it has one,
+       and the child's `minecraft:`-free reference is not confused
+       with it. */
+    expect_model(idx, "minecraft", "block/leaf",
+                 "{\"textures\":{\"leaf\":\"t/leaf\"}}");
+
+    /* --- the reference would crash; mcme answers --- */
+
+    /* A parent cycle: refuse by name. (The reference raises
+       RecursionError; the pin asserts both sides fail.) */
+    {
+        struct cJSON *doc = NULL;
+        CHECK(!mcme_model_load(idx, "mc", "block/loopa", &doc));
+        CHECK(doc == NULL);
+        CHECK(mcme_last_error()[0] != '\0');
+        mcme_clear_error();
+    }
+
+    /* A chain deeper than the cap refuses too. */
+    {
+        struct cJSON *doc = NULL;
+        CHECK(!mcme_model_load(idx, "mc", "block/deep0", &doc));
+        CHECK(doc == NULL);
+        mcme_clear_error();
+    }
+
+    mcme_model_index_close(idx);
+
+    /* An index over a pack with no assets answers the empty model. */
+    idx = NULL;
+    CHECK(mcme_model_index_open("build/pack_fixtures", &idx));
+    if (idx) {
+        expect_model(idx, "mc", "block/base", "{}");
+        mcme_model_index_close(idx);
+    }
+
+    /* Null arguments refuse; NULL closes are no-ops. A NULL
+       namespace is the minecraft default, not a null argument. */
+    idx = NULL;
+    CHECK(!mcme_model_index_open(NULL, &idx));
+    CHECK(!mcme_model_index_open(MFIXDIR, NULL));
+    {
+        struct cJSON *doc = NULL;
+        CHECK(!mcme_model_load(NULL, "mc", "block/base", &doc));
+        CHECK(!mcme_model_load(NULL, NULL, NULL, &doc));
+    }
+    mcme_model_index_close(NULL);
+
+    mcme_clear_error();
+}
+
 int mcme_test_resource(void)
 {
     g_failed = 0;
     test_pack_manifest();
     test_blockstates();
+    test_models();
     return g_failed;
 }
