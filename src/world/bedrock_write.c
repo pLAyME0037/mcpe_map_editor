@@ -858,7 +858,11 @@ bool mcme_bedrock_count_box(McmeLevelDb *db, const McmeBox *box,
     }
     if (!ok) return false;
 
-    qsort(tally, tally_len, sizeof *tally, count_cmp);
+    /* `tally` is NULL until the first block is tallied; an empty
+       tally has nothing to order, and qsort's base is declared
+       never-NULL even at zero elements (the same shape UBSan
+       caught in the mesh merge). */
+    if (tally_len > 1) qsort(tally, tally_len, sizeof *tally, count_cmp);
     *out = tally;
     *out_len = tally_len;
     return true;

@@ -1050,7 +1050,10 @@ bool mcme_mesh_merge(const McmeMesh *const *parts, size_t count,
             sorted[nsorted++] = copy;
         }
     }
-    qsort(sorted, nsorted, sizeof *sorted, cmp_str_ptr);
+    /* No parts with textures leaves `sorted` NULL; qsort's base is
+       declared never-NULL even at zero elements (UBSan caught it —
+       the merge_empty probe). */
+    if (nsorted > 1) qsort(sorted, nsorted, sizeof *sorted, cmp_str_ptr);
     size_t kept = 0;
     for (size_t i = 0; i < nsorted; ++i) {
         if (kept && strcmp(sorted[kept - 1], sorted[i]) == 0) {

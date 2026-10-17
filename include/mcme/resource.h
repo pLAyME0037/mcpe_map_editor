@@ -336,6 +336,80 @@ const char *mcme_texture_path(const McmeTextureIndex *index,
 bool mcme_texture_transparent(const McmeTextureIndex *index,
                               const char *path);
 
+/*
+ * The table's files, one by one — the index walks them in
+ * directory order, which is the filesystem's own. `mcme_texture_at`
+ * answers the file's absolute path, owned by the index. The atlas
+ * layer is the first consumer: it sorts what it is handed, because
+ * its layout depends on input order (decisions.md#D34).
+ */
+size_t mcme_texture_count(const McmeTextureIndex *index);
+const char *mcme_texture_at(const McmeTextureIndex *index, size_t i);
+
+/* ========================================================================
+ * Images and the atlas — many small files on one page (D34)
+ *
+ * The editor's own textureatlas module packs every texture a pack
+ * ships into one square RGBA page and answers where each one landed
+ * as texture coordinates, which is what the renderer wants back.
+ * mcme mirrors it rule for rule (decisions.md#D34):
+ *
+ *   - Every frame loads whole; the textures sort by perimeter
+ *     (2w + 2h) in non-increasing order, STABLY — equal perimeters
+ *     keep the input order, and a pack of 16x16 textures is one
+ *     long tie, so the input order decides the layout.
+ *   - The page starts at max(max width, max height, the smallest
+ *     power of two at least ceil(sqrt(total pixels))) and DOUBLES
+ *     until the packer takes everything.
+ *   - The packer is a binary-split region tree: the first free
+ *     region that holds an item takes it at its top-left, and the
+ *     region splits into the strip below and the strip right.
+ *   - Each texture's bounds are (x/size, y/size, (x+w)/size,
+ *     (y + min(h, w))/size) — the top edge using the SMALLER of
+ *     the frame's sides, the module's own quirk, not an invention.
+ */
+
+typedef struct {
+    int      width, height;
+    uint8_t *rgba;  /* width*height*4 bytes, row-major, owned */
+} McmeImage;
+
+/* Loads a PNG as RGBA (grey, palette and RGB images expand the way
+   Pillow's paste into an RGBA canvas does). Refuses by name on a
+   file stb cannot read — where the reference's Pillow raise kills
+   the whole atlas call, recorded in D34. */
+bool mcme_image_load(const char *path, McmeImage *out);
+
+/* Releases an image's pixels; NULL is a no-op. */
+void mcme_image_free(McmeImage *image);
+
+/* Writes an image back out as a PNG. */
+bool mcme_image_write_png(const char *path, const McmeImage *image);
+
+typedef struct {
+    int32_t   size;      /* the page is size x size                */
+    size_t    count;
+    char    **names;     /* count entries, the input paths         */
+    double   *bounds;    /* count*4: u0 v0 u1 v1 per name          */
+    McmeImage page;      /* the assembled page                     */
+} McmeAtlas;
+
+/*
+ * Packs `count` image paths into one square page. `paths` is the
+ * input order (a tie in the perimeter sort keeps it); the answer's
+ * `names` mirrors it back. The images all load up front, exactly
+ * as the reference's frames do, and one that will not load
+ * refuses the whole atlas by name.
+ *
+ * Answers `*out` (released with mcme_atlas_free); false only on a
+ * null argument, an unloadable image or an exhausted heap.
+ */
+bool mcme_atlas_build(const char *const *paths, size_t count,
+                      McmeAtlas *out);
+
+/* Releases an atlas and everything it owns. NULL is a no-op. */
+void mcme_atlas_free(McmeAtlas *atlas);
+
 /* ========================================================================
  * Meshes — one model, faced and verticed (D32)
  *

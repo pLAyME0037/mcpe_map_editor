@@ -7,6 +7,118 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — The atlas: every texture the pack ships, on one page
+
+### Built
+
+- The image layer (`McmeImage`, in the new `atlas.c`): a PNG
+  loaded whole as RGBA through stb with the expansion Pillow's
+  paste into an RGBA canvas performs (grey, palette and RGB
+  images alike), freed, and written back out through
+  `stb_image_write`.
+- The packer (`mcme_atlas_build`), the editor's own
+  `textureatlas` module rule for rule: every frame loads up
+  front; the textures sort by perimeter (2w + 2h)
+  non-increasing and STABLY — equal perimeters keep the input
+  order, and a pack of 16x16 textures is one long tie; the
+  page starts at max(max width, max height, the smallest power
+  of two at least ceil(sqrt(total pixels))) and doubles until
+  the binary-split region tree takes everything (the first
+  free region that holds a frame takes it at its top-left and
+  splits into the strip below at the FRAME's width and the
+  strip right at the region's full height); the bounds come
+  back as (x/size, y/size, (x+w)/size, (y + min(h, w)) /
+  size) — the top edge using the smaller of the frame's
+  sides, the module's own quirk — with the names mirroring
+  the input order the reference's dictionary keeps. The empty
+  set answers the reference's 2x2 page of nothing.
+- The texture index gained its enumeration (`mcme_texture_count`,
+  `mcme_texture_at`): directory order, the filesystem's own.
+  The atlas layer sorts what it is handed, because the layout
+  must not ride on that order.
+- The verb `mcme atlas <pack-dir> [--out <png>]`: human (one
+  summary line) or `--json` — `{size, textures: {path: [u0,
+  v0, u1, v1]}}` in sorted-name order — and `--out` writes the
+  page PNG the renderer will want. One image the loader
+  cannot read refuses the whole atlas by name (exit 6); the
+  reference's Pillow raise kills its manager's load at the
+  same file.
+- The resource suite's sixth test: the six-image pack's
+  reference-verified layout, bounds and pixels (the RGB
+  expansion included), the lone 2x4's min(h, w) top edge, the
+  doubling 2x2/2x2/3x2, the perimeter reorder and its stable
+  tie, the empty page, an image load/write round trip, the
+  index enumeration, and every refusal.
+- `tools/ref_atlas.py` loads the editor's `textureatlas.py` by
+  file path (the package chain pulls wx; the file needs only
+  Pillow) and runs the reference's `create_atlas` verbatim on
+  the same sorted tuple: 6 crafted packs, the raw
+  `java_vanilla_fix` — 22 real images, the 64x64 banners
+  tying on perimeter, one PALETTE image expanding the same in
+  Pillow and stb, a 512x512 page — the broken-file death
+  beside mcme's exit 6, the human line, 4 usage refusals — 67
+  checks.
+- Gates: `./rebuild.sh test` PASS 5 suites; `./mcme selftest`
+  PASS 6 suites under the default ASan+UBSan+leak run; battery
+  17/17 rc=0 with `ref_atlas` added. Nothing under `tests/`
+  staged; the golden stores show no tracked changes.
+
+### Notes
+
+- The packer's first draft carried two bugs the reference's
+  own answers caught: placements were never written back to
+  the frames (every frame stayed at the origin — all bounds
+  zeros, every image stacked on pixel 0), and the split below
+  a frame took the region's width where the module takes the
+  FRAME's width (the strip right of it covers the rest at
+  full height, so the region's width would overlap the two
+  sub-regions). The selftest failed 13 checks on its first
+  run; every expectation was then rewritten from
+  `create_atlas`'s verbatim answers for the same input —
+  including the tie the first draft of the test got wrong:
+  `tall.png` sorts before `wide.png`, so the input order
+  makes tall the first of the two perimeter-12 frames.
+- The input order IS the layout wherever the sort ties. The
+  app feeds the reference `mgr.textures` in the filesystem's
+  glob order — directory order decides equal perimeters
+  there. Both sides of the pin are handed the SAME sorted
+  tuple (the pin strips the manager's `missing_no` sentinel
+  and asserts it was there; mcme sorts its index's
+  enumeration), so the answer is filesystem-independent and
+  the tie-break itself is pinned rather than the disk's mood.
+- The broken-file death lands one layer earlier than the
+  question: the reference's manager reads every texture image
+  at load for the transparency flags, so an unreadable PNG
+  makes the whole pack unmanageable (`UnidentifiedImageError`
+  out of its load, before any atlas call). mcme's index keeps
+  the file opaque with a warning (D32's record) and the
+  ATLAS is what refuses — by name, exit 6.
+- The gates earned a stricter reading this drop: `mcme
+  selftest` prints UBSan complaints to stderr while still
+  exiting 0, and grepping PASS/FAIL hides them. The full
+  output carried one since D33 — `qsort` over the mesh
+  merge's empty texture set, the `merge_empty` probe leaving
+  `sorted` NULL while qsort's base is declared never-NULL
+  even at zero elements. Guarded with the same `n > 1` the
+  atlas already used, and auditing every `qsort` under `src/`
+  found the same latent shape in `bedrock_write`'s tally
+  (`tally` is NULL until the first block is tallied) —
+  guarded there too, identity for n ≤ 1. The selftest's
+  stderr now greps clean for `runtime error`.
+- Recorded in decisions.md#D34: the sentinel strip and the
+  sorted-input normalization, the packing border the module
+  supports but `create_atlas` never passes, the
+  death-versus-refusal pair, and the D32 unreadable-image
+  record standing.
+
+### Next
+
+- The page and the coordinates exist; the mesh still travels
+  with its named textures. Remapping a face's texture
+  coordinates through the bounds it names — into atlas space,
+  where the editor's own `tri_mesh` and resource-pack layer
+  do it — is the next drop's question.
+
 ## 2026-10-17 — The block-level mesh: one block state, as the game would mesh it
 
 ### Built

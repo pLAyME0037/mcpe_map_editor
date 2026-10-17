@@ -88,6 +88,11 @@ static void print_usage(FILE *out)
         "                    meshed and turned by x/y, multipart's\n"
         "                    cases merged, a refusing model skipped\n"
         "                    the way the reference catches it\n"
+        "  atlas <pack> [--out <png>]\n"
+        "                    Every texture the pack ships on one\n"
+        "                    square page: its size and where each\n"
+        "                    texture landed as bounds; --out writes\n"
+        "                    the page PNG\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -1162,6 +1167,102 @@ static int cmd_blockmesh(const char *pack_dir, const char *spec)
     mcme_mesh_free(&mesh);
     if (!shown) {
         mcme_set_error("blockmesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    return MCME_OK;
+}
+
+/* ========================================================================
+ * atlas
+ * ======================================================================== */
+
+/* The packer's input order, sorted: the layout only rides on the
+   input order wherever the perimeter sort leaves ties, and a pack
+   of 16x16 textures is one long tie — the filesystem's directory
+   order must not decide the answer (D34). */
+static int cmp_path_ptr(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/*
+ * atlas — every texture the pack ships on one square page, and
+ * where each one landed: the editor's own packer, quirks
+ * included (D34, decisions.md#D34). Human: a summary line;
+ * --json: {size, textures: {path: [u0, v0, u1, v1]}}. `--out`
+ * writes the page PNG beside the answer — the renderer's image.
+ */
+static int cmd_atlas(const char *pack_dir, const char *out_png)
+{
+    if (!mcme_fs_exists(pack_dir)) {
+        mcme_set_error("atlas: '%s' is not a directory", pack_dir);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeTextureIndex *tex = NULL;
+    if (!mcme_texture_index_open(pack_dir, &tex)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("atlas: %s", why);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    size_t count = mcme_texture_count(tex);
+    const char **paths = count ? malloc(count * sizeof *paths) : NULL;
+    if (count && !paths) {
+        mcme_texture_index_close(tex);
+        mcme_set_error("atlas: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    for (size_t i = 0; i < count; ++i)
+        paths[i] = mcme_texture_at(tex, i);
+    if (count > 1) qsort(paths, count, sizeof *paths, cmp_path_ptr);
+
+    McmeAtlas atlas;
+    bool ok = mcme_atlas_build(paths, count, &atlas);
+    free(paths);
+    mcme_texture_index_close(tex);
+    if (!ok) {
+        /* One image would not load — the reference's Pillow raise
+           kills the whole call; mcme refuses by name. */
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("atlas: %s", why);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    if (out_png && !mcme_image_write_png(out_png, &atlas.page)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("atlas: %s", why);
+        mcme_atlas_free(&atlas);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    bool shown;
+    if (g_opts.json) {
+        struct cJSON *doc = cJSON_CreateObject();
+        if (doc) {
+            cJSON_AddNumberToObject(doc, "size", atlas.size);
+            struct cJSON *list = cJSON_AddObjectToObject(doc, "textures");
+            for (size_t i = 0; i < atlas.count && list; ++i)
+                json_add_floats(list, atlas.names[i],
+                                &atlas.bounds[i * 4], 4);
+            char *text = cJSON_PrintUnformatted(doc);
+            printf("%s\n", text ? text : "{}");
+            if (text) cJSON_free(text);
+            cJSON_Delete(doc);
+        }
+        shown = doc != NULL;
+    } else {
+        printf("%zu textures on a %dx%d page\n",
+               atlas.count, atlas.size, atlas.size);
+        if (out_png) printf("  page written to %s\n", out_png);
+        shown = true;
+    }
+    mcme_atlas_free(&atlas);
+    if (!shown) {
+        mcme_set_error("atlas: out of memory");
         return MCME_EXIT_INTERNAL;
     }
     return MCME_OK;
@@ -3809,6 +3910,16 @@ static int dispatch(int argc, char **argv)
             return MCME_EXIT_USAGE;
         }
         return cmd_blockmesh(args[0], args[1]);
+    }
+
+    if (strcmp(cmd, "atlas") == 0) {
+        /* `atlas <pack-dir>` or `atlas <pack-dir> --out <png>`. */
+        if (rest != 1 && !(rest == 3 && strcmp(args[1], "--out") == 0)) {
+            mcme_set_error("atlas: usage: mcme atlas "
+                           "<pack-dir> [--out <png>]");
+            return MCME_EXIT_USAGE;
+        }
+        return cmd_atlas(args[0], rest == 3 ? args[2] : NULL);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can

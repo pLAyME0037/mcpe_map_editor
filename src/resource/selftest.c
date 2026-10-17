@@ -650,6 +650,64 @@ static void put_png(const char *path, int comp, const unsigned char *px)
               "write png '%s'", path);
 }
 
+/* A solid PNG of any size (comp 3 = RGB, comp 4 = RGBA), parent
+   directories made. */
+static void put_solid_png(const char *path, int comp, int w, int h,
+                          unsigned char r, unsigned char g,
+                          unsigned char b, unsigned char a)
+{
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        CHECK_MSG(mcme_fs_mkdir_p(dir), "mkdir '%s': %s", dir,
+                  mcme_last_error());
+    }
+    unsigned char *px = malloc((size_t)w * (size_t)h * (size_t)comp);
+    CHECK_MSG(px, "solid png: out of memory");
+    for (int i = 0; i < w * h; ++i) {
+        px[i * comp + 0] = r;
+        px[i * comp + 1] = g;
+        px[i * comp + 2] = b;
+        if (comp == 4) px[i * comp + 3] = a;
+    }
+    CHECK_MSG(stbi_write_png(path, w, h, comp, px, w * comp),
+              "write png '%s'", path);
+    free(px);
+}
+
+/* One pixel of an atlas page, NULL off the page. */
+static const unsigned char *page_px(const McmeAtlas *a, int x, int y)
+{
+    if (!a || !a->page.rgba || x < 0 || y < 0 ||
+        x >= a->size || y >= a->size)
+        return NULL;
+    return a->page.rgba + ((size_t)y * (size_t)a->size + (size_t)x) * 4;
+}
+
+static void check_px(const McmeAtlas *a, int x, int y, int r, int g,
+                     int b, int al, const char *what)
+{
+    const unsigned char *p = page_px(a, x, y);
+    CHECK_MSG(p, "%s: (%d,%d) is off the page", what, x, y);
+    CHECK_MSG(p[0] == r && p[1] == g && p[2] == b && p[3] == al,
+              "%s: (%d,%d) is %d,%d,%d,%d, want %d,%d,%d,%d",
+              what, x, y, p[0], p[1], p[2], p[3], r, g, b, al);
+}
+
+static void check_bounds(const McmeAtlas *a, size_t i, double u0,
+                         double v0, double u1, double v1,
+                         const char *what)
+{
+    CHECK_MSG(i < a->count, "%s: index %zu of %zu", what, i, a->count);
+    const double *b = &a->bounds[i * 4];
+    CHECK_MSG(fabs(b[0] - u0) < 1e-9 && fabs(b[1] - v0) < 1e-9 &&
+              fabs(b[2] - u1) < 1e-9 && fabs(b[3] - v1) < 1e-9,
+              "%s: bounds %g %g %g %g, want %g %g %g %g", what,
+              b[0], b[1], b[2], b[3], u0, v0, u1, v1);
+}
+
 /* Builds one mesh, clearing a refusal's message the way every error
    path below expects. */
 static bool build_mesh(const McmeModelIndex *models,
@@ -1645,6 +1703,176 @@ static void test_blockmeshes(void)
     mcme_clear_error();
 }
 
+#define AFIXDIR "build/atlas_fixtures"
+
+/*
+ * The atlas — the editor's own packer, and every answer pinned
+ * against what its create_atlas gave (the probe inputs were
+ * re-run through the reference's module verbatim; decisions.md
+ * #D34). The input order below is the verb's sorted order, the
+ * order ties in the perimeter sort keep.
+ */
+static void test_atlases(void)
+{
+    printf("  resource (atlases)\n");
+
+    /* --- fixtures: solid images whose sizes decide the layout --- */
+    put(AFIXDIR "/pack.mcmeta",
+        "{\"pack\":{\"pack_format\":4,\"description\":\"atlas\"}}");
+    const char *pa = AFIXDIR "/assets/minecraft/textures/block/a.png";
+    const char *pb = AFIXDIR "/assets/minecraft/textures/block/b.png";
+    const char *pc = AFIXDIR "/assets/minecraft/textures/block/c.png";
+    const char *pw = AFIXDIR "/assets/minecraft/textures/block/wide.png";
+    const char *pt = AFIXDIR "/assets/minecraft/textures/block/tall.png";
+    const char *ps = AFIXDIR "/assets/minecraft/textures/block/s3.png";
+    put_solid_png(pa, 4, 2, 2, 255, 0, 0, 255);    /* red   */
+    put_solid_png(pb, 4, 2, 2, 0, 255, 0, 255);    /* green */
+    put_solid_png(pc, 3, 2, 2, 0, 0, 255, 0);      /* blue, RGB — expands
+                                                      to opaque RGBA */
+    put_solid_png(pw, 4, 4, 2, 255, 255, 0, 255);  /* yellow, perimeter 12 */
+    put_solid_png(pt, 4, 2, 4, 255, 0, 255, 255);  /* magenta, perimeter 12 */
+    put_solid_png(ps, 4, 3, 2, 0, 255, 255, 255);  /* cyan, perimeter 10 */
+    /* A file the loader cannot read, at the pack root where the
+       index does not scan it — only the atlas is asked about it. */
+    put(AFIXDIR "/broken.png", "this is not a png");
+
+    /* --- the whole pack, in the verb's sorted input order --- */
+    {
+        const char *paths[] = { pa, pb, pc, ps, pt, pw };
+        McmeAtlas a;
+        CHECK_MSG(mcme_atlas_build(paths, 6, &a),
+                  "atlas build: %s", mcme_last_error());
+        /* pixels = 4+4+4+6+8+8 = 34 -> ceil sqrt 6 -> 8; max side 4. */
+        CHECK_MSG(a.size == 8, "pack size %d, want 8", a.size);
+        CHECK_MSG(a.count == 6, "pack count %zu, want 6", a.count);
+        /* Perimeter order: tall and wide tie at 12 and the tie
+           keeps the input order — tall (index 4) packs first —
+           then s3 (10), then a, b, c (8). Placements, all of
+           them the reference's own answers for this input: */
+        check_px(&a, 1, 1, 255, 0, 255, 255, "tall at 0,0");
+        check_px(&a, 3, 1, 255, 255, 0, 255, "wide at 2,0");
+        check_px(&a, 3, 3, 0, 255, 255, 255, "s3 at 2,2");
+        check_px(&a, 1, 5, 255, 0, 0, 255, "a at 0,4");
+        check_px(&a, 3, 5, 0, 0, 255, 255, "c at 2,4 (RGB expanded)");
+        check_px(&a, 1, 7, 0, 255, 0, 255, "b at 0,6");
+        check_px(&a, 7, 7, 0, 0, 0, 0, "the page's empty corner");
+        check_px(&a, 6, 0, 0, 0, 0, 0, "the empty strip right of wide");
+        /* Bounds, the min(h, w) top edge included. */
+        check_bounds(&a, 0, 0.0, 0.5, 0.25, 0.75, "a");
+        check_bounds(&a, 1, 0.0, 0.75, 0.25, 1.0, "b");
+        check_bounds(&a, 2, 0.25, 0.5, 0.5, 0.75, "c");
+        check_bounds(&a, 3, 0.25, 0.25, 0.625, 0.5, "s3");
+        check_bounds(&a, 4, 0.0, 0.0, 0.25, 0.25, "tall");
+        check_bounds(&a, 5, 0.25, 0.0, 0.75, 0.25, "wide");
+        for (size_t i = 0; i < a.count; ++i)
+            CHECK_MSG(strcmp(a.names[i], paths[i]) == 0,
+                      "name %zu is '%s', want '%s'", i, a.names[i],
+                      paths[i]);
+        mcme_atlas_free(&a);
+    }
+
+    /* --- the min(h, w) quirk alone: a 2x4's top edge is 2/4, not 4/4 --- */
+    {
+        McmeAtlas a;
+        CHECK(mcme_atlas_build(&pt, 1, &a));
+        CHECK_MSG(a.size == 4, "tall-only size %d, want 4", a.size);
+        check_bounds(&a, 0, 0.0, 0.0, 0.5, 0.5, "tall-only");
+        check_px(&a, 0, 0, 255, 0, 255, 255, "tall-only top");
+        check_px(&a, 1, 3, 255, 0, 255, 255, "tall-only bottom");
+        mcme_atlas_free(&a);
+    }
+
+    /* --- the estimate too small doubles: 2x2,2x2,3x2 fails at 4,
+           retries at 8 (the reference's own answers for these) --- */
+    {
+        const char *paths[] = { pa, pb, ps };
+        McmeAtlas a;
+        CHECK_MSG(mcme_atlas_build(paths, 3, &a),
+                  "doubling atlas: %s", mcme_last_error());
+        CHECK_MSG(a.size == 8, "doubling size %d, want 8", a.size);
+        check_bounds(&a, 0, 0.0, 0.25, 0.25, 0.5, "doubling a");
+        check_bounds(&a, 1, 0.0, 0.5, 0.25, 0.75, "doubling b");
+        check_bounds(&a, 2, 0.0, 0.0, 0.375, 0.25, "doubling s3");
+        mcme_atlas_free(&a);
+    }
+
+    /* --- perimeter order beats input order; equal perimeters keep
+           it (a and b both 8; wide 12 goes first) --- */
+    {
+        const char *paths[] = { pa, pw, pb };
+        McmeAtlas a;
+        CHECK(mcme_atlas_build(paths, 3, &a));
+        CHECK(a.size == 4);
+        check_bounds(&a, 0, 0.0, 0.5, 0.5, 1.0, "reordered a");
+        check_bounds(&a, 1, 0.0, 0.0, 1.0, 0.5, "reordered wide");
+        check_bounds(&a, 2, 0.5, 0.5, 1.0, 1.0, "reordered b");
+        mcme_atlas_free(&a);
+    }
+
+    /* --- the empty set: the reference's bit_length(-1) answer --- */
+    {
+        McmeAtlas a;
+        CHECK(mcme_atlas_build(NULL, 0, &a));
+        CHECK_MSG(a.size == 2, "empty size %d, want 2", a.size);
+        CHECK(a.count == 0 && a.names == NULL && a.bounds == NULL);
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 2; ++x)
+                check_px(&a, x, y, 0, 0, 0, 0, "empty page");
+        mcme_atlas_free(&a);
+    }
+
+    /* --- image load / write round trip --- */
+    {
+        McmeImage img;
+        CHECK_MSG(mcme_image_load(pa, &img), "load a.png: %s",
+                  mcme_last_error());
+        CHECK(img.width == 2 && img.height == 2);
+        CHECK(img.rgba[0] == 255 && img.rgba[1] == 0 &&
+              img.rgba[3] == 255);
+        const char *copy = AFIXDIR "/copy.png";
+        CHECK(mcme_image_write_png(copy, &img));
+        mcme_image_free(&img);
+        CHECK(mcme_image_load(copy, &img));
+        CHECK(img.width == 2 && img.height == 2);
+        CHECK(img.rgba[4] == 255 && img.rgba[5] == 0);
+        mcme_image_free(&img);
+    }
+
+    /* --- the texture index's enumeration (the verb's input) --- */
+    {
+        McmeTextureIndex *tex = NULL;
+        CHECK_MSG(mcme_texture_index_open(AFIXDIR, &tex),
+                  "index open: %s", mcme_last_error());
+        CHECK_MSG(mcme_texture_count(tex) == 6, "index holds %zu, want 6",
+                  mcme_texture_count(tex));
+        for (size_t i = 0; i < mcme_texture_count(tex); ++i)
+            CHECK(mcme_texture_at(tex, i) != NULL);
+        CHECK(mcme_texture_at(tex, 6) == NULL);
+        mcme_texture_index_close(tex);
+    }
+
+    /* --- refusals --- */
+    {
+        McmeAtlas a;
+        McmeImage img;
+        const char *paths[] = { pa };
+        CHECK(!mcme_atlas_build(NULL, 1, &a));
+        CHECK(!mcme_atlas_build(paths, 1, NULL));
+        CHECK(!mcme_image_load(NULL, &img));
+        CHECK(!mcme_image_load(AFIXDIR "/no_such.png", &img));
+        CHECK(!mcme_image_write_png(NULL, &img));
+        /* An image the loader cannot read refuses the whole atlas —
+           the reference's Pillow raise kills its call (D34). */
+        const char *bad[] = { AFIXDIR "/broken.png" };
+        CHECK(!mcme_atlas_build(bad, 1, &a));
+        CHECK(mcme_texture_count(NULL) == 0);
+        CHECK(mcme_texture_at(NULL, 0) == NULL);
+        mcme_image_free(NULL);
+        mcme_atlas_free(NULL);
+        mcme_clear_error();
+    }
+}
+
 int mcme_test_resource(void)
 {
     g_failed = 0;
@@ -1653,5 +1881,6 @@ int mcme_test_resource(void)
     test_models();
     test_meshes();
     test_blockmeshes();
+    test_atlases();
     return g_failed;
 }

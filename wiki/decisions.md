@@ -2264,3 +2264,107 @@ reaches mcme (then the block-level mesh must multiply tint
 vertices per block, and the pin's exclusion inverts into a
 comparison), the merge sorts strings by a different key, or
 `BlockMesh.merge` grows a face_mode argument.
+
+## D34 — the atlas: many small files on one page
+
+**What the reference does.** The atlas is not in the model reader;
+it is the editor's OpenGL layer's `textureatlas` module (a packing
+utility the editor vendors). `create_atlas(texture_tuple)` opens
+each path as a Pillow frame, sorts the textures by perimeter
+(`2w + 2h`) NON-INCREASING and stably — Python's `sorted`, so
+equal perimeters keep the input order — sizes the page as
+`max(max width, max height, 1 << bit_length(ceil(sqrt(total
+pixels)) - 1))`, and packs with `TextureAtlas(size, size)` at
+border 0: `PackRegion.pack` gives the first free region that
+holds a frame its top-left, marks it taken, and splits it into
+the strip BELOW at the frame's own width (`(x, y + h, w, H - h)`)
+and the strip RIGHT at the region's full height (`(x + w, y, W -
+w, H)`); a taken region tries below, then right; any frame that
+fits nowhere raises `AtlasTooSmall`, the page doubles, and the
+pack starts over. `generate("RGBA")` pastes every frame at its
+placement into one square RGBA image, and `to_dict` answers each
+texture's bounds as `(x/size, y/size, (x + w)/size, (y + min(h,
+w)) / size)` — the top edge using the SMALLER of the frame's
+sides, the module's own quirk — with the dictionary then
+reordered to the input tuple's order. The empty tuple answers a
+2x2 page with no bounds (`bit_length` of `ceil(sqrt(0)) - 1`,
+which is `-1`, so the formula yields 2) and a fully transparent
+page. The module supports a packing border; `create_atlas` always
+passes 0. The app hands it `mgr.textures` — the manager's table in
+filesystem glob order, its `missing_no` sentinel among them.
+
+**What mcme does.** `mcme_image_load` reads a PNG whole as RGBA
+through stb with the expansion Pillow's paste into an RGBA canvas
+performs (grey, palette-with-transparency and RGB alike),
+`mcme_image_write_png` writes one back out, and
+`mcme_atlas_build` (new `src/resource/atlas.c`) mirrors the
+module rule for rule: load every frame first (one that will not
+load refuses the whole atlas by name — the reference's Pillow
+raise kills its call at the same file), sort by perimeter with
+the input index as the tie-break (qsort is not stable; the tie
+IS the index), compute the page the same way including the empty
+answer of 2, pack with the recursive region tree — below at the
+frame's width, right at the region's full height, x/y recorded
+on the frame as the module records them on the packable —
+doubling on any fit failure, blit into a zeroed page, and answer
+bounds with the `min(h, w)` top edge and names mirroring the
+input order. The texture index gained its enumeration
+(`mcme_texture_count`/`mcme_texture_at`, directory order); the
+verb `mcme atlas <pack-dir> [--out <png>]` SORTS what it is
+handed before building — the one feeding difference, below — and
+answers human (a summary line) or `--json` `{size, textures:
+{path: [u0, v0, u1, v1]}}`, `--out` writing the page PNG.
+
+**How parity was measured.** `tools/ref_atlas.py` loads
+`textureatlas.py` by file path — the package chain imports wx,
+which needs a display this machine does not have, and the file
+itself needs only Pillow — and runs the reference's own
+`create_atlas` verbatim over the same sorted tuple: the pin
+strips the manager's `missing_no` sentinel (asserted present so
+the strip can not silently stop working), mcme sorts its index's
+enumeration, and the bounds' keys compare exactly because both
+sides name the same pack's paths. Six crafted packs pin each
+behaviour — three 2x2s (the perimeter tie on the sorted input,
+one RGB image expanding to the same opaque RGBA), a 4x2 among
+2x2s (the sort beats the input order), a lone 2x4 (the `min(h,
+w)` top edge), 2x2/2x2/3x2 (the estimate fails at 4, doubles to
+8), all six together (the `tall`/`wide` tie and a mixed layout),
+and the empty pack (the 2x2 page of nothing) — each compared on
+name order, page size, every bound at 1e-9, and every pixel of
+the page decoded through both decoders. The raw
+`java_vanilla_fix` adds real game data: 22 images, the 64x64
+banners tying on perimeter, one PALETTE image expanding
+identically in Pillow and stb, a 512x512 page. The broken file
+is pinned on both sides, the human line and 4 usage refusals
+beside them: 67 checks. The selftest's `test_atlases` carries
+the same reference-verified expectations from the C side
+(every value re-run through `create_atlas` verbatim before
+landing), ASan/UBSan clean.
+
+**Out of domain, recorded.** The INPUT ORDER: the app feeds
+`create_atlas` the manager's glob order — the filesystem's
+directory order decides every equal-perimeter tie there — while
+mcme sorts the paths it is handed so the answer never rides on
+the disk; the pin pins the algorithm on the sorted tuple for
+both sides, and the app's own feeding order is out of domain.
+The SENTINEL: the manager's table carries `missing_no` (its file
+inside the reader's package), so the app's atlas packs one image
+no pack ships — the pin strips it from the reference's input and
+asserts it was there. The DEATH-VERSUS-REFUSAL pair: an
+unreadable texture makes the reference's pack unmanageable
+before any atlas call — its manager reads every image at load for
+the transparency flags, and Pillow's `UnidentifiedImageError`
+propagates — while mcme's index keeps the file opaque with a
+warning (D32's record, standing) and the atlas is what refuses,
+by name at exit 6. Both sides answer nothing; each is pinned to
+its own way of saying so.
+
+**Reverses if:** `create_atlas` grows a border argument (then
+every placement and the page size shift by `2b` and the split
+widths change), the perimeter sort stops being stable (then the
+input-order tie-break disappears and mcme's sort becomes the only
+order), `to_dict` drops `min(h, w)` (then non-square frames'
+top edges become h and the tall fixtures change), the empty
+input's formula stops answering 2, or the module learns
+multi-frame textures (its `Texture` already carries a frame
+list — one name could then own several bounds).

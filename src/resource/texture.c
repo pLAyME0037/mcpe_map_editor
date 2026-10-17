@@ -268,3 +268,14 @@ bool mcme_texture_transparent(const McmeTextureIndex *index,
             return index->entries[i].transparent;
     return false; /* the missing image is opaque here */
 }
+
+size_t mcme_texture_count(const McmeTextureIndex *index)
+{
+    return index ? index->count : 0;
+}
+
+const char *mcme_texture_at(const McmeTextureIndex *index, size_t i)
+{
+    if (!index || i >= index->count) return NULL;
+    return index->entries[i].path;
+}
