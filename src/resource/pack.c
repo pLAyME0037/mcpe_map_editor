@@ -146,3 +146,22 @@ void mcme_pack_free(McmePack *pack)
     free(pack->root);
     free(pack);
 }
+
+bool mcme_pack_loads_assets(const char *pack_dir)
+{
+    /* The reference guards its WHOLE load — textures, blockstates,
+       models — behind one test: the manifest parsed into a pack and
+       the format is at least 2, the first that carried assets. A
+       directory failing either loads nothing there, so mcme's
+       indexes answer as if empty. mcme's own manifest verdict
+       decides (mcme is stricter on malformed manifests than the
+       reference, recorded in D29). */
+    McmePack *pack = NULL;
+    if (!mcme_pack_open(pack_dir, &pack)) {
+        mcme_clear_error(); /* not a pack is an answer here, not a failure */
+        return false;
+    }
+    bool loads = pack->format >= 2;
+    mcme_pack_free(pack);
+    return loads;
+}

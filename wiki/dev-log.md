@@ -7,6 +7,99 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — The mesh layer: one model, as the game would build it
+
+### Built
+
+- Mesh building (D32): `mcme_mesh_build` answers one folded model
+  the way the reference's `_load_block_model` builds it — per
+  element the box from `from`/`to` through its sort-and-product
+  geometry, the full-block transparency check, element rotation
+  with origin, axis (default `"x"`, an axis that names no
+  direction standing still), the 1.21.11 multi-axis `x`/`y`/`z`
+  overrides and `rescale`; per face the corner table, the uv
+  corner cut (negative rotation wrapping to its positive twin, a
+  45 not cutting at all), cullface routing the bucket while the
+  face keeps its own corners, and the texture. `#chain`
+  substitution walks the folded textures dict one `#` per step
+  with loop detection, an absent key answering itself and a
+  `{sprite: ...}` value passing through; textures dedup on the
+  namespace-split base, the first face's resolution naming the
+  path. The transparency ladder is the reference's own: an
+  unrotated full cube whose faces all sit on opaque images turns
+  the block opaque, any translucent face turns it translucent,
+  everything else stays partial — and the missing image is not in
+  the reference's transparency table, so a full cube on one
+  raises there and mcme refuses by name.
+- The texture index (`src/resource/texture.c` walks
+  `assets/<ns>/textures/**/*.png`, path per `(namespace,
+  relative-without-.png)`) and the image layer
+  (`image_impl.c` — stb_image answering the mode and any alpha
+  below 255, the reference's rule over PIL's RGBA, an unreadable
+  file warned and read opaque). A bare texture reference defaults
+  to the `minecraft` namespace; the loader skips the useless
+  image groups whole.
+- The loader gate, retro to D30 and D31: the reference guards its
+  entire texture-and-model load on `valid_pack &&
+  pack_format >= 2`, and `mcme_pack_loads_assets` now gates all
+  three index opens — a failing gate answers the empty index,
+  exit 0, D29's stricter manifest reading standing behind it.
+- The verb `mcme mesh <pack-dir> <model-ref>`, `--json` printing
+  `{face_mode, textures, transparent, dirs}` where each present
+  bucket carries its flat `verts`/`tverts`/`tint_verts`/`faces`/
+  `texture_indexes` — the reference's BlockMesh field for field,
+  empty buckets omitted there and here.
+- The resource suite's fourth test pins ~25 fixture meshes: the
+  transparency ladder on real PNGs (opaque, alpha, RGB-mode), the
+  bucket routing, the uv cuts, chains and sprite, the missing
+  block versus the empty mesh, element rotation including the
+  multi-axis override and a no-direction axis, the namespace-blind
+  dedup, the skipped image group, and every refusal above by name.
+- `tools/ref_mesh.py` calls `_load_block_model` directly with its
+  default tint and compares the BlockMesh back: 23 crafted answer
+  probes, 13 refusals each carrying the reference's own exception
+  class, 4 recorded differences pinned to each side's own
+  observable, 241 probes over the reader's own `java_vanilla_fix`
+  (220 answered alike, 21 refused by both), 4 usage refusals —
+  285 checks.
+- Gates: `./rebuild.sh test` PASS 5 suites; `./mcme selftest`
+  PASS 6 suites under the default ASan+UBSan+leak run; battery
+  15/15 rc=0 with `ref_mesh` added. Nothing under `tests/`
+  staged; the golden stores show no tracked changes.
+
+### Notes
+
+- The pin's first run earned its keep twice. The crafted fixtures
+  had been written one directory too deep (`models/block/block/
+  ...`), so both readers answered "no such model" and every
+  answer probe was vacuously equal — only the mismatched refusal
+  probes exposed it. And the mesh arrays stored float32, invisible
+  until an irrational vertex (`elementrot_multi`) sat 6e-9 off
+  the reference's float64 on the float32 grid; the arrays are
+  doubles now, dyadic expectations unchanged.
+- Real game data answered a question the fixtures could not: 21
+  of the vanilla pack's probes are models the reference itself
+  cannot mesh — self-looping texture keys with a face on them
+  (banners, chests, heads) and `golem_statue`'s elements without
+  a textures dict — and each raise is its refusal, mcme exit 3.
+  The sweep treats a reference raise as that model's answer:
+  refused.
+- The bucket lesson stands from the selftest: the reference
+  buckets by `cullface` only — no cullface lands in `none` —
+  while face direction selects corners; the missing block's six
+  direction buckets are the one place a direction names a bucket.
+- Recorded in decisions.md#D32: the non-dict textures the fold
+  drops where the reference raises folding it, the four-number
+  `from` its numpy still builds, the unreadable PNG, and the
+  gate's reach.
+
+### Next
+
+- Blockstate rotation folded into the mesh (D33): the selection's
+  `x`/`y` applied per winning model, `uvlock` read and ignored
+  the way the reference ignores it. The atlas follows once meshes
+  travel with named textures.
+
 ## 2026-10-17 — The model layer: one file, every parent folded in
 
 ### Built

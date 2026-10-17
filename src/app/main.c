@@ -77,6 +77,11 @@ static void print_usage(FILE *out)
         "                    One model file with its parent chain\n"
         "                    folded in: textures per key, elements\n"
         "                    wholesale, everything else discarded\n"
+        "  mesh <pack> <model-ref>\n"
+        "                    One model as the game would build it:\n"
+        "                    vertices, UVs and faces grouped by cull\n"
+        "                    direction, its resolved textures, the\n"
+        "                    block's transparency\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -778,6 +783,35 @@ static int cmd_blockstate(const char *pack_dir, const char *spec)
  * not fold (a cycle, in practice) is the pack's bad data, exit 3.
  * ======================================================================== */
 
+/* Splits a model or mesh reference the way the game writes it: an
+   optional `namespace:` prefix, defaulting to minecraft. Returns
+   MCME_OK, or MCME_EXIT_USAGE with the error saying which
+   malformed shape was refused. */
+static int split_ref(const char *what, const char *ref,
+                     char *ns, size_t ns_size, const char **base)
+{
+    const char *colon = strchr(ref, ':');
+    if (colon) {
+        size_t ns_len = (size_t)(colon - ref);
+        if (ns_len == 0 || ns_len >= ns_size) {
+            mcme_set_error("%s: reference '%s' has an empty or "
+                           "too-long namespace", what, ref);
+            return MCME_EXIT_USAGE;
+        }
+        memcpy(ns, ref, ns_len);
+        ns[ns_len] = '\0';
+        *base = colon + 1;
+    } else {
+        snprintf(ns, ns_size, "minecraft");
+        *base = ref;
+    }
+    if (**base == '\0') {
+        mcme_set_error("%s: reference '%s' has an empty path", what, ref);
+        return MCME_EXIT_USAGE;
+    }
+    return MCME_OK;
+}
+
 static int cmd_model(const char *pack_dir, const char *ref)
 {
     if (!mcme_fs_exists(pack_dir)) {
@@ -791,25 +825,8 @@ static int cmd_model(const char *pack_dir, const char *ref)
        read as "the pack holds no such model". */
     char ns[256];
     const char *base;
-    const char *colon = strchr(ref, ':');
-    if (colon) {
-        size_t ns_len = (size_t)(colon - ref);
-        if (ns_len == 0 || ns_len >= sizeof ns) {
-            mcme_set_error("model: reference '%s' has an empty or "
-                           "too-long namespace", ref);
-            return MCME_EXIT_USAGE;
-        }
-        memcpy(ns, ref, ns_len);
-        ns[ns_len] = '\0';
-        base = colon + 1;
-    } else {
-        snprintf(ns, sizeof ns, "minecraft");
-        base = ref;
-    }
-    if (*base == '\0') {
-        mcme_set_error("model: reference '%s' has an empty path", ref);
-        return MCME_EXIT_USAGE;
-    }
+    int rc = split_ref("model", ref, ns, sizeof ns, &base);
+    if (rc != MCME_OK) return rc;
 
     McmeModelIndex *index = NULL;
     if (!mcme_model_index_open(pack_dir, &index)) {
@@ -850,6 +867,143 @@ static int cmd_model(const char *pack_dir, const char *ref)
     }
 
     cJSON_Delete(doc);
+    return MCME_OK;
+}
+
+/* ========================================================================
+ * mesh
+ *
+ * `mcme mesh <pack-dir> <model-ref>` — one model as the game would
+ * build it: four vertices per face with texture coordinates and
+ * tint, faces grouped by the direction they cull against, the
+ * resolved texture list, and the block's transparency — the CLI
+ * face of the D32 layer, the reference's `_load_block_model`
+ * answer by answer. `--json` prints that answer in the shape the
+ * pins compare: face_mode, textures, transparent, and the buckets
+ * under their own names. A model the pack does not know is the
+ * empty mesh, exit 0 — an answer. A model that will not mesh (the
+ * reference raises on it too) is the pack's bad data, exit 3; a
+ * pack directory that does not exist is exit 2, a malformed
+ * reference exit 1.
+ * ======================================================================== */
+
+static const char *const k_dir_names[7] = {
+    "down", "up", "north", "east", "south", "west", "none"
+};
+
+/* One mesh array as a JSON array of numbers. */
+static void json_add_floats(struct cJSON *obj, const char *name,
+                            const double *vals, size_t count)
+{
+    struct cJSON *arr = cJSON_AddArrayToObject(obj, name);
+    if (!arr) return;
+    for (size_t i = 0; i < count; ++i)
+        cJSON_AddItemToArray(arr, cJSON_CreateNumber(vals[i]));
+}
+
+static void json_add_u32s(struct cJSON *obj, const char *name,
+                          const uint32_t *vals, size_t count)
+{
+    struct cJSON *arr = cJSON_AddArrayToObject(obj, name);
+    if (!arr) return;
+    for (size_t i = 0; i < count; ++i)
+        cJSON_AddItemToArray(arr, cJSON_CreateNumber(vals[i]));
+}
+
+static int cmd_mesh(const char *pack_dir, const char *ref)
+{
+    if (!mcme_fs_exists(pack_dir)) {
+        mcme_set_error("mesh: '%s' is not a directory", pack_dir);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    char ns[256];
+    const char *base;
+    int rc = split_ref("mesh", ref, ns, sizeof ns, &base);
+    if (rc != MCME_OK) return rc;
+
+    McmeModelIndex *models = NULL;
+    if (!mcme_model_index_open(pack_dir, &models)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("mesh: %s", why);
+        return MCME_EXIT_INTERNAL;
+    }
+    McmeTextureIndex *tex_index = NULL;
+    if (!mcme_texture_index_open(pack_dir, &tex_index)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("mesh: %s", why);
+        mcme_model_index_close(models);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    McmeMesh mesh;
+    if (!mcme_mesh_build(models, tex_index, ns, base, &mesh)) {
+        /* The model would not mesh — its data, not mcme's: the
+           reference raises on the same file. */
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("mesh: %s", why);
+        mcme_model_index_close(models);
+        mcme_texture_index_close(tex_index);
+        return MCME_EXIT_BAD_FORMAT;
+    }
+    mcme_model_index_close(models);
+    mcme_texture_index_close(tex_index);
+
+    if (g_opts.json) {
+        struct cJSON *doc = cJSON_CreateObject();
+        if (!doc) {
+            mcme_set_error("mesh: out of memory");
+            mcme_mesh_free(&mesh);
+            return MCME_EXIT_INTERNAL;
+        }
+        cJSON_AddNumberToObject(doc, "face_mode", 3);
+        struct cJSON *tex = cJSON_AddArrayToObject(doc, "textures");
+        for (size_t i = 0; i < mesh.texture_count; ++i)
+            cJSON_AddItemToArray(tex,
+                                 cJSON_CreateString(mesh.textures[i]));
+        cJSON_AddNumberToObject(doc, "transparent",
+                                (double)mesh.transparency);
+        struct cJSON *dirs = cJSON_AddObjectToObject(doc, "dirs");
+        for (int i = 0; i < 7; ++i) {
+            if (!mesh.present[i]) continue;
+            const McmeMeshBucket *b = &mesh.buckets[i];
+            struct cJSON *d = cJSON_AddObjectToObject(dirs, k_dir_names[i]);
+            if (!d) continue;
+            json_add_floats(d, "verts", b->verts, b->vert_count * 3);
+            json_add_floats(d, "tverts", b->tverts, b->vert_count * 2);
+            json_add_floats(d, "tint_verts", b->tint_verts,
+                            b->vert_count * 3);
+            json_add_u32s(d, "faces", b->faces, b->face_count * 6);
+            json_add_u32s(d, "texture_indexes", b->texture_indexes,
+                          b->face_count * 2);
+        }
+        char *text = cJSON_PrintUnformatted(doc);
+        printf("%s\n", text ? text : "{}");
+        if (text) cJSON_free(text);
+        cJSON_Delete(doc);
+    } else {
+        static const char *const trans_words[3] = {
+            "opaque", "translucent", "partial" };
+        printf("%s:%s\n", ns, base);
+        printf("  transparency  %s\n", trans_words[mesh.transparency]);
+        printf("  textures      %zu\n", mesh.texture_count);
+        for (size_t i = 0; i < mesh.texture_count; ++i)
+            printf("    %s\n", mesh.textures[i]);
+        bool any = false;
+        for (int i = 0; i < 7; ++i) {
+            if (!mesh.present[i]) continue;
+            any = true;
+            printf("  %-6s        %zu faces, %zu verts\n",
+                   k_dir_names[i], mesh.buckets[i].face_count,
+                   mesh.buckets[i].vert_count);
+        }
+        if (!any) printf("  (this model has no faces)\n");
+    }
+
+    mcme_mesh_free(&mesh);
     return MCME_OK;
 }
 
@@ -3477,6 +3631,15 @@ static int dispatch(int argc, char **argv)
             return MCME_EXIT_USAGE;
         }
         return cmd_model(args[0], args[1]);
+    }
+
+    if (strcmp(cmd, "mesh") == 0) {
+        if (rest != 2) {
+            mcme_set_error("mesh: usage: mcme mesh "
+                           "<pack-dir> <model-ref>");
+            return MCME_EXIT_USAGE;
+        }
+        return cmd_mesh(args[0], args[1]);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can

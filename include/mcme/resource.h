@@ -156,6 +156,19 @@ bool mcme_blockstate_lookup(const McmeBlockstateIndex *index,
 /* Releases an answer and every string it owns. NULL is a no-op. */
 void mcme_blockstate_free(McmeBlockstate *state);
 
+/*
+ * Does the reference's loader load ANYTHING from this directory?
+ * Its whole load — textures, blockstates, models alike — sits
+ * under one guard: the pack must be valid (the manifest parsed and
+ * named a pack) and its format must be at least 2, the first
+ * format that carried assets. A directory that fails either loads
+ * nothing there, and this gate makes mcme's three indexes agree:
+ * an empty index, every answer the empty one (mcme's manifest
+ * reader is stricter than the reference's on malformed manifests,
+ * recorded in D29; the gate uses mcme's own verdict).
+ */
+bool mcme_pack_loads_assets(const char *pack_dir);
+
 /* ========================================================================
  * Models — one file, every parent folded in (D31)
  *
@@ -225,5 +238,153 @@ void mcme_model_index_close(McmeModelIndex *index);
  */
 bool mcme_model_load(const McmeModelIndex *index, const char *namespace,
                      const char *path, struct cJSON **out);
+
+/* ========================================================================
+ * Textures — the pack's images, resolved (D32)
+ *
+ * A mesh names its textures by reference ("#all", "block/stone"),
+ * and the reference resolves them against its texture table: every
+ * PNG under `assets/<ns>/textures/` keyed by the path under
+ * textures/ with `.png` dropped, first directory groups excluded —
+ * colormap, effect, environment, font, gui, map, mob_effect,
+ * particle are not block textures and the loader skips them. A
+ * reference the table does not hold resolves to the missing
+ * image — mcme names its sentinel "missing_no" (the reference's
+ * own key word for it; its file lives inside its package, and the
+ * pins canonicalise the two namings to one token).
+ *
+ * Transparency is the loader's own test, quirks included: an image
+ * is transparent only if it is a PNG of colour type RGBA with at
+ * least one alpha value below 255. Every other image — RGB, gray,
+ * palette — is opaque by definition, whatever it draws.
+ */
+
+typedef struct McmeTextureIndex McmeTextureIndex;
+
+/*
+ * Parses the texture table of `<pack_dir>`: every PNG under
+ * `assets/<ns>/textures/`, nested directories included, the
+ * useless image groups skipped, each image's transparency read
+ * once. The loader's gate applies: a directory the manifest does
+ * not name a pack of format 2 or above contributes nothing.
+ * Returns false only on a null argument or OOM.
+ */
+bool mcme_texture_index_open(const char *pack_dir,
+                             McmeTextureIndex **out);
+
+/* Releases the index. NULL is a no-op. */
+void mcme_texture_index_close(McmeTextureIndex *index);
+
+/*
+ * The pack's file for one texture — namespace and the path under
+ * textures/ with `.png` dropped — or "missing_no" when the pack
+ * holds no such image. The returned string is owned by the index.
+ */
+const char *mcme_texture_path(const McmeTextureIndex *index,
+                              const char *namespace, const char *rel);
+
+/*
+ * Is the image at this path partly transparent? `path` is what
+ * mcme_texture_path returned. false for "missing_no" — and for
+ * an image the index holds as opaque. Only an RGBA PNG can answer
+ * true, the reference's own rule.
+ */
+bool mcme_texture_transparent(const McmeTextureIndex *index,
+                              const char *path);
+
+/* ========================================================================
+ * Meshes — one model, faced and verticed (D32)
+ *
+ * The reference's `_load_block_model` turns a folded model into a
+ * BlockMesh: for each element box, for each named face, four
+ * vertices with their texture coordinates, grouped by CULL
+ * direction (the face's `cullface`, or the shared "none" bucket
+ * when it has none), a triangle index table, a per-face texture
+ * index, the resolved texture list, and the block's transparency.
+ * This layer mirrors that builder rule for rule (decisions.md#D32):
+ *
+ *   - A model with textures but no elements answers the missing
+ *     BLOCK — a unit cube of the missing image — not an empty
+ *     mesh; an empty `elements` list counts as no elements (the
+ *     reference tests truthiness). A model with neither answers
+ *     the empty mesh.
+ *   - Face textures resolve through the `#key` chain with a loop
+ *     check; a `{"sprite": ...}` value passes through; a
+ *     reference the textures dict does not hold answers itself.
+ *   - Texture entries deduplicate by their path under textures/
+ *     NAMESPACE-BLIND: `block/x` and `other:block/x` share one
+ *     slot, the first face to use them winning.
+ *   - Face UV defaults per direction from the element box when
+ *     the face gives none; a face `rotation` remaps the UV
+ *     corners; element `rotation` (origin, axis, angle, the
+ *     multi-axis overrides, rescale) turns the vertices.
+ *   - A full-size unrotated element with six or more faces turns
+ *     the block translucent and its faces are checked for
+ *     opacity; six opaque faces make the block opaque. Here the
+ *     reference reads its transparency table — and its read of a
+ *     texture the table does not hold RAISES, which mcme mirrors
+ *     as a refusal: a full block whose texture the pack lacks
+ *     does not mesh.
+ *
+ * Rotation of the whole mesh by the blockstate selection's x/y
+ * (and the reference's ignored uvlock) is the next layer's.
+ */
+
+typedef enum {
+    MCME_TRANSPARENCY_OPAQUE      = 0, /* full block, opaque textures  */
+    MCME_TRANSPARENCY_TRANSLUCENT = 1, /* full block, see-through     */
+    MCME_TRANSPARENCY_PARTIAL     = 2  /* not a full block            */
+} McmeTransparency;
+
+/* The seven buckets a face can land in — the six cull directions
+   plus "none" for faces the game culls nowhere. */
+typedef enum {
+    MCME_CULL_DOWN = 0, MCME_CULL_UP, MCME_CULL_NORTH, MCME_CULL_EAST,
+    MCME_CULL_SOUTH,    MCME_CULL_WEST, MCME_CULL_NONE
+} McmeCullDir;
+
+/* One bucket's flat arrays, the reference's own layout: three
+   numbers per vertex for positions, texture coordinates and tint;
+   six indices per face (two triangles into the vertex stream);
+   two indices per face into the texture list. */
+typedef struct {
+    double  *verts;
+    double  *tverts;
+    double  *tint_verts;
+    uint32_t *faces;
+    uint32_t *texture_indexes;
+    size_t    vert_count; /* verts holds 3 per vertex            */
+    size_t    face_count; /* faces holds 6, texture_indexes 2    */
+} McmeMeshBucket;
+
+typedef struct {
+    McmeMeshBucket   buckets[7];       /* indexed by McmeCullDir   */
+    bool             present[7];       /* the reference omits empty
+                                          buckets; so does mcme    */
+    char           **textures;         /* resolved paths, first-use
+                                          order, owned            */
+    size_t           texture_count;
+    McmeTransparency transparency;
+} McmeMesh;
+
+/*
+ * Builds the mesh for `<namespace>:<path>` (NULL namespace takes
+ * the minecraft default), filling `*out` — released with
+ * mcme_mesh_free. Returns false, with mcme_last_error() saying
+ * which, only where the reference itself raises and its callers
+ * degrade the whole selection: a full block whose texture the pack
+ * does not hold, a face whose texture is neither a string nor a
+ * `{sprite: ...}` object, a self-referencing `#key` chain, a
+ * malformed UV, or an element whose box, rotation or faces are
+ * shapes numpy would refuse. A model the pack does not know is
+ * the empty mesh — an answer, not a failure.
+ */
+bool mcme_mesh_build(const McmeModelIndex *models,
+                     const McmeTextureIndex *textures,
+                     const char *namespace, const char *path,
+                     McmeMesh *out);
+
+/* Releases a mesh and everything it owns. NULL is a no-op. */
+void mcme_mesh_free(McmeMesh *mesh);
 
 #endif /* MCME_RESOURCE_H */

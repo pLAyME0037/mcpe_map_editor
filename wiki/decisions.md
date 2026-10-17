@@ -2040,3 +2040,121 @@ chain (the reference's mesher never reads them from the fold, so
 this is not expected), or the mesh layer needs the fold to keep
 more than the two keys — in which case the fold widens and this
 entry is superseded.
+
+## D32 — The mesh layer: one model, as the game would build it
+
+**What the reference does.** `_load_block_model(model_path,
+tint=(1, 1, 1))` folds the model (D31) and builds a `BlockMesh`:
+
+- The fold's `textures` dict is read for **keys beyond
+  `particle`** — a truthy beyond plus falsy `elements` answers
+  the reference's **missing BLOCK** (the unit cube on
+  `missing_no`, opaque), not an empty mesh; `elements` empty as a
+  list, an empty string or an empty dict runs zero turns and
+  answers the empty mesh, while null, `false` and `0` raise in
+  its loop, and any other truthy non-list raises on its first
+  element.
+- Each element: `from`/`to` default `[0,0,0]`/`[16,16,16]`; the
+  box is numpy's `sort(array([to, from]) / 16, 0)` over its
+  columns, so a two-number box raises on the missing third column
+  and an even four-number box builds from the first three
+  columns. An unrotated full cube with six faces runs the
+  transparency check per face: a face on an image with any alpha
+  below 255 (RGBA-mode images only; RGB-mode is opaque by
+  definition) keeps the block from going opaque, and **the
+  missing image is not in the transparency table at all**, so a
+  full cube on one raises `KeyError` there.
+- `rotation` present switches the full-block check off entirely
+  and runs `rotate_3d` on each face's corners: axis `"x"` by
+  default (an axis that is not one of the three strings leaves
+  all three angles at zero and still rotates — an identity),
+  angle 0, origin `[8,8,8]` divided by 16, then the 1.21.11
+  per-axis `x`/`y`/`z` overrides and the `rescale` bool. A
+  two-number origin raises on its unpack.
+- Each face: direction selects its four corners from the box
+  lut; `uv` defaults from the box per direction (west/east
+  swapping the y pair) or takes four numbers divided by 16, and
+  any other shape raises `ValueError`; the corner cut is
+  `lut[2*int(rot/90):] + lut[:2*int(rot/90)]` — negative
+  rotation wraps to its positive twin and 45 degrees does not cut
+  at all. `cullface` routes the BUCKET (`None`, an unknown
+  direction or a non-string sharing the none bucket); face
+  direction never names one.
+- Textures: a face's `#chain` walks the dict stripping one `#`
+  per step with loop detection (a cycle raises `RuntimeError`),
+  an absent key answers itself, a JSON null value answers itself
+  the same way (its `dict.get` sees only `None`), a `{sprite:
+  ...}` passes through, and anything else raises on its `.split`.
+  The resolved reference splits on its first `:` with the
+  minecraft default, and the texture list **dedups on that split
+  base, namespace-blind** — the first face's full resolution
+  names the stored path. A face without a string texture raises.
+  An element with `faces` but no textures dict raises on
+  `java_model["textures"]`.
+- The assembly adds a bucket entry **only for non-empty
+  cullface-keyed face arrays** (`FACE_KEYS` includes `None`), so
+  empty directions are absent from every output dict.
+
+**What mcme does.** `src/resource/mesh.c` mirrors all of it —
+`mcme_mesh_build(models, textures, ns, path, out)` folding first
+through `mcme_model_load` and refusing by name exactly where the
+reference raises: the missing image on a full cube, a texture
+loop, elements without a textures dict, a face without a
+texture, a uv that is not four numbers, elements that are not a
+list, an origin that is not three numbers. The bucket is
+`cullface`-keyed with the none bucket for `None`; the vertex
+arrays are **doubles**, the reference's float64 (a float32
+vertex drifts onto its own grid the moment rotation makes a
+coordinate irrational — the pin caught it at 6e-9). The textures
+index (`texture.c`) walks `assets/<ns>/textures/**/*.png` for
+the pack_format 4 layout and the image layer (`image_impl.c`)
+mirrors the RGBA-with-alpha rule over stb_image, an unreadable
+file warned and read opaque. The verb is `mcme mesh
+<pack-dir> <model-ref>`; `--json` prints the BlockMesh's own
+shape — `face_mode`, the normalized `textures` list,
+`transparent` (0/1/2), and each **present** bucket's flat
+`verts`/`tverts`/`tint_verts`/`faces`/`texture_indexes`.
+Exit 3 on a refusal, 2 on a missing pack, 1 on a malformed
+reference. The gate is D29's: the reference guards its entire
+texture-and-model load on `valid_pack && pack_format >= 2`, so
+`mcme_pack_loads_assets` now gates all three index opens (blockstate
+included, retro to D30/D31) and a failing gate answers the empty
+index — an answer, exit 0.
+
+**How parity was measured.** The fold plus the build are one
+function there, so `tools/ref_mesh.py` calls
+`_load_block_model` directly with its default tint and compares
+the returned BlockMesh field for field (the reference's missing
+image normalized to the token mcme prints; floats with a 1e-9
+tolerance, exact for ints). 23 crafted answer probes (real PNGs
+behind each transparency outcome), 13 refusals each asserting the
+reference's own exception class, 241 probes over the reader's own
+`java_vanilla_fix` — 220 answered alike, 21 refused by both —
+and 4 usage refusals: 285 checks. The vanilla pack's completion
+(copy only, never the original) writes an opaque image behind
+every texture its models can name, or every full-cube model
+would die in the reference's transparency table.
+
+**Out of domain, recorded.** Four shapes differ on purpose, each
+pinned to both sides' own observable: a `textures` value that is
+not a dict — the reference raises while **folding** it (its
+`.items()`), and mcme's fold drops it the way it drops a
+non-string parent (D31's record), so the mesh answers the empty
+document; a four-number `from` against a three-number `to` — both
+refuse (numpy's array is inhomogeneous), while the even
+four-and-four case builds there and mcme refuses past three; an
+unreadable PNG — the reference's load dies, mcme warns and reads
+it opaque; and the gate's stricter manifest (D29) decides
+`valid`/`pack_format` where the reference's own parser is laxer.
+The vanilla refusals are not differences: a self-looping texture
+key with a face on it (banners, chests, heads) and
+`golem_statue`'s textureless elements raise there, mcme exits 3
+here.
+
+**Reverses if:** the reference seeds its transparency table with
+the missing image (then a full cube on a missing texture would
+build translucent there and mcme must stop refusing), the fold
+learns to keep more than textures and elements, pack stacking
+arrives (later packs overwriting the texture table), or the
+blockstate rotation (D33) needs the mesh API to take a rotation
+before the verb can answer a selected model rotated.

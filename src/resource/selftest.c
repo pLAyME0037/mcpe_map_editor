@@ -1,11 +1,13 @@
 #include "mcme/resource.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "mcme/core.h"
 #include "cJSON.h"
+#include "stb_image_write.h"
 
 /*
  * Resource pack manifest — the self-test.
@@ -174,6 +176,10 @@ static void test_blockstates(void)
     printf("  resource (blockstates)\n");
 
     /* --- fixtures --- */
+    /* A pack names itself: the loader gate (D32) loads nothing from
+       a directory whose manifest does not say pack of format 2+. */
+    put(FIXDIR "/pack.mcmeta",
+        "{\"pack\":{\"pack_format\":9,\"description\":\"blockstates\"}}");
     put(FIXDIR "/assets/mc/blockstates/stone.json",
         "{\"variants\":{\"\":{\"model\":\"mc:block/stone\"}}}");
     put(FIXDIR "/assets/mc/blockstates/stairs.json",
@@ -414,6 +420,10 @@ static void test_models(void)
     printf("  resource (models)\n");
 
     /* --- fixtures --- */
+    /* A pack names itself: the loader gate (D32) loads nothing from
+       a directory whose manifest does not say pack of format 2+. */
+    put(MFIXDIR "/pack.mcmeta",
+        "{\"pack\":{\"pack_format\":9,\"description\":\"models\"}}");
     put(MFIXDIR "/assets/mc/models/block/base.json",
         "{\"textures\":{\"top\":\"t/base_top\",\"side\":\"t/base_side\","
           "\"bottom\":\"t/base_bottom\"},"
@@ -596,11 +606,612 @@ static void test_models(void)
     mcme_clear_error();
 }
 
+/* ========================================================================
+ * Meshes (D32).
+ *
+ * Every expectation is the reference's own `_load_block_model`
+ * answer: the missing BLOCK (a unit cube of the missing image) for
+ * a model with textures but no elements, an empty elements list
+ * counting as none; the empty mesh for a model with neither; the
+ * reference's cube tables vertex for vertex; default UVs per
+ * direction; a face rotation cutting the corner lut, the negative
+ * cut wrapping to its positive twin; cullface routing the bucket
+ * while the face keeps its own corners; the namespace-blind
+ * texture dedup; the #chain with its self-loop refusal; element
+ * rotation; and the transparency ladder — a full unrotated
+ * six-face element turning the block translucent, six opaque
+ * faces making it opaque, an RGB-mode image opaque by definition,
+ * a useless image group skipped whole, and a full block whose
+ * texture the pack lacks refused by name (the reference's table
+ * read raises there).
+ * ======================================================================== */
+
+#define TFIXDIR "build/mesh_fixtures/pack"
+
+static const unsigned char k_opaque_px[16] = {
+    255,255,255,255,  255,0,0,255,  0,255,0,255,  0,0,255,255 };
+static const unsigned char k_alpha_px[16] = {
+    255,255,255,255,  255,0,0,255,  0,255,0,128,  0,0,255,255 };
+static const unsigned char k_rgb_px[12] = {
+    255,255,255,  255,0,0,  0,255,0,  0,0,255 };
+
+/* Writes a small PNG, creating the parent directories. */
+static void put_png(const char *path, int comp, const unsigned char *px)
+{
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        CHECK_MSG(mcme_fs_mkdir_p(dir), "mkdir '%s': %s", dir,
+                  mcme_last_error());
+    }
+    CHECK_MSG(stbi_write_png(path, 2, 2, comp, px, 2 * comp),
+              "write png '%s'", path);
+}
+
+/* Builds one mesh, clearing a refusal's message the way every error
+   path below expects. */
+static bool build_mesh(const McmeModelIndex *models,
+                       const McmeTextureIndex *tex, const char *ns,
+                       const char *path, McmeMesh *out)
+{
+    if (!mcme_mesh_build(models, tex, ns, path, out)) {
+        mcme_clear_error();
+        return false;
+    }
+    return true;
+}
+
+static void check_floats(const char *what, const double *got, size_t n,
+                         const double *want, size_t wn)
+{
+    CHECK_MSG(n == wn, "%s: %zu floats, want %zu", what, n, wn);
+    for (size_t i = 0; i < n && i < wn; ++i)
+        CHECK_MSG(fabs(got[i] - want[i]) < 1e-9,
+                  "%s[%zu] = %g, want %g", what, i, got[i], want[i]);
+}
+
+static void check_u32s(const char *what, const uint32_t *got, size_t n,
+                       const uint32_t *want, size_t wn)
+{
+    CHECK_MSG(n == wn, "%s: %zu entries, want %zu", what, n, wn);
+    for (size_t i = 0; i < n && i < wn; ++i)
+        CHECK_MSG(got[i] == want[i], "%s[%zu] = %u, want %u", what, i,
+                  got[i], want[i]);
+}
+
+static void check_textures(const McmeMesh *m, const char *const *want,
+                           size_t wn)
+{
+    CHECK_MSG(m->texture_count == wn, "%zu textures, want %zu",
+              m->texture_count, wn);
+    for (size_t i = 0; i < m->texture_count && i < wn; ++i)
+        CHECK_MSG(strcmp(m->textures[i], want[i]) == 0,
+                  "texture %zu is '%s', want '%s'", i, m->textures[i],
+                  want[i]);
+}
+
+/* The reference's down/up/north/east/south/west corner lists for a
+   box, unit-cube or not, for spot-checking vertices. */
+static void box_corners(const double lo[3], const double hi[3],
+                        double box[8][3])
+{
+    for (int i = 0; i < 8; ++i) {
+        box[i][0] = ((i >> 2) & 1) ? hi[0] : lo[0];
+        box[i][1] = ((i >> 1) & 1) ? hi[1] : lo[1];
+        box[i][2] = (i & 1)        ? hi[2] : lo[2];
+    }
+}
+
+/* The cube face tables, written out the way the reference's lut
+   reads them, for expected-vertex arrays. */
+static const int k_lut[6][4] = {
+    {0, 4, 5, 1}, {3, 7, 6, 2}, {4, 0, 2, 6},
+    {5, 4, 6, 7}, {1, 5, 7, 3}, {0, 1, 3, 2}
+};
+
+static void face_verts(const double box[8][3], int dir, double out[12])
+{
+    for (int v = 0; v < 4; ++v)
+        for (int j = 0; j < 3; ++j)
+            out[v * 3 + j] = box[k_lut[dir][v]][j];
+}
+
+static void test_meshes(void)
+{
+    printf("  resource (meshes)\n");
+
+    /* --- fixtures --- */
+    put(TFIXDIR "/pack.mcmeta",
+        "{\"pack\":{\"pack_format\":9,\"description\":\"meshes\"}}");
+    /* Textures live under the minecraft namespace — a bare face
+       reference resolves there, the way the game's own packs do. */
+    put_png(TFIXDIR "/assets/minecraft/textures/block/opaque.png", 4,
+            k_opaque_px);
+    put_png(TFIXDIR "/assets/minecraft/textures/block/alpha.png", 4,
+            k_alpha_px);
+    put_png(TFIXDIR "/assets/minecraft/textures/block/rgb.png", 3, k_rgb_px);
+    /* Under a useless image group: the loader skips it whole. */
+    put_png(TFIXDIR "/assets/minecraft/textures/gui/skipme.png", 4,
+            k_opaque_px);
+    /* Two namespaces one dedup key: the namespace-blind quirk. */
+    put_png(TFIXDIR "/assets/minecraft/textures/block/dupe.png", 4,
+            k_opaque_px);
+    put_png(TFIXDIR "/assets/other/textures/block/dupe.png", 4, k_alpha_px);
+
+    /* The six-face element, one model per transparency outcome. */
+#define CUBE6                                                                  \
+    "\"faces\":{"                                                              \
+      "\"down\":{\"texture\":\"#all\"},\"up\":{\"texture\":\"#all\"},"         \
+      "\"north\":{\"texture\":\"#all\"},\"east\":{\"texture\":\"#all\"},"      \
+      "\"south\":{\"texture\":\"#all\"},\"west\":{\"texture\":\"#all\"}}}"
+    char body[1024];
+#define CUBE_MODEL(name, tex)                                                  \
+    do {                                                                       \
+        snprintf(body, sizeof body,                                            \
+                 "{\"textures\":{\"all\":\"" tex "\"},"                        \
+                 "\"elements\":[{\"from\":[0,0,0],"                            \
+                 "\"to\":[16,16,16]," CUBE6 "]}" );                           \
+        put(TFIXDIR "/assets/mc/models/block/" name ".json", body);            \
+    } while (0)
+    CUBE_MODEL("full_opaque", "block/opaque");
+    CUBE_MODEL("full_alpha", "block/alpha");
+    CUBE_MODEL("full_rgb", "block/rgb");
+    CUBE_MODEL("full_missing", "block/nonexistent");
+#undef CUBE_MODEL
+#undef CUBE6
+
+    put(TFIXDIR "/assets/mc/models/block/partial.json",
+        "{\"textures\":{\"a\":\"block/nonexistent\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,8,16],"
+        "\"faces\":{\"up\":{\"texture\":\"#a\"},"
+        "\"north\":{\"texture\":\"#a\"},\"east\":{\"texture\":\"#a\"}}}]}");
+
+    /* Cullface routes the bucket; the face keeps its own corners. */
+    put(TFIXDIR "/assets/mc/models/block/cull.json",
+        "{\"textures\":{\"all\":\"block/opaque\"},"
+        "\"elements\":[{\"faces\":{"
+          "\"down\":{\"texture\":\"#all\"},"
+          "\"up\":{\"texture\":\"#all\",\"cullface\":\"down\"},"
+          "\"north\":{\"texture\":\"#all\",\"cullface\":\"up\"},"
+          "\"east\":{\"texture\":\"#all\",\"cullface\":\"sideways\"},"
+          "\"south\":{\"texture\":\"#all\",\"cullface\":42},"
+          "\"west\":{\"texture\":\"#all\",\"cullface\":\"west\"}}}]}");
+
+    put(TFIXDIR "/assets/mc/models/block/uvrot.json",
+        "{\"textures\":{\"a\":\"block/opaque\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[8,8,8],"
+        "\"faces\":{"
+          "\"north\":{\"texture\":\"#a\",\"uv\":[0,0,16,8],"
+                     "\"rotation\":90},"
+          "\"south\":{\"texture\":\"#a\",\"uv\":[0,0,16,8],"
+                     "\"rotation\":-90}}}]}");
+
+    put(TFIXDIR "/assets/mc/models/block/chain.json",
+        "{\"textures\":{\"a\":\"#b\",\"b\":\"block/opaque\"},"
+        "\"elements\":[{\"faces\":{\"north\":{\"texture\":\"#a\"}}}]}");
+    put(TFIXDIR "/assets/mc/models/block/selfloop.json",
+        "{\"textures\":{\"a\":\"#a\"},"
+        "\"elements\":[{\"faces\":{\"north\":{\"texture\":\"#a\"}}}]}");
+    put(TFIXDIR "/assets/mc/models/block/sprite.json",
+        "{\"textures\":{},"
+        "\"elements\":[{\"faces\":{\"north\":"
+        "{\"texture\":{\"sprite\":\"block/opaque\"}}}}]}");
+
+    /* Textures without elements: the missing BLOCK. */
+    put(TFIXDIR "/assets/mc/models/block/tex_noelem.json",
+        "{\"textures\":{\"all\":\"block/opaque\"}}");
+    /* An empty elements list counts as none: still the missing block. */
+    put(TFIXDIR "/assets/mc/models/block/empty_elems.json",
+        "{\"textures\":{\"all\":\"block/opaque\"},\"elements\":[]}");
+    /* Particle alone is not "textures": the empty mesh. */
+    put(TFIXDIR "/assets/mc/models/block/particle_only.json",
+        "{\"textures\":{\"particle\":\"block/opaque\"}}");
+    /* A textures value that is not a dict: the reference raises on
+       its .items() while folding, mcme's fold drops the value
+       (D31's recorded pattern) and the mesh answers empty — until
+       elements survive the drop and the mesh refuses instead. */
+    put(TFIXDIR "/assets/mc/models/block/texstr.json",
+        "{\"textures\":\"side\"}");
+    put(TFIXDIR "/assets/mc/models/block/texnum.json",
+        "{\"textures\":42}");
+    put(TFIXDIR "/assets/mc/models/block/texnull.json",
+        "{\"textures\":null}");
+    put(TFIXDIR "/assets/mc/models/block/texstr_elem.json",
+        "{\"textures\":\"side\",\"elements\":"
+        "[{\"faces\":{\"up\":{\"texture\":\"#a\"}}}]}");
+    /* Falsy elements the reference cannot iterate — null, false
+       zero — raise in its loop only when the early answer has not
+       taken them, i.e. when the textures say nothing beyond
+       particle; "" runs zero turns either way. */
+    put(TFIXDIR "/assets/mc/models/block/elemsnull.json",
+        "{\"elements\":null}");
+    put(TFIXDIR "/assets/mc/models/block/elemsnum.json",
+        "{\"elements\":0}");
+    put(TFIXDIR "/assets/mc/models/block/elemsstr.json",
+        "{\"textures\":{\"particle\":\"block/opaque\"},"
+        "\"elements\":\"\"}");
+    /* Elements but no textures dict: the reference's outright index
+       raises; the whole mesh fails by name. */
+    put(TFIXDIR "/assets/mc/models/block/notex_elem.json",
+        "{\"elements\":[{\"from\":[0,0,0],\"to\":[8,8,8]}]}");
+    put(TFIXDIR "/assets/mc/models/block/empty.json", "{}");
+
+    put(TFIXDIR "/assets/mc/models/block/elementrot.json",
+        "{\"textures\":{\"all\":\"block/opaque\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,8,16],"
+        "\"rotation\":{\"origin\":[8,8,8],\"axis\":\"y\",\"angle\":90},"
+        "\"faces\":{\"up\":{\"texture\":\"#all\"}}}]}");
+
+    /* Namespace-blind dedup: block/dupe and other:block/dupe share
+       one slot, the first face naming the path. */
+    put(TFIXDIR "/assets/mc/models/block/dupe.json",
+        "{\"textures\":{},"
+        "\"elements\":[{\"faces\":{"
+          "\"up\":{\"texture\":\"block/dupe\"},"
+          "\"north\":{\"texture\":\"other:block/dupe\"}}}]}");
+    put(TFIXDIR "/assets/mc/models/block/skipme.json",
+        "{\"textures\":{\"s\":\"gui/skipme\"},"
+        "\"elements\":[{\"faces\":{\"up\":{\"texture\":\"#s\"}}}]}");
+
+    /* The loader gate's own fixture: a pack below format 2. */
+    put("build/mesh_fixtures/oldformat/pack.mcmeta",
+        "{\"pack\":{\"pack_format\":1,\"description\":\"old\"}}");
+    put("build/mesh_fixtures/oldformat/assets/mc/models/block/x.json",
+        "{\"textures\":{\"a\":\"block/opaque\"},"
+        "\"elements\":[{\"faces\":{\"up\":{\"texture\":\"#a\"}}}]}");
+    put_png("build/mesh_fixtures/oldformat/assets/minecraft/textures/"
+            "block/opaque.png", 4, k_opaque_px);
+
+    /* --- indexes --- */
+    McmeTextureIndex *tex = NULL;
+    CHECK_MSG(mcme_texture_index_open(TFIXDIR, &tex),
+              "texture index: %s", mcme_last_error());
+    McmeModelIndex *models = NULL;
+    CHECK_MSG(mcme_model_index_open(TFIXDIR, &models),
+              "model index: %s", mcme_last_error());
+    if (!tex || !models) { mcme_clear_error(); return; }
+
+    const char *opaque_path =
+        TFIXDIR "/assets/minecraft/textures/block/opaque.png";
+    const char *alpha_path =
+        TFIXDIR "/assets/minecraft/textures/block/alpha.png";
+    static const double unit_lo[3] = { 0, 0, 0 }, unit_hi[3] = { 1, 1, 1 };
+    double unit[8][3];
+    box_corners(unit_lo, unit_hi, unit);
+    static const double tverts_default[8] = { 0,1, 1,1, 1,0, 0,0 };
+
+    /* --- a full opaque cube --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/full_opaque", &m));
+        CHECK_MSG(m.transparency == MCME_TRANSPARENCY_OPAQUE,
+                  "full_opaque transparency %d", m.transparency);
+        check_textures(&m, (const char *const[]){ opaque_path }, 1);
+        /* No face names a cullface, so all six share the none
+           bucket, in the model's own file order. */
+        for (int d = 0; d < 6; ++d) CHECK(!m.present[d]);
+        CHECK(m.present[MCME_CULL_NONE]);
+        CHECK(m.buckets[MCME_CULL_NONE].face_count == 6);
+        CHECK(m.buckets[MCME_CULL_NONE].vert_count == 24);
+        double want72[72];
+        static const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+        uint32_t want_faces[36];
+        double want48[48];
+        for (int d = 0; d < 6; ++d) {
+            face_verts(unit, d, want72 + d * 12);
+            for (int j = 0; j < 8; ++j)
+                want48[d * 8 + j] = tverts_default[j];
+            for (int j = 0; j < 6; ++j)
+                want_faces[d * 6 + j] = tri[j] + (uint32_t)(d * 4);
+        }
+        check_floats("full_opaque verts", m.buckets[MCME_CULL_NONE].verts,
+                     72, want72, 72);
+        check_floats("full_opaque tverts", m.buckets[MCME_CULL_NONE].tverts,
+                     48, want48, 48);
+        for (int i = 0; i < 72; ++i)
+            CHECK(m.buckets[MCME_CULL_NONE].tint_verts[i] == 1.0);
+        check_u32s("full_opaque faces", m.buckets[MCME_CULL_NONE].faces, 36,
+                   want_faces, 36);
+        for (int f = 0; f < 6; ++f) {
+            CHECK(m.buckets[MCME_CULL_NONE].texture_indexes[f * 2] == 0);
+            CHECK(m.buckets[MCME_CULL_NONE].texture_indexes[f * 2 + 1] == 0);
+        }
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the alpha and RGB ladders --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/full_alpha", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_TRANSLUCENT);
+        check_textures(&m, (const char *const[]){ alpha_path }, 1);
+        mcme_mesh_free(&m);
+        /* An RGB-mode image is opaque by definition — only RGBA
+           earns the alpha scan. */
+        CHECK(build_mesh(models, tex, "mc", "block/full_rgb", &m));
+        CHECK_MSG(m.transparency == MCME_TRANSPARENCY_OPAQUE,
+                  "full_rgb transparency %d", m.transparency);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- a full block whose texture the pack lacks: refused --- */
+    {
+        McmeMesh m;
+        CHECK(!build_mesh(models, tex, "mc", "block/full_missing", &m));
+        CHECK(!m.present[0]);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- a partial block: missing textures never checked --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/partial", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_PARTIAL);
+        check_textures(&m, (const char *const[]){ "missing_no" }, 1);
+        for (int d = 0; d < 6; ++d) CHECK(!m.present[d]);
+        CHECK(m.present[MCME_CULL_NONE]);
+        CHECK(m.buckets[MCME_CULL_NONE].face_count == 3);
+        static const double slab_lo[3] = { 0, 0, 0 }, slab_hi[3] = {1, .5, 1};
+        double slab[8][3];
+        box_corners(slab_lo, slab_hi, slab);
+        /* The three faces, up north east, in file order. */
+        double want36[36];
+        face_verts(slab, 1, want36);
+        face_verts(slab, 2, want36 + 12);
+        face_verts(slab, 3, want36 + 24);
+        check_floats("partial verts", m.buckets[MCME_CULL_NONE].verts, 36,
+                     want36, 36);
+        /* The box-derived default UVs: up [from0,from2,to0,to2]/16,
+           north and east [from*,16-to1,to*,16-from1]/16. */
+        static const double want24[24] = {
+            0,1, 1,1, 1,0, 0,0,   0,1, 1,1, 1,.5, 0,.5,   0,1, 1,1, 1,.5, 0,.5 };
+        check_floats("partial tverts", m.buckets[MCME_CULL_NONE].tverts, 24,
+                     want24, 24);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- cullface routing --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/cull", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_OPAQUE);
+        double want[12];
+        /* The bucket named by cullface; the face keeps the corners
+           of its own direction. */
+        face_verts(unit, 1, want);   /* face up    -> bucket down */
+        check_floats("cull down", m.buckets[MCME_CULL_DOWN].verts, 12,
+                     want, 12);
+        face_verts(unit, 2, want);   /* face north -> bucket up  */
+        check_floats("cull up", m.buckets[MCME_CULL_UP].verts, 12,
+                     want, 12);
+        face_verts(unit, 5, want);   /* face west  -> bucket west */
+        check_floats("cull west", m.buckets[MCME_CULL_WEST].verts, 12,
+                     want, 12);
+        /* No cullface, an unknown direction and a non-string: all
+           three share the none bucket, in file order. */
+        CHECK(m.present[MCME_CULL_NONE]);
+        CHECK_MSG(m.buckets[MCME_CULL_NONE].face_count == 3,
+                  "cull none: %zu faces, want 3",
+                  m.buckets[MCME_CULL_NONE].face_count);
+        double expect_none[36];
+        face_verts(unit, 0, expect_none);           /* down */
+        face_verts(unit, 3, expect_none + 12);      /* east */
+        face_verts(unit, 4, expect_none + 24);      /* south */
+        check_floats("cull none", m.buckets[MCME_CULL_NONE].verts, 36,
+                     expect_none, 36);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- face rotation cuts the lut, and the negative wraps --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/uvrot", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_PARTIAL);
+        static const double t90[8]  = { 1,.5, 1,0, 0,0, 0,.5 };
+        static const double tm90[8] = { 0,0, 0,.5, 1,.5, 1,0 };
+        check_floats("uvrot north", m.buckets[MCME_CULL_NONE].tverts, 8,
+                     t90, 8);
+        check_floats("uvrot south", m.buckets[MCME_CULL_NONE].tverts + 8,
+                     8, tm90, 8);
+        static const uint32_t faces2[12] = {
+            0,1,2,0,2,3, 4,5,6,4,6,7 };
+        check_u32s("uvrot faces", m.buckets[MCME_CULL_NONE].faces, 12,
+                   faces2, 12);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the #chain and the sprite pass-through --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/chain", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_PARTIAL);
+        check_textures(&m, (const char *const[]){ opaque_path }, 1);
+        mcme_mesh_free(&m);
+        CHECK(build_mesh(models, tex, "mc", "block/sprite", &m));
+        check_textures(&m, (const char *const[]){ opaque_path }, 1);
+        mcme_mesh_free(&m);
+        /* A self-referencing chain: refused by name. */
+        CHECK(!build_mesh(models, tex, "mc", "block/selfloop", &m));
+        CHECK(!m.present[0]);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the missing BLOCK for textures without elements --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/tex_noelem", &m));
+        CHECK_MSG(m.transparency == MCME_TRANSPARENCY_OPAQUE,
+                  "missing block transparency %d", m.transparency);
+        check_textures(&m, (const char *const[]){ "missing_no" }, 1);
+        double want[12];
+        face_verts(unit, 0, want);
+        check_floats("missing block down", m.buckets[MCME_CULL_DOWN].verts,
+                     12, want, 12);
+        check_floats("missing block down tverts",
+                     m.buckets[MCME_CULL_DOWN].tverts, 8, tverts_default, 8);
+        mcme_mesh_free(&m);
+        /* An empty elements list counts as none: the same block. */
+        CHECK(build_mesh(models, tex, "mc", "block/empty_elems", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_OPAQUE);
+        check_textures(&m, (const char *const[]){ "missing_no" }, 1);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the empty mesh answers --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/particle_only", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_PARTIAL);
+        CHECK(m.texture_count == 0);
+        for (int d = 0; d < 7; ++d) CHECK(!m.present[d]);
+        mcme_mesh_free(&m);
+        CHECK(build_mesh(models, tex, "mc", "block/empty", &m));
+        CHECK(m.texture_count == 0);
+        mcme_mesh_free(&m);
+        CHECK(build_mesh(models, tex, "mc", "block/absent", &m));
+        CHECK(m.texture_count == 0);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- elements without a textures dict: refused --- */
+    {
+        McmeMesh m;
+        CHECK(!build_mesh(models, tex, "mc", "block/notex_elem", &m));
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the textures value's garbage, dropped by the fold --- */
+    {
+        McmeMesh m;
+        /* The reference raises on a textures value that is not a
+           dict while FOLDING (its `.items()`); mcme's fold drops
+           such a value the way it drops a non-string parent (the
+           D31 record) and the mesh answers the empty document —
+           the recorded difference, asserted below by the pin. */
+        CHECK(build_mesh(models, tex, "mc", "block/texstr", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_PARTIAL);
+        CHECK(m.texture_count == 0);
+        for (int d = 0; d < 7; ++d) CHECK(!m.present[d]);
+        mcme_mesh_free(&m);
+        CHECK(build_mesh(models, tex, "mc", "block/texnum", &m));
+        CHECK(m.texture_count == 0);
+        mcme_mesh_free(&m);
+        CHECK(build_mesh(models, tex, "mc", "block/texnull", &m));
+        CHECK(m.texture_count == 0);
+        mcme_mesh_free(&m);
+        /* Dropped textures but kept elements: the mesh refuses on
+           the missing dict — the reference failed earlier, folding.
+           Both fail. */
+        CHECK(!build_mesh(models, tex, "mc", "block/texstr_elem", &m));
+        mcme_mesh_free(&m);
+        /* Falsy elements the reference cannot iterate: null, false
+           and zero raise in its loop once the early answer has not
+           taken them; "" runs zero turns and answers empty. */
+        CHECK(!build_mesh(models, tex, "mc", "block/elemsnull", &m));
+        mcme_mesh_free(&m);
+        CHECK(!build_mesh(models, tex, "mc", "block/elemsnum", &m));
+        mcme_mesh_free(&m);
+        CHECK(build_mesh(models, tex, "mc", "block/elemsstr", &m));
+        CHECK(m.texture_count == 0);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- element rotation --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/elementrot", &m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_PARTIAL);
+        /* The face has no cullface: the none bucket. */
+        CHECK(m.present[MCME_CULL_NONE]);
+        CHECK(!m.present[MCME_CULL_UP]);
+        /* The slab's up face, swung 90 degrees about the origin
+           (8,8,8)/16 — the cube's centre axis, so the face lands
+           on the box's far corners. */
+        static const double want[12] = {
+            1, .5, 1,   1, .5, 0,   0, .5, 0,   0, .5, 1 };
+        check_floats("elementrot", m.buckets[MCME_CULL_NONE].verts, 12,
+                     want, 12);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the namespace-blind dedup --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/dupe", &m));
+        /* One slot for block/dupe and other:block/dupe, the first
+           face naming the path — minecraft's own file. */
+        check_textures(&m, (const char *const[]){
+            TFIXDIR "/assets/minecraft/textures/block/dupe.png" }, 1);
+        CHECK(m.buckets[MCME_CULL_NONE].face_count == 2);
+        for (int i = 0; i < 4; ++i)
+            CHECK(m.buckets[MCME_CULL_NONE].texture_indexes[i] == 0);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- a useless image group is not in the table --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/skipme", &m));
+        check_textures(&m, (const char *const[]){ "missing_no" }, 1);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the loader gate --- */
+    CHECK(mcme_pack_loads_assets(TFIXDIR));
+    CHECK(!mcme_pack_loads_assets("build/pack_fixtures/empty"));
+    CHECK(!mcme_pack_loads_assets("build/mesh_fixtures/oldformat"));
+    {
+        McmeTextureIndex *t2 = NULL;
+        CHECK(mcme_texture_index_open("build/mesh_fixtures/oldformat",
+                                      &t2));
+        if (t2) {
+            CHECK_MSG(strcmp(mcme_texture_path(t2, "mc", "block/opaque"),
+                             "missing_no") == 0,
+                      "a format-1 pack should hold no textures");
+            mcme_texture_index_close(t2);
+        }
+        McmeModelIndex *m2 = NULL;
+        CHECK(mcme_model_index_open("build/mesh_fixtures/oldformat", &m2));
+        if (m2) {
+            struct cJSON *doc = NULL;
+            CHECK(mcme_model_load(m2, "mc", "block/x", &doc));
+            CHECK(doc != NULL && doc->child == NULL);
+            cJSON_Delete(doc);
+            mcme_model_index_close(m2);
+        }
+    }
+
+    /* --- null arguments --- */
+    CHECK(!mcme_texture_index_open(NULL, &tex));
+    CHECK(!mcme_texture_index_open(TFIXDIR, NULL));
+    CHECK(strcmp(mcme_texture_path(tex, NULL, "block/opaque"),
+                 "missing_no") == 0);
+    CHECK(!mcme_texture_transparent(tex, NULL));
+    CHECK(!mcme_texture_transparent(NULL, opaque_path));
+    CHECK(!mcme_texture_transparent(tex, "missing_no"));
+    {
+        McmeMesh m;
+        CHECK(!mcme_mesh_build(models, tex, "mc", NULL, &m));
+        CHECK(!mcme_mesh_build(NULL, tex, "mc", "block/chain", &m));
+        CHECK(!mcme_mesh_build(models, NULL, "mc", "block/chain", &m));
+        CHECK(!mcme_mesh_build(models, tex, "mc", "block/chain", NULL));
+    }
+    mcme_mesh_free(NULL);
+    mcme_texture_index_close(NULL);
+
+    mcme_texture_index_close(tex);
+    mcme_model_index_close(models);
+    mcme_clear_error();
+}
+
 int mcme_test_resource(void)
 {
     g_failed = 0;
     test_pack_manifest();
     test_blockstates();
     test_models();
+    test_meshes();
     return g_failed;
 }

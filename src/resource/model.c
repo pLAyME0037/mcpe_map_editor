@@ -185,6 +185,14 @@ bool mcme_model_index_open(const char *pack_dir, McmeModelIndex **out)
         return false;
     }
 
+    /* The reference's loader loads nothing from a directory whose
+       manifest does not name a pack of format 2 or above; such a
+       pack has no models here, every fold the empty object. */
+    if (!mcme_pack_loads_assets(pack_dir)) {
+        *out = index;
+        return true;
+    }
+
     /* Every directory under assets/ is a namespace. */
     char assets[1024];
     int n = snprintf(assets, sizeof assets, "%s/assets", pack_dir);
