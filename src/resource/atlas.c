@@ -33,6 +33,11 @@
  *
  * The module supports a packing border; `create_atlas` uses the
  * zero default, and so does mcme.
+ *
+ * The page always carries the missing image first — the manager
+ * seeds its table with it before the pack's files (D35) — and the
+ * layer below maps mesh coordinates into the rectangles the page
+ * answers.
  */
 
 /* ========================================================================
@@ -104,6 +109,33 @@ static char *ndup(const char *s, size_t n)
     memcpy(out, s, n);
     out[n] = '\0';
     return out;
+}
+
+/* The missing image — the reader ships its own file, and the game's
+   canonical missing texture is what is in it: a 16x16
+   magenta-and-black checker, the 8x8 quadrants alternating by
+   (x < 8) == (y < 8), magenta f800f8. The manager seeds its table
+   with this image before the pack's files, so the app's page
+   carries the rectangle a mesh that names a texture the pack lacks
+   draws from; mcme spells the same pixels out (D35). The buffer is
+   malloc'd so the frames' stbi free path releases it. */
+static bool missing_image(McmeImage *out)
+{
+    uint8_t *rgba = malloc(16 * 16 * 4);
+    if (!rgba) return false;
+    for (int y = 0; y < 16; ++y) {
+        for (int x = 0; x < 16; ++x) {
+            uint8_t *px = rgba + ((size_t)y * 16 + (size_t)x) * 4;
+            bool magenta = (x < 8) == (y < 8);
+            px[0] = magenta ? 0xf8u : 0x00u;
+            px[1] = 0x00u;
+            px[2] = magenta ? 0xf8u : 0x00u;
+            px[3] = 0xffu;
+        }
+    }
+    out->width = out->height = 16;
+    out->rgba = rgba;
+    return true;
 }
 
 /* A region of the page; `below` and `right` exist once something
@@ -214,43 +246,59 @@ bool mcme_atlas_build(const char *const *paths, size_t count,
     }
     memset(out, 0, sizeof *out);
 
-    /* Every frame loads whole, the reference's Frame doing the
-       same; one that will not load refuses the whole atlas. */
-    AtlasFrame *frames = count ? calloc(count, sizeof *frames) : NULL;
-    if (count && !frames) {
+    /* The missing image rides first — the manager seeds its table
+       with it before the pack's files, so the app's page carries
+       it too, and the bounds rule below always has a rectangle to
+       answer with (D35). One more frame than the caller named. */
+    size_t total = count + 1;
+    AtlasFrame *frames = calloc(total, sizeof *frames);
+    if (!frames) {
         mcme_set_error("atlas: out of memory");
         return false;
     }
+    McmeImage missing;
+    if (!missing_image(&missing)) {
+        mcme_set_error("atlas: out of memory");
+        free(frames);
+        return false;
+    }
+    frames[0].rgba = missing.rgba;
+    frames[0].w = missing.width;
+    frames[0].h = missing.height;
+    frames[0].perimeter = 2.0 * (missing.width + missing.height);
+
+    /* Every frame loads whole, the reference's Frame doing the
+       same; one that will not load refuses the whole atlas. */
     for (size_t i = 0; i < count; ++i) {
         McmeImage img;
         if (!mcme_image_load(paths[i], &img)) {
-            for (size_t j = 0; j < i; ++j)
+            for (size_t j = 0; j < total; ++j)
                 stbi_image_free((void *)frames[j].rgba);
             free(frames);
             return false;
         }
-        frames[i].rgba = img.rgba;
-        frames[i].w = img.width;
-        frames[i].h = img.height;
-        frames[i].perimeter = 2.0 * (img.width + img.height);
+        frames[i + 1].rgba = img.rgba;
+        frames[i + 1].w = img.width;
+        frames[i + 1].h = img.height;
+        frames[i + 1].perimeter = 2.0 * (img.width + img.height);
     }
 
     /* Sort by perimeter, ties by input order. */
-    size_t *order = count ? malloc(count * sizeof *order) : NULL;
-    if (count && !order) {
+    size_t *order = malloc(total * sizeof *order);
+    if (!order) {
         mcme_set_error("atlas: out of memory");
         goto fail_frames;
     }
-    for (size_t i = 0; i < count; ++i) order[i] = i;
-    if (count > 1) {
+    for (size_t i = 0; i < total; ++i) order[i] = i;
+    if (total > 1) {
         g_sort_frames = frames;
-        qsort(order, count, sizeof *order, cmp_perimeter);
+        qsort(order, total, sizeof *order, cmp_perimeter);
         g_sort_frames = NULL;
     }
 
     /* The page starts at the reference's estimate and doubles
        until the packer takes everything. */
-    int size = page_size(frames, count);
+    int size = page_size(frames, total);
     PackNode *root = NULL;
     for (;;) {
         root = node_new(0, 0, size, size);
@@ -259,7 +307,7 @@ bool mcme_atlas_build(const char *const *paths, size_t count,
             goto fail_order;
         }
         bool oom = false, all = true;
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < total; ++i) {
             if (!pack_fit(root, &frames[order[i]], &oom)) {
                 all = false;
                 break;
@@ -279,21 +327,21 @@ bool mcme_atlas_build(const char *const *paths, size_t count,
 
     /* The page, and every frame blitted where it landed. */
     out->size = size;
-    out->count = count;
+    out->count = total;
     out->page.width = size;
     out->page.height = size;
     out->page.rgba = calloc((size_t)size * (size_t)size, 4);
     /* calloc: a failure part-way through filling leaves the rest
        NULL, which mcme_atlas_free skips rather than freeing. */
-    out->names = count ? calloc(count, sizeof *out->names) : NULL;
-    out->bounds = count ? malloc(count * 4 * sizeof *out->bounds) : NULL;
-    if (!out->page.rgba || (count && (!out->names || !out->bounds))) {
+    out->names = calloc(total, sizeof *out->names);
+    out->bounds = malloc(total * 4 * sizeof *out->bounds);
+    if (!out->page.rgba || !out->names || !out->bounds) {
         mcme_set_error("atlas: out of memory");
         mcme_atlas_free(out);
         goto fail_frames;
     }
 
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < total; ++i) {
         const AtlasFrame *f = &frames[i];
         for (int row = 0; row < f->h; ++row) {
             unsigned char *dst = out->page.rgba +
@@ -301,7 +349,8 @@ bool mcme_atlas_build(const char *const *paths, size_t count,
             memcpy(dst, f->rgba + (size_t)row * (size_t)f->w * 4,
                    (size_t)f->w * 4);
         }
-        out->names[i] = ndup(paths[i], strlen(paths[i]));
+        const char *name = i == 0 ? MCME_MISSING_TEXTURE : paths[i - 1];
+        out->names[i] = ndup(name, strlen(name));
         if (!out->names[i]) {
             mcme_set_error("atlas: out of memory");
             mcme_atlas_free(out);
@@ -316,14 +365,15 @@ bool mcme_atlas_build(const char *const *paths, size_t count,
             (f->y + (f->h < f->w ? f->h : f->w)) / (double)size;
     }
 
-    for (size_t i = 0; i < count; ++i) stbi_image_free((void *)frames[i].rgba);
+    for (size_t i = 0; i < total; ++i)
+        stbi_image_free((void *)frames[i].rgba);
     free(frames);
     return true;
 
 fail_order:
     free(order);
 fail_frames:
-    for (size_t i = 0; i < count; ++i)
+    for (size_t i = 0; i < total; ++i)
         stbi_image_free((void *)frames[i].rgba);
     free(frames);
     return false;
@@ -337,4 +387,120 @@ void mcme_atlas_free(McmeAtlas *atlas)
     free(atlas->bounds);
     free(atlas->page.rgba);
     memset(atlas, 0, sizeof *atlas);
+}
+
+/* ========================================================================
+ * Texture coordinates in atlas space (D35)
+ * ======================================================================== */
+
+bool mcme_atlas_bounds(const McmeAtlas *atlas, const char *name,
+                       double out[4])
+{
+    if (!atlas || !name || !out) {
+        mcme_set_error("atlas bounds: null argument");
+        return false;
+    }
+    size_t found = (size_t)-1;
+    for (size_t i = 0; i < atlas->count; ++i) {
+        if (strcmp(atlas->names[i], name) == 0) {
+            found = i;
+            break;
+        }
+    }
+    if (found == (size_t)-1) {
+        /* The reference's texture_bounds, rule for rule: a texture
+           the page does not hold draws from the missing image's
+           own rectangle (D35). */
+        for (size_t i = 0; i < atlas->count; ++i) {
+            if (strcmp(atlas->names[i], MCME_MISSING_TEXTURE) == 0) {
+                found = i;
+                break;
+            }
+        }
+        if (found == (size_t)-1) {
+            mcme_set_error("atlas bounds: '%s' is not on the page and "
+                           "this atlas carries no " MCME_MISSING_TEXTURE,
+                           name);
+            return false;
+        }
+    }
+    memcpy(out, &atlas->bounds[found * 4], 4 * sizeof *out);
+    return true;
+}
+
+bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
+                     McmeAtlasMesh *out)
+{
+    if (!atlas || !mesh || !out) {
+        mcme_set_error("atlas mesh: null argument");
+        return false;
+    }
+    memset(out, 0, sizeof *out);
+
+    for (int i = 0; i < 7; ++i) {
+        if (!mesh->present[i]) continue;
+        const McmeMeshBucket *b = &mesh->buckets[i];
+        out->present[i] = true;
+
+        /* One row per vertex of the face stream — six per face,
+           the two triangles the builder draws. A row's rectangle
+           is its triangle's: the builder writes one rectangle per
+           THREE rows, stepping the bucket's texture index (two per
+           face, one per triangle) alongside (D35). */
+        size_t rows = b->face_count * 6;
+        McmeAtlasBucket *m = &out->buckets[i];
+        m->row_count = rows;
+        if (rows == 0) continue;
+        m->bounds = calloc(rows * 4, sizeof *m->bounds);
+        m->auvs = calloc(rows * 2, sizeof *m->auvs);
+        if (!m->bounds || !m->auvs) {
+            mcme_set_error("atlas mesh: out of memory");
+            mcme_atlas_mesh_free(out);
+            return false;
+        }
+        for (size_t f = 0; f < b->face_count; ++f) {
+            for (size_t k = 0; k < 6; ++k) {
+                size_t row = f * 6 + k;
+                uint32_t tex = b->texture_indexes[f * 2 + k / 3];
+                uint32_t vert = b->faces[row];
+                if (tex >= mesh->texture_count ||
+                    vert >= b->vert_count) {
+                    mcme_set_error("atlas mesh: the mesh's own indexes "
+                                   "are out of range");
+                    mcme_atlas_mesh_free(out);
+                    return false;
+                }
+                double rect[4];
+                if (!mcme_atlas_bounds(atlas, mesh->textures[tex],
+                                       rect)) {
+                    mcme_atlas_mesh_free(out);
+                    return false;
+                }
+                memcpy(&m->bounds[row * 4], rect, sizeof rect);
+
+                /* The fragment stage's mapping, per axis:
+                   mix(b0, b1, mod(t, 1.0)) — GLSL's mod is
+                   floor-based, so a coordinate below zero wraps up
+                   rather than clamping (D35). */
+                const double *t = &b->tverts[vert * 2];
+                double *uv = &m->auvs[row * 2];
+                for (int axis = 0; axis < 2; ++axis) {
+                    double wrapped = t[axis] - floor(t[axis]);
+                    uv[axis] = rect[axis] +
+                        (rect[axis + 2] - rect[axis]) * wrapped;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+void mcme_atlas_mesh_free(McmeAtlasMesh *m)
+{
+    if (!m) return;
+    for (int i = 0; i < 7; ++i) {
+        free(m->buckets[i].bounds);
+        free(m->buckets[i].auvs);
+    }
+    memset(m, 0, sizeof *m);
 }

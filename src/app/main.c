@@ -93,6 +93,11 @@ static void print_usage(FILE *out)
         "                    square page: its size and where each\n"
         "                    texture landed as bounds; --out writes\n"
         "                    the page PNG\n"
+        "  atlasmesh <pack> <block>\n"
+        "                    One block state, its texture coordinates\n"
+        "                    in atlas space: every row carrying the\n"
+        "                    rectangle its triangle draws from and\n"
+        "                    the mesh's coordinates mapped into it\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -949,7 +954,8 @@ static struct cJSON *json_mesh(const McmeMesh *mesh)
     return doc;
 }
 
-static bool print_mesh(const McmeMesh *mesh, const char *heading)
+static bool print_mesh(const McmeMesh *mesh, const char *heading,
+                       const McmeAtlas *atlas)
 {
     if (g_opts.json) {
         struct cJSON *doc = json_mesh(mesh);
@@ -968,6 +974,9 @@ static bool print_mesh(const McmeMesh *mesh, const char *heading)
     printf("  textures      %zu\n", mesh->texture_count);
     for (size_t i = 0; i < mesh->texture_count; ++i)
         printf("    %s\n", mesh->textures[i]);
+    if (atlas)
+        printf("  atlas         %dx%d page\n", atlas->size,
+               atlas->size);
     bool any = false;
     for (int i = 0; i < 7; ++i) {
         if (!mesh->present[i]) continue;
@@ -1024,7 +1033,7 @@ static int cmd_mesh(const char *pack_dir, const char *ref)
 
     char heading[512];
     snprintf(heading, sizeof heading, "%s:%s", ns, base);
-    bool shown = print_mesh(&mesh, heading);
+    bool shown = print_mesh(&mesh, heading, NULL);
     mcme_mesh_free(&mesh);
     if (!shown) {
         mcme_set_error("mesh: out of memory");
@@ -1034,30 +1043,31 @@ static int cmd_mesh(const char *pack_dir, const char *ref)
 }
 
 /*
- * blockmesh — one block state as the game would mesh it: the
- * blockstate selection walked, the winning model(s) meshed and
- * turned by x/y (uvlock read and ignored, the reference's own
- * no-op), multipart's cases merged. The block-level answer is
- * total — a model that refuses to mesh is skipped the way the
- * reference catches it, and the missing block stands in when
- * nothing survives. Human and --json (the mesh document).
+ * The block-level prelude every block verb shares: the spec parsed
+ * into the game's own shape, the three indexes opened, the
+ * selection walked and the mesh built. On success `*tex_index`
+ * stays OPEN — the atlas layer reads the pack's texture list from
+ * it — and everything else is closed. The answer is total: false
+ * happens only where the heap refuses, never the pack.
  */
-static int cmd_blockmesh(const char *pack_dir, const char *spec)
+static int build_block_mesh(const char *verb, const char *pack_dir,
+                            const char *spec, McmeMesh *mesh,
+                            McmeTextureIndex **tex_index)
 {
     if (!mcme_fs_exists(pack_dir)) {
-        mcme_set_error("blockmesh: '%s' is not a directory", pack_dir);
+        mcme_set_error("%s: '%s' is not a directory", verb, pack_dir);
         return MCME_EXIT_NOT_FOUND;
     }
 
     McmeArena *arena = mcme_arena_new();
     if (!arena) {
-        mcme_set_error("blockmesh: out of memory");
+        mcme_set_error("%s: out of memory", verb);
         return MCME_EXIT_INTERNAL;
     }
 
     char name[256];
     const McmeTag *states = NULL;
-    int rc = parse_block_spec("blockmesh", spec, arena, name,
+    int rc = parse_block_spec(verb, spec, arena, name,
                               sizeof name, &states);
     if (rc != MCME_OK) {
         mcme_arena_free(arena);
@@ -1072,8 +1082,8 @@ static int cmd_blockmesh(const char *pack_dir, const char *spec)
     if (colon) {
         size_t ns_len = (size_t)(colon - name);
         if (ns_len == 0 || ns_len >= sizeof ns) {
-            mcme_set_error("blockmesh: block '%s' has an empty or "
-                           "too-long namespace", spec);
+            mcme_set_error("%s: block '%s' has an empty or "
+                           "too-long namespace", verb, spec);
             mcme_arena_free(arena);
             return MCME_EXIT_USAGE;
         }
@@ -1085,7 +1095,8 @@ static int cmd_blockmesh(const char *pack_dir, const char *spec)
         base = name;
     }
     if (*base == '\0') {
-        mcme_set_error("blockmesh: block '%s' has an empty name", spec);
+        mcme_set_error("%s: block '%s' has an empty name", verb,
+                       spec);
         mcme_arena_free(arena);
         return MCME_EXIT_USAGE;
     }
@@ -1099,16 +1110,16 @@ static int cmd_blockmesh(const char *pack_dir, const char *spec)
         for (size_t i = 0; i < states->compound.len; ++i) {
             const McmeCompoundEntry *e = &states->compound.entries[i];
             if (e->value->type != MCME_TAG_String) {
-                mcme_set_error("blockmesh: state '%.*s' is not a "
+                mcme_set_error("%s: state '%.*s' is not a "
                                "string — Java blockstate properties "
                                "are strings",
-                               (int)e->name.len, e->name.data);
+                               verb, (int)e->name.len, e->name.data);
                 mcme_arena_free(arena);
                 return MCME_EXIT_USAGE;
             }
             if (prop_count >= sizeof props / sizeof props[0]) {
-                mcme_set_error("blockmesh: block '%s' has more than "
-                               "%zu states", spec,
+                mcme_set_error("%s: block '%s' has more than "
+                               "%zu states", verb, spec,
                                sizeof props / sizeof props[0]);
                 mcme_arena_free(arena);
                 return MCME_EXIT_USAGE;
@@ -1123,7 +1134,7 @@ static int cmd_blockmesh(const char *pack_dir, const char *spec)
     if (!mcme_blockstate_index_open(pack_dir, &blockstates)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("blockmesh: %s", why);
+        mcme_set_error("%s: %s", verb, why);
         mcme_arena_free(arena);
         return MCME_EXIT_INTERNAL;
     }
@@ -1131,26 +1142,24 @@ static int cmd_blockmesh(const char *pack_dir, const char *spec)
     if (!mcme_model_index_open(pack_dir, &models)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("blockmesh: %s", why);
+        mcme_set_error("%s: %s", verb, why);
         mcme_blockstate_index_close(blockstates);
         mcme_arena_free(arena);
         return MCME_EXIT_INTERNAL;
     }
-    McmeTextureIndex *tex_index = NULL;
-    if (!mcme_texture_index_open(pack_dir, &tex_index)) {
+    McmeTextureIndex *tex = NULL;
+    if (!mcme_texture_index_open(pack_dir, &tex)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("blockmesh: %s", why);
+        mcme_set_error("%s: %s", verb, why);
         mcme_model_index_close(models);
         mcme_blockstate_index_close(blockstates);
         mcme_arena_free(arena);
         return MCME_EXIT_INTERNAL;
     }
 
-    McmeMesh mesh;
-    bool ok = mcme_mesh_for_block(blockstates, models, tex_index, ns, base,
-                                  props, prop_count, &mesh);
-    mcme_texture_index_close(tex_index);
+    bool ok = mcme_mesh_for_block(blockstates, models, tex, ns, base,
+                                  props, prop_count, mesh);
     mcme_model_index_close(models);
     mcme_blockstate_index_close(blockstates);
     mcme_arena_free(arena);
@@ -1159,11 +1168,33 @@ static int cmd_blockmesh(const char *pack_dir, const char *spec)
            is total. */
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("blockmesh: %s", why);
+        mcme_set_error("%s: %s", verb, why);
+        mcme_texture_index_close(tex);
         return MCME_EXIT_INTERNAL;
     }
+    *tex_index = tex;
+    return MCME_OK;
+}
 
-    bool shown = print_mesh(&mesh, spec);
+/*
+ * blockmesh — one block state as the game would mesh it: the
+ * blockstate selection walked, the winning model(s) meshed and
+ * turned by x/y (uvlock read and ignored, the reference's own
+ * no-op), multipart's cases merged. The block-level answer is
+ * total — a model that refuses to mesh is skipped the way the
+ * reference catches it, and the missing block stands in when
+ * nothing survives. Human and --json (the mesh document).
+ */
+static int cmd_blockmesh(const char *pack_dir, const char *spec)
+{
+    McmeMesh mesh;
+    McmeTextureIndex *tex = NULL;
+    int rc = build_block_mesh("blockmesh", pack_dir, spec, &mesh,
+                              &tex);
+    if (rc != MCME_OK) return rc;
+    mcme_texture_index_close(tex);
+
+    bool shown = print_mesh(&mesh, spec, NULL);
     mcme_mesh_free(&mesh);
     if (!shown) {
         mcme_set_error("blockmesh: out of memory");
@@ -1263,6 +1294,98 @@ static int cmd_atlas(const char *pack_dir, const char *out_png)
     mcme_atlas_free(&atlas);
     if (!shown) {
         mcme_set_error("atlas: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    return MCME_OK;
+}
+
+/*
+ * atlasmesh — one block state, its texture coordinates in atlas
+ * space: the block-level mesh, with every row of every bucket
+ * carrying the rectangle its triangle draws from and the mesh's
+ * own coordinates mapped into it — the editor's chunk builder's
+ * table and its fragment stage's arithmetic, quirks included
+ * (D35, decisions.md#D35). The page is the pack's own (missing
+ * image and all, the same build `mcme atlas` answers). --json
+ * adds the page's `size` and, per direction, `bounds` and `auvs`
+ * beside the mesh document; human adds the page line.
+ */
+static int cmd_atlasmesh(const char *pack_dir, const char *spec)
+{
+    McmeMesh mesh;
+    McmeTextureIndex *tex = NULL;
+    int rc = build_block_mesh("atlasmesh", pack_dir, spec, &mesh,
+                              &tex);
+    if (rc != MCME_OK) return rc;
+
+    /* The page the coordinates are in — the pack's textures plus
+       the missing image, exactly what `mcme atlas` packs. */
+    size_t count = mcme_texture_count(tex);
+    const char **paths = count ? malloc(count * sizeof *paths) : NULL;
+    if (count && !paths) {
+        mcme_texture_index_close(tex);
+        mcme_mesh_free(&mesh);
+        mcme_set_error("atlasmesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    for (size_t i = 0; i < count; ++i)
+        paths[i] = mcme_texture_at(tex, i);
+    if (count > 1) qsort(paths, count, sizeof *paths, cmp_path_ptr);
+
+    McmeAtlas atlas;
+    bool ok = mcme_atlas_build(paths, count, &atlas);
+    free(paths);
+    mcme_texture_index_close(tex);
+    if (!ok) {
+        /* One image would not load — the reference's Pillow raise
+           kills the whole call; mcme refuses by name (D34). */
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("atlasmesh: %s", why);
+        mcme_mesh_free(&mesh);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    McmeAtlasMesh table;
+    if (!mcme_atlas_mesh(&atlas, &mesh, &table)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("atlasmesh: %s", why);
+        mcme_atlas_free(&atlas);
+        mcme_mesh_free(&mesh);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    bool shown;
+    if (g_opts.json) {
+        struct cJSON *doc = json_mesh(&mesh);
+        if (doc) {
+            cJSON_AddNumberToObject(doc, "size", atlas.size);
+            struct cJSON *dirs = cJSON_GetObjectItem(doc, "dirs");
+            for (int i = 0; i < 7; ++i) {
+                if (!table.present[i]) continue;
+                struct cJSON *d =
+                    cJSON_GetObjectItem(dirs, k_dir_names[i]);
+                if (!d) continue;
+                json_add_floats(d, "bounds", table.buckets[i].bounds,
+                                table.buckets[i].row_count * 4);
+                json_add_floats(d, "auvs", table.buckets[i].auvs,
+                                table.buckets[i].row_count * 2);
+            }
+            char *text = cJSON_PrintUnformatted(doc);
+            printf("%s\n", text ? text : "{}");
+            if (text) cJSON_free(text);
+            cJSON_Delete(doc);
+        }
+        shown = doc != NULL;
+    } else {
+        shown = print_mesh(&mesh, spec, &atlas);
+    }
+    mcme_atlas_mesh_free(&table);
+    mcme_atlas_free(&atlas);
+    mcme_mesh_free(&mesh);
+    if (!shown) {
+        mcme_set_error("atlasmesh: out of memory");
         return MCME_EXIT_INTERNAL;
     }
     return MCME_OK;
@@ -3920,6 +4043,15 @@ static int dispatch(int argc, char **argv)
             return MCME_EXIT_USAGE;
         }
         return cmd_atlas(args[0], rest == 3 ? args[2] : NULL);
+    }
+
+    if (strcmp(cmd, "atlasmesh") == 0) {
+        if (rest != 2) {
+            mcme_set_error("atlasmesh: usage: mcme atlasmesh "
+                           "<pack-dir> <block>");
+            return MCME_EXIT_USAGE;
+        }
+        return cmd_atlasmesh(args[0], args[1]);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can

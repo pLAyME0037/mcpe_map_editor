@@ -395,11 +395,14 @@ typedef struct {
 } McmeAtlas;
 
 /*
- * Packs `count` image paths into one square page. `paths` is the
- * input order (a tie in the perimeter sort keeps it); the answer's
- * `names` mirrors it back. The images all load up front, exactly
- * as the reference's frames do, and one that will not load
- * refuses the whole atlas by name.
+ * Packs `count` image paths into one square page, the editor's own
+ * page: the missing image is packed FIRST (the manager seeds its
+ * table with it before the pack's files, so the app's page carries
+ * it too — D35), then `paths` in the order given (a tie in the
+ * perimeter sort keeps it); the answer's `names` mirrors that back,
+ * the missing image under the word "missing_no". The images all
+ * load up front, exactly as the reference's frames do, and one
+ * that will not load refuses the whole atlas by name.
  *
  * Answers `*out` (released with mcme_atlas_free); false only on a
  * null argument, an unloadable image or an exhausted heap.
@@ -569,5 +572,86 @@ bool mcme_mesh_for_block(const McmeBlockstateIndex *blockstates,
 
 /* Releases a mesh and everything it owns. NULL is a no-op. */
 void mcme_mesh_free(McmeMesh *mesh);
+
+/* ========================================================================
+ * Texture coordinates in atlas space (D35)
+ *
+ * The mesh's own coordinates never reach the sampler: the editor's
+ * chunk builder gives every triangle the rectangle its texture
+ * landed on, and the fragment stage maps the mesh's coordinates
+ * into that rectangle at draw time. The pieces, as the reference
+ * has them:
+ *
+ *   - The vertex table is one row of twelve floats per vertex of
+ *     the face stream — position, texture coordinate, the
+ *     rectangle, tint — built per cull bucket as
+ *     `verts[faces]`, `tverts[faces]`, the rectangle written once
+ *     per THREE rows (one triangle) from the bucket's per-triangle
+ *     texture index, and the tint multiplied by a per-direction
+ *     brightness. The brightness and the chunk-level light fold
+ *     are the builder's shading, out of this layer's domain; the
+ *     rows' rectangles are here.
+ *   - The rectangle for a texture path comes from one rule: the
+ *     page's rectangle under that exact name, or the missing
+ *     image's own rectangle when the name is not on the page. The
+ *     reference's texture_bounds, quirks included (D35).
+ *   - The mapping is the fragment stage's, per axis:
+ *     mix(b0, b1, mod(t, 1.0)) — b0 + (b1 - b0) * the coordinate
+ *     wrapped into [0, 1) the GLSL way (floor-based, so a
+ *     negative coordinate wraps up rather than clamps). Rendered
+ *     live in the shader; the renderer-to-be wants the numbers,
+ *     so mcme answers them.
+ *
+ * The atlas this layer reads is the editor's own: the page always
+ * carries the missing image first — the manager seeds its table
+ * with it before the pack's files, so the app's page has it too
+ * (D34 recorded the strip while mcme had no image of its own; D35
+ * gives it one, the reader's exact 16x16 magenta-and-black
+ * checker, and the strip is superseded).
+ */
+
+/* The word for the missing image, the reference's own key word for
+   it (its file lives inside its reader's package). The pins
+   canonicalise the reference's path to this token; the texture
+   index answers it for a texture the pack does not hold. */
+#define MCME_MISSING_TEXTURE "missing_no"
+
+/* The bounds a lookup answers for `name` — the reference's
+   texture_bounds: the rectangle `name` landed on, or the missing
+   image's own rectangle where `name` is not on the page. `out`
+   takes u0 v0 u1 v1. False only on a null argument or an atlas
+   that somehow carries no missing image. */
+bool mcme_atlas_bounds(const McmeAtlas *atlas, const char *name,
+                       double out[4]);
+
+/* One cull bucket's rows in atlas space — one row per vertex of
+   the face stream (six per face: the two triangles the builder
+   draws), in stream order, so a row's rectangle is its
+   triangle's. */
+typedef struct {
+    double *bounds;   /* 4 per row: u0 v0 u1 v1                  */
+    double *auvs;     /* 2 per row: the coordinates mapped into
+                         that rectangle                          */
+    size_t  row_count;
+} McmeAtlasBucket;
+
+typedef struct {
+    McmeAtlasBucket buckets[7]; /* indexed by McmeCullDir        */
+    bool            present[7]; /* as the mesh has them          */
+} McmeAtlasMesh;
+
+/* Answers the mesh's texture coordinates in atlas space:
+   `bounds` naming the rectangle every row's triangle draws from
+   (its texture looked up by the rule above) and `auvs` the mesh's
+   own coordinates mapped through it, the fragment stage's
+   arithmetic done here. Answers `*out` (released with
+   mcme_atlas_mesh_free); false only on a null argument or an
+   exhausted heap. */
+bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
+                     McmeAtlasMesh *out);
+
+/* Releases an atlas-space mesh and everything it owns. NULL is a
+   no-op. */
+void mcme_atlas_mesh_free(McmeAtlasMesh *m);
 
 #endif /* MCME_RESOURCE_H */

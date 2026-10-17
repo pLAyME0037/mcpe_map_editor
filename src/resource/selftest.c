@@ -1725,6 +1725,7 @@ static void test_atlases(void)
     const char *pw = AFIXDIR "/assets/minecraft/textures/block/wide.png";
     const char *pt = AFIXDIR "/assets/minecraft/textures/block/tall.png";
     const char *ps = AFIXDIR "/assets/minecraft/textures/block/s3.png";
+    const char *pw20 = AFIXDIR "/assets/minecraft/textures/block/wide20.png";
     put_solid_png(pa, 4, 2, 2, 255, 0, 0, 255);    /* red   */
     put_solid_png(pb, 4, 2, 2, 0, 255, 0, 255);    /* green */
     put_solid_png(pc, 3, 2, 2, 0, 0, 255, 0);      /* blue, RGB — expands
@@ -1732,67 +1733,113 @@ static void test_atlases(void)
     put_solid_png(pw, 4, 4, 2, 255, 255, 0, 255);  /* yellow, perimeter 12 */
     put_solid_png(pt, 4, 2, 4, 255, 0, 255, 255);  /* magenta, perimeter 12 */
     put_solid_png(ps, 4, 3, 2, 0, 255, 255, 255);  /* cyan, perimeter 10 */
+    put_solid_png(pw20, 4, 20, 2, 255, 128, 0, 255); /* orange — wider
+                                                      than any page
+                                                      half of 16 */
     /* A file the loader cannot read, at the pack root where the
        index does not scan it — only the atlas is asked about it. */
     put(AFIXDIR "/broken.png", "this is not a png");
 
-    /* --- the whole pack, in the verb's sorted input order --- */
+    /* --- the whole pack behind the missing image, in the verb's
+           sorted input order (D35: the manager seeds its table with
+           the missing image first, and mcme's page carries it too) --- */
     {
         const char *paths[] = { pa, pb, pc, ps, pt, pw };
         McmeAtlas a;
         CHECK_MSG(mcme_atlas_build(paths, 6, &a),
                   "atlas build: %s", mcme_last_error());
-        /* pixels = 4+4+4+6+8+8 = 34 -> ceil sqrt 6 -> 8; max side 4. */
-        CHECK_MSG(a.size == 8, "pack size %d, want 8", a.size);
-        CHECK_MSG(a.count == 6, "pack count %zu, want 6", a.count);
-        /* Perimeter order: tall and wide tie at 12 and the tie
-           keeps the input order — tall (index 4) packs first —
-           then s3 (10), then a, b, c (8). Placements, all of
-           them the reference's own answers for this input: */
-        check_px(&a, 1, 1, 255, 0, 255, 255, "tall at 0,0");
-        check_px(&a, 3, 1, 255, 255, 0, 255, "wide at 2,0");
-        check_px(&a, 3, 3, 0, 255, 255, 255, "s3 at 2,2");
-        check_px(&a, 1, 5, 255, 0, 0, 255, "a at 0,4");
-        check_px(&a, 3, 5, 0, 0, 255, 255, "c at 2,4 (RGB expanded)");
-        check_px(&a, 1, 7, 0, 255, 0, 255, "b at 0,6");
-        check_px(&a, 7, 7, 0, 0, 0, 0, "the page's empty corner");
-        check_px(&a, 6, 0, 0, 0, 0, 0, "the empty strip right of wide");
+        /* The missing image's 256 pixels lead: 256 + 34 -> ceil
+           sqrt 18 -> the 32 page. */
+        CHECK_MSG(a.size == 32, "pack size %d, want 32", a.size);
+        CHECK_MSG(a.count == 7, "pack count %zu, want 7", a.count);
+        /* The sentinel takes the top-left quadrant. Under it the
+           perimeter order: tall and wide tie at 12 and the tie
+           keeps the input order — tall packs first — then s3,
+           then a, b, c. Placements, all of them the reference's
+           own answers for this input: */
+        check_px(&a, 1, 1, 0xf8, 0, 0xf8, 255, "missing, top-left");
+        check_px(&a, 8, 0, 0, 0, 0, 255, "missing, black quadrant");
+        check_px(&a, 0, 8, 0, 0, 0, 255, "missing, other quadrant");
+        check_px(&a, 1, 17, 255, 0, 255, 255, "tall at 0,16");
+        check_px(&a, 3, 17, 255, 255, 0, 255, "wide at 2,16");
+        check_px(&a, 3, 19, 0, 255, 255, 255, "s3 at 2,18");
+        check_px(&a, 1, 21, 255, 0, 0, 255, "a at 0,20");
+        check_px(&a, 1, 25, 0, 0, 255, 255, "c at 0,24 (RGB expanded)");
+        check_px(&a, 1, 23, 0, 255, 0, 255, "b at 0,22");
+        check_px(&a, 31, 31, 0, 0, 0, 0, "the page's empty corner");
+        check_px(&a, 6, 16, 0, 0, 0, 0, "the empty strip right of wide");
         /* Bounds, the min(h, w) top edge included. */
-        check_bounds(&a, 0, 0.0, 0.5, 0.25, 0.75, "a");
-        check_bounds(&a, 1, 0.0, 0.75, 0.25, 1.0, "b");
-        check_bounds(&a, 2, 0.25, 0.5, 0.5, 0.75, "c");
-        check_bounds(&a, 3, 0.25, 0.25, 0.625, 0.5, "s3");
-        check_bounds(&a, 4, 0.0, 0.0, 0.25, 0.25, "tall");
-        check_bounds(&a, 5, 0.25, 0.0, 0.75, 0.25, "wide");
-        for (size_t i = 0; i < a.count; ++i)
-            CHECK_MSG(strcmp(a.names[i], paths[i]) == 0,
-                      "name %zu is '%s', want '%s'", i, a.names[i],
-                      paths[i]);
+        check_bounds(&a, 0, 0.0, 0.0, 0.5, 0.5, "missing_no");
+        check_bounds(&a, 1, 0.0, 0.625, 0.0625, 0.6875, "a");
+        check_bounds(&a, 2, 0.0, 0.6875, 0.0625, 0.75, "b");
+        check_bounds(&a, 3, 0.0, 0.75, 0.0625, 0.8125, "c");
+        check_bounds(&a, 4, 0.0625, 0.5625, 0.15625, 0.625, "s3");
+        check_bounds(&a, 5, 0.0, 0.5, 0.0625, 0.5625, "tall");
+        check_bounds(&a, 6, 0.0625, 0.5, 0.1875, 0.5625, "wide");
+        CHECK_MSG(strcmp(a.names[0], "missing_no") == 0,
+                  "name 0 is '%s', want the missing image", a.names[0]);
+        for (size_t i = 0; i < 6; ++i)
+            CHECK_MSG(strcmp(a.names[i + 1], paths[i]) == 0,
+                      "name %zu is '%s', want '%s'", i + 1,
+                      a.names[i + 1], paths[i]);
         mcme_atlas_free(&a);
     }
 
-    /* --- the min(h, w) quirk alone: a 2x4's top edge is 2/4, not 4/4 --- */
+    /* --- the bounds rule: an exact name answers its own
+           rectangle, anything else the missing image's own — the
+           reference's texture_bounds, rule for rule (D35) --- */
+    {
+        const char *paths[] = { pa, pb, pc, ps, pt, pw };
+        McmeAtlas a;
+        CHECK_MSG(mcme_atlas_build(paths, 6, &a),
+                  "rule atlas: %s", mcme_last_error());
+        double r[4];
+        CHECK(mcme_atlas_bounds(&a, pa, r));
+        CHECK(fabs(r[0] - 0.0) < 1e-9 && fabs(r[1] - 0.625) < 1e-9 &&
+              fabs(r[2] - 0.0625) < 1e-9 && fabs(r[3] - 0.6875) < 1e-9);
+        CHECK(mcme_atlas_bounds(&a, "missing_no", r));
+        CHECK(fabs(r[0] - 0.0) < 1e-9 && fabs(r[1] - 0.0) < 1e-9 &&
+              fabs(r[2] - 0.5) < 1e-9 && fabs(r[3] - 0.5) < 1e-9);
+        /* A texture the page does not hold — including one a mesh
+           names after a texture the pack lacks. */
+        CHECK(mcme_atlas_bounds(&a, "block/nonexistent", r));
+        CHECK(fabs(r[0] - 0.0) < 1e-9 && fabs(r[1] - 0.0) < 1e-9 &&
+              fabs(r[2] - 0.5) < 1e-9 && fabs(r[3] - 0.5) < 1e-9);
+        CHECK(!mcme_atlas_bounds(NULL, pa, r));
+        CHECK(!mcme_atlas_bounds(&a, NULL, r));
+        CHECK(!mcme_atlas_bounds(&a, pa, NULL));
+        mcme_clear_error();
+        mcme_atlas_free(&a);
+    }
+
+    /* --- the min(h, w) quirk alone: a 2x4's top edge is 2/4, not
+           4/4; behind the missing image the page is 32 --- */
     {
         McmeAtlas a;
         CHECK(mcme_atlas_build(&pt, 1, &a));
-        CHECK_MSG(a.size == 4, "tall-only size %d, want 4", a.size);
-        check_bounds(&a, 0, 0.0, 0.0, 0.5, 0.5, "tall-only");
-        check_px(&a, 0, 0, 255, 0, 255, 255, "tall-only top");
-        check_px(&a, 1, 3, 255, 0, 255, 255, "tall-only bottom");
+        CHECK_MSG(a.size == 32, "tall-only size %d, want 32", a.size);
+        check_bounds(&a, 1, 0.0, 0.5, 0.0625, 0.5625, "tall-only");
+        check_px(&a, 1, 17, 255, 0, 255, 255, "tall-only top");
+        check_px(&a, 1, 19, 255, 0, 255, 255, "tall-only bottom");
         mcme_atlas_free(&a);
     }
 
-    /* --- the estimate too small doubles: 2x2,2x2,3x2 fails at 4,
-           retries at 8 (the reference's own answers for these) --- */
+    /* --- the estimate too small doubles: a 20-wide frame will not
+           sit beside the missing image on a 32 page (296 pixels
+           estimate 32, the packer refuses, the page doubles to64;
+           the reference's own answers for these) --- */
     {
-        const char *paths[] = { pa, pb, ps };
+        const char *paths[] = { pw20, pa };
         McmeAtlas a;
-        CHECK_MSG(mcme_atlas_build(paths, 3, &a),
+        CHECK_MSG(mcme_atlas_build(paths, 2, &a),
                   "doubling atlas: %s", mcme_last_error());
-        CHECK_MSG(a.size == 8, "doubling size %d, want 8", a.size);
-        check_bounds(&a, 0, 0.0, 0.25, 0.25, 0.5, "doubling a");
-        check_bounds(&a, 1, 0.0, 0.5, 0.25, 0.75, "doubling b");
-        check_bounds(&a, 2, 0.0, 0.0, 0.375, 0.25, "doubling s3");
+        CHECK_MSG(a.size == 64, "doubling size %d, want 64", a.size);
+        check_bounds(&a, 0, 0.0, 0.0, 0.25, 0.25, "doubling missing");
+        check_bounds(&a, 1, 0.25, 0.0, 0.5625, 0.03125, "doubling wide20");
+        check_bounds(&a, 2, 0.0, 0.25, 0.03125, 0.28125, "doubling a");
+        check_px(&a, 8, 8, 0xf8, 0, 0xf8, 255, "doubling: the missing");
+        check_px(&a, 26, 1, 255, 128, 0, 255, "doubling: wide20 at 16,0");
+        check_px(&a, 1, 17, 255, 0, 0, 255, "doubling: a at 0,16");
         mcme_atlas_free(&a);
     }
 
@@ -1802,22 +1849,31 @@ static void test_atlases(void)
         const char *paths[] = { pa, pw, pb };
         McmeAtlas a;
         CHECK(mcme_atlas_build(paths, 3, &a));
-        CHECK(a.size == 4);
-        check_bounds(&a, 0, 0.0, 0.5, 0.5, 1.0, "reordered a");
-        check_bounds(&a, 1, 0.0, 0.0, 1.0, 0.5, "reordered wide");
-        check_bounds(&a, 2, 0.5, 0.5, 1.0, 1.0, "reordered b");
+        CHECK(a.size == 32);
+        check_bounds(&a, 0, 0.0, 0.0, 0.5, 0.5, "reordered missing");
+        check_bounds(&a, 1, 0.0, 0.5625, 0.0625, 0.625, "reordered a");
+        check_bounds(&a, 2, 0.0, 0.5, 0.125, 0.5625, "reordered wide");
+        check_bounds(&a, 3, 0.0, 0.625, 0.0625, 0.6875, "reordered b");
         mcme_atlas_free(&a);
     }
 
-    /* --- the empty set: the reference's bit_length(-1) answer --- */
+    /* --- the empty pack: the app's page is never empty — the
+           manager seeds its table, so the missing image alone owns
+           a 16x16 page and its bounds are the whole of it --- */
     {
         McmeAtlas a;
         CHECK(mcme_atlas_build(NULL, 0, &a));
-        CHECK_MSG(a.size == 2, "empty size %d, want 2", a.size);
-        CHECK(a.count == 0 && a.names == NULL && a.bounds == NULL);
-        for (int y = 0; y < 2; ++y)
-            for (int x = 0; x < 2; ++x)
-                check_px(&a, x, y, 0, 0, 0, 0, "empty page");
+        CHECK_MSG(a.size == 16, "empty size %d, want 16", a.size);
+        CHECK(a.count == 1);
+        CHECK(strcmp(a.names[0], "missing_no") == 0);
+        check_bounds(&a, 0, 0.0, 0.0, 1.0, 1.0, "empty page");
+        /* The game's own missing texture, spelled out: the 8x8
+           quadrants, magenta where (x < 8) == (y < 8). */
+        check_px(&a, 0, 0, 0xf8, 0, 0xf8, 255, "missing top-left");
+        check_px(&a, 8, 0, 0, 0, 0, 255, "missing top-right");
+        check_px(&a, 0, 8, 0, 0, 0, 255, "missing bottom-left");
+        check_px(&a, 8, 8, 0xf8, 0, 0xf8, 255, "missing bottom-right");
+        check_px(&a, 15, 15, 0xf8, 0, 0xf8, 255, "missing corner");
         mcme_atlas_free(&a);
     }
 
@@ -1843,11 +1899,11 @@ static void test_atlases(void)
         McmeTextureIndex *tex = NULL;
         CHECK_MSG(mcme_texture_index_open(AFIXDIR, &tex),
                   "index open: %s", mcme_last_error());
-        CHECK_MSG(mcme_texture_count(tex) == 6, "index holds %zu, want 6",
+        CHECK_MSG(mcme_texture_count(tex) == 7, "index holds %zu, want 7",
                   mcme_texture_count(tex));
         for (size_t i = 0; i < mcme_texture_count(tex); ++i)
             CHECK(mcme_texture_at(tex, i) != NULL);
-        CHECK(mcme_texture_at(tex, 6) == NULL);
+        CHECK(mcme_texture_at(tex, 7) == NULL);
         mcme_texture_index_close(tex);
     }
 
@@ -1873,6 +1929,206 @@ static void test_atlases(void)
     }
 }
 
+#define UFIXDIR "build/atlasuv_fixtures/pack"
+
+/*
+ * Texture coordinates in atlas space — the editor's chunk builder's
+ * table and its fragment stage's mapping (D35). The rectangles come
+ * from the reference's own create_atlas over this input; the
+ * mapping is the shader's mix(b0, b1, mod(t, 1.0)), which wraps a
+ * coordinate AT 1.0 back to the origin edge and a negative one up.
+ * Every probe below is chosen so a clamp or a straight lerp would
+ * answer differently, and the wrap model's out-of-range UVs are no
+ * invention: the reference hands them through unclamped
+ * (-0.25 .. 1.25, verified verbatim off its own mesh).
+ */
+static void test_atlas_uv(void)
+{
+    printf("  resource (atlas UVs)\n");
+
+    /* --- fixtures: two textures with distinct rectangles, three
+           models asking different questions of the mapping --- */
+    put(UFIXDIR "/pack.mcmeta",
+        "{\"pack\":{\"pack_format\":9,\"description\":\"atlasuv\"}}");
+    /* The textures live under minecraft/ because the models'
+       colon-less references default to that namespace — the
+       reference answers missing_no for a file that exists only
+       under the model's own namespace (verified verbatim: same
+       model, same file, one location at a time). */
+    const char *pop = UFIXDIR "/assets/minecraft/textures/block/opaque.png";
+    const char *pta = UFIXDIR "/assets/minecraft/textures/block/tallt.png";
+    put_solid_png(pop, 4, 4, 4, 255, 0, 0, 255);    /* red, 4x4   */
+    put_solid_png(pta, 4, 2, 4, 255, 0, 255, 255);  /* magenta, 2x4:
+                                                       the min(h, w) edge shows
+                                                       in a remapped bound */
+    /* A full cube culling every direction on one texture: six
+       buckets, every face's coordinates at rectangle corners. */
+    put(UFIXDIR "/assets/mc/models/block/cube6.json",
+        "{\"textures\":{\"a\":\"block/opaque\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16],"
+        "\"faces\":{"
+          "\"down\":{\"texture\":\"#a\",\"cullface\":\"down\"},"
+          "\"up\":{\"texture\":\"#a\",\"cullface\":\"up\"},"
+          "\"north\":{\"texture\":\"#a\",\"cullface\":\"north\"},"
+          "\"east\":{\"texture\":\"#a\",\"cullface\":\"east\"},"
+          "\"south\":{\"texture\":\"#a\",\"cullface\":\"south\"},"
+          "\"west\":{\"texture\":\"#a\",\"cullface\":\"west\"}}}]}");
+    /* A partial cube whose face UV runs past both edges: the
+       coordinates wrap, they do not clamp. */
+    put(UFIXDIR "/assets/mc/models/block/wrap.json",
+        "{\"textures\":{\"a\":\"block/tallt\"},"
+        "\"elements\":[{\"from\":[2,2,2],\"to\":[14,14,14],"
+        "\"faces\":{\"up\":{\"texture\":\"#a\",\"uv\":[-4,0,20,16]}}}]}");
+    /* A partial cube on a texture the pack lacks: the mesh keeps
+       the missing word, and the lookup answers the missing image's
+       own rectangle. */
+    put(UFIXDIR "/assets/mc/models/block/missingpart.json",
+        "{\"textures\":{\"a\":\"block/absent\"},"
+        "\"elements\":[{\"from\":[2,2,2],\"to\":[14,14,14],"
+        "\"faces\":{\"up\":{\"texture\":\"#a\",\"uv\":[0,0,8,8]}}}]}");
+
+    McmeModelIndex *models = NULL;
+    McmeTextureIndex *tex = NULL;
+    CHECK_MSG(mcme_model_index_open(UFIXDIR, &models),
+              "models open: %s", mcme_last_error());
+    CHECK_MSG(mcme_texture_index_open(UFIXDIR, &tex),
+              "textures open: %s", mcme_last_error());
+
+    /* The page, in the verb's sorted input order — the reference's
+       answers for these two images behind the missing image. */
+    const char *paths[2] = { pop, pta };
+    McmeAtlas atlas;
+    CHECK_MSG(mcme_atlas_build(paths, 2, &atlas),
+              "atlasuv atlas: %s", mcme_last_error());
+    CHECK(atlas.size == 32);
+    check_bounds(&atlas, 0, 0.0, 0.0, 0.5, 0.5, "uv missing");
+    check_bounds(&atlas, 1, 0.0, 0.5, 0.125, 0.625, "uv opaque");
+    check_bounds(&atlas, 2, 0.0, 0.625, 0.0625, 0.6875, "uv tallt");
+
+    /* --- the full cube: every corner's coordinate is 0 or 1, and
+           the wrap puts BOTH at the origin edge — auv is the
+           rectangle's origin on every row, where a straight lerp
+           would send the 1.0 corners to the far edge --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/cube6", &m));
+        CHECK_MSG(m.transparency == MCME_TRANSPARENCY_OPAQUE,
+                  "cube6 transparency %d, want opaque",
+                  (int)m.transparency);
+        McmeAtlasMesh t;
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, &t),
+                  "cube6 table: %s", mcme_last_error());
+        for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
+            CHECK_MSG(t.present[d], "cube6 bucket %d absent", d);
+            CHECK_MSG(t.buckets[d].row_count == 6,
+                      "cube6 bucket %d rows %zu, want 6", d,
+                      t.buckets[d].row_count);
+            /* A failure above is counted, not re-raised as a
+               crash: nothing to index when the bucket is empty. */
+            if (!t.buckets[d].bounds) continue;
+            for (size_t r = 0; r < 6; ++r) {
+                const double *b = &t.buckets[d].bounds[r * 4];
+                const double *uv = &t.buckets[d].auvs[r * 2];
+                CHECK(fabs(b[0] - 0.0) < 1e-9 &&
+                      fabs(b[1] - 0.5) < 1e-9 &&
+                      fabs(b[2] - 0.125) < 1e-9 &&
+                      fabs(b[3] - 0.625) < 1e-9);
+                CHECK_MSG(fabs(uv[0] - 0.0) < 1e-9 &&
+                          fabs(uv[1] - 0.5) < 1e-9,
+                          "cube6 bucket %d row %zu auv %g %g, want 0 0.5",
+                          d, r, uv[0], uv[1]);
+            }
+        }
+        CHECK(!t.present[MCME_CULL_NONE]);
+        mcme_atlas_mesh_free(&t);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the wrap: uv [-4,0,20,16] over the 2x4's rectangle. The
+           face's corners are u -0.25/1.25 and v 0/1; the mapping
+           wraps them to 0.75/0.25 and 0/0. A clamp would answer
+           0/1 and 0/1. --- */
+    {
+        static const double k_auvs[6][2] = {
+            {0.046875, 0.625}, {0.015625, 0.625}, {0.015625, 0.625},
+            {0.046875, 0.625}, {0.015625, 0.625}, {0.046875, 0.625}
+        };
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/wrap", &m));
+        McmeAtlasMesh t;
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, &t),
+                  "wrap table: %s", mcme_last_error());
+        CHECK_MSG(t.present[MCME_CULL_NONE],
+                  "wrap: no cullface, so the none bucket");
+        const McmeAtlasBucket *b_ = &t.buckets[MCME_CULL_NONE];
+        CHECK(b_->row_count == 6);
+        for (size_t r = 0; b_->bounds && r < 6; ++r) {
+            const double *b = &b_->bounds[r * 4];
+            const double *uv = &b_->auvs[r * 2];
+            CHECK(fabs(b[0] - 0.0) < 1e-9 &&
+                  fabs(b[1] - 0.625) < 1e-9 &&
+                  fabs(b[2] - 0.0625) < 1e-9 &&
+                  fabs(b[3] - 0.6875) < 1e-9);
+            CHECK_MSG(fabs(uv[0] - k_auvs[r][0]) < 1e-9 &&
+                      fabs(uv[1] - k_auvs[r][1]) < 1e-9,
+                      "wrap row %zu auv %g %g, want %g %g", r, uv[0],
+                      uv[1], k_auvs[r][0], k_auvs[r][1]);
+        }
+        mcme_atlas_mesh_free(&t);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the missing texture: the mesh keeps the missing word and
+           the lookup answers the missing image's rectangle — the
+           face's uv [0,0,8,8] lands halfway across the page's
+           top-left quadrant --- */
+    {
+        static const double k_auvs[6][2] = {
+            {0.0, 0.25}, {0.25, 0.25}, {0.25, 0.0},
+            {0.0, 0.25}, {0.25, 0.0}, {0.0, 0.0}
+        };
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/missingpart", &m));
+        static const char *const want_tex[] = { "missing_no" };
+        check_textures(&m, want_tex, 1);
+        McmeAtlasMesh t;
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, &t),
+                  "missingpart table: %s", mcme_last_error());
+        CHECK(t.present[MCME_CULL_NONE]);
+        const McmeAtlasBucket *b_ = &t.buckets[MCME_CULL_NONE];
+        CHECK(b_->row_count == 6);
+        for (size_t r = 0; b_->bounds && r < 6; ++r) {
+            const double *b = &b_->bounds[r * 4];
+            const double *uv = &b_->auvs[r * 2];
+            CHECK(fabs(b[0] - 0.0) < 1e-9 && fabs(b[1] - 0.0) < 1e-9 &&
+                  fabs(b[2] - 0.5) < 1e-9 && fabs(b[3] - 0.5) < 1e-9);
+            CHECK_MSG(fabs(uv[0] - k_auvs[r][0]) < 1e-9 &&
+                      fabs(uv[1] - k_auvs[r][1]) < 1e-9,
+                      "missingpart row %zu auv %g %g, want %g %g", r,
+                      uv[0], uv[1], k_auvs[r][0], k_auvs[r][1]);
+        }
+        mcme_atlas_mesh_free(&t);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- refusals --- */
+    {
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/wrap", &m));
+        McmeAtlasMesh t;
+        CHECK(!mcme_atlas_mesh(NULL, &m, &t));
+        CHECK(!mcme_atlas_mesh(&atlas, NULL, &t));
+        CHECK(!mcme_atlas_mesh(&atlas, &m, NULL));
+        mcme_clear_error();
+        mcme_mesh_free(&m);
+        mcme_atlas_mesh_free(NULL);
+    }
+
+    mcme_atlas_free(&atlas);
+    mcme_model_index_close(models);
+    mcme_texture_index_close(tex);
+}
+
 int mcme_test_resource(void)
 {
     g_failed = 0;
@@ -1882,5 +2138,6 @@ int mcme_test_resource(void)
     test_meshes();
     test_blockmeshes();
     test_atlases();
+    test_atlas_uv();
     return g_failed;
 }

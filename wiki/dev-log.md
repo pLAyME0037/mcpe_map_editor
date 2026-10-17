@@ -7,6 +7,113 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — Texture coordinates in atlas space
+
+### Built
+
+- The atlas grew its missing image: `mcme_atlas_build` now
+  always packs mcme's own synthesized sentinel FIRST (its input
+  is the sentinel plus the caller's sorted paths), and D34's
+  strip of the manager's copy is superseded. The sentinel is the
+  reader's own `missing_no` — a 16x16 RGB magenta/black 8x8
+  quadrant checker, alpha ff — synthesized at load and verified
+  byte-identical to the file the reader ships. The empty pack
+  answers the sentinel's own 16x16 page.
+- The bounds rule (`mcme_atlas_bounds`): the exact key, else the
+  sentinel's rectangle — the reference's `texture_bounds` rule,
+  fallback included.
+- The table (`McmeAtlasMesh`, `mcme_atlas_mesh`): per bucket and
+  per row — the face stream's own order, six rows per face — the
+  rectangle its triangle draws from, stepped per THREE rows
+  through the mesh's per-triangle texture index, and the mesh's
+  own coordinates mapped into it: `b0 + (b1 - b0) * (t -
+  floor(t))`, the fragment stage's `mix(b0, b1, mod(t, 1.0))`
+  transcribed — floor-based, so a coordinate below zero wraps
+  up, never clamps.
+- The verb `mcme atlasmesh <pack> <block>`: the block-level
+  mesh through the shared `build_block_mesh` prelude, plus the
+  page's `size` and each direction's `bounds`/`auvs` under
+  `--json`, the page line in human.
+- The resource suite's seventh test (`test_atlas_uv`): a
+  fixture pack whose textures live under `minecraft/` because a
+  colon-less reference defaults there (the reference answers
+  missing_no for a file that exists only under the model's own
+  namespace — verified verbatim, one location at a time), then
+  cube6 through the table, a UV running past both edges
+  (coords -0.25..1.25, auvs 0.09375/0.03125 as literals), a
+  missing texture standing on the sentinel's rectangle, and
+  every null refusal. `test_atlases` was rewritten to the
+  sentinel-first shape — the whole layout shifts by the
+  sentinel's slot, and the doubling probe became a 20x2 image
+  because the old trio no longer forced the page to grow.
+- `tools/ref_atlasmesh.py` drives the editor's own chunk
+  builder (`chunk_builder_cy.pyx`) headless: one block at world
+  origin in an 18-cube grid with air in the ring, the pack's
+  own `texture_bounds` rule verbatim over the atlas
+  `textureatlas` builds from the same input mcme is handed, and
+  `get_block_model` replaced by the manager's own — the very
+  call the pack makes after its universal-to-java translation,
+  so translation is the single step bypassed, recorded. The
+  fragment stage's mapping is transcribed because no Python
+  observes it: the table carries the raw coordinate and the
+  rectangle; the remap happens per fragment at render. Eight
+  crafted probes (both streams, both bucket shapes, three
+  rectangles inside one bucket, the wrap, the sentinel, a
+  multipart merge), 69 vanilla probes over the completed fix
+  pack — one per blockstate at its first variant key, the pack
+  given the air ring it does not ship — the broken-image
+  refusal pair, and 5 usage refusals: 83 checks.
+
+### Notes
+
+- The cullface rule is one line of the reference and it does
+  NOT infer culling from full-cube-ness: `cull_dir =
+  face.get("cullface", None)` — a full cube without cullface
+  attributes answers the none bucket. The selftest's six-bucket
+  cube6 carries explicit cullface attrs on every face, and the
+  block-level flow agrees with the reader at `[None]` for the
+  cullface-less cube; both shapes now have probes, and the
+  earlier suspicion of a model-level/block-level divergence
+  was the fixtures answering their own questions.
+- The reference's own culling (an opaque neighbour drops a
+  face; two translucent blocks meeting drop theirs) is kept
+  satisfied rather than re-implemented: the ring is air, which
+  is not a full block, so every row the model has is a row both
+  sides answer. The rule itself stays D33's ground.
+- The builder's table is float32, so the pin compares at
+  float32's precision (1e-6). Every in-domain number is dyadic
+  — pages are powers of two, coordinates divide by 16 — and
+  would compare exact; element rotation is the one place the
+  storage bound earns its keep.
+- The table's rows arrive as one flat stream in the builder's
+  cull-id order (none, up, down, north, east, south, west) and
+  split into two arrays by the mesh's transparency, so the pin
+  slices the stream by the mesh's own face counts and picks
+  the array the mesh's transparency names. mcme's bucket names
+  match the reference's words exactly.
+- The selftest run earned its own chase: three counted CHECK
+  failures cascaded into a NULL dereference (ASan's `_exit`
+  swallowed the failure lines, recovered only through a pty).
+  Empty buckets are now skipped after their CHECK counts the
+  failure, and the cube6/wrap/missingpart probes were missing
+  their `block/` prefix — a model path that does not exist
+  silently answers the empty model, which the CLI confirmed
+  while the test disagreed.
+- Gates: `./rebuild.sh test` PASS 5 suites; `./mcme selftest`
+  PASS 6 suites, 0 failures, no runtime errors under the
+  default ASan+UBSan+leak run; battery 18/18 rc=0 with
+  `ref_atlasmesh` added. Nothing under `tests/` staged; the
+  golden stores show no tracked changes.
+
+### Next
+
+- The coordinates now travel with the faces, in atlas space,
+  the way the editor's builder writes them. The table's last
+  column — the vertex tint the builder folds with its
+  per-direction brightness and the height-band shade — stays
+  out of this drop's domain; pinning it is the next question
+  where the tint columns become the renderer's.
+
 ## 2026-10-17 — The atlas: every texture the pack ships, on one page
 
 ### Built

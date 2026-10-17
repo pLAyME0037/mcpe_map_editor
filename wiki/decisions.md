@@ -2368,3 +2368,163 @@ top edges become h and the tall fixtures change), the empty
 input's formula stops answering 2, or the module learns
 multi-frame textures (its `Texture` already carries a frame
 list — one name could then own several bounds).
+
+## D35 — texture coordinates in atlas space
+
+**What the reference does.** The bounds rule sits one step above
+the page: the manager seeds its texture table with
+`("minecraft", "missing_no")` FIRST (`resource_pack_manager.py`
+at the table's construction — the pin asserts the seed so it can
+not silently stop working), the OpenGL layer's `setup()` runs
+`create_atlas` over `mgr.textures` and stores the result as
+`_texture_bounds`, and `texture_bounds(path)` answers the exact
+key or else `bounds[missing_no]` (`resource_pack.py:78-83`). The
+chunk builder (`chunk_builder_cy.pyx`, `_extend_blocks`) writes
+each block mesh's rows as one float32 table of twelve columns:
+the vertex position in model space (the block's world offset
+added later, in both stream branches), the RAW texture coordinate
+(the reader's own 0..1 space, unclamped — uv `[-4, 0, 20, 16]`
+survives as coordinates `-0.25..1.25`, verified), the rectangle,
+and the tint. The rectangle is written PER THREE ROWS — one
+triangle — by stepping `model.texture_index[cull_dir]`, so a
+bucket's rectangles change wherever the texture index changes
+between faces; `texture_bounds` picks them. The tint column alone
+is then folded with the per-direction `_brightness_multiplier`
+and the height-band shade; position, coordinates and rectangle
+are left alone. Rows go to the translucent array iff the mesh's
+transparency is 1, and a face is skipped when its neighbour's
+transparency is 0 (opaque) or when neighbour and self are both 1
+— against air (no elements, transparency 2, verified) neither
+clause fires. Cull buckets come from ONE line: `cull_dir =
+face.get("cullface", None)`, then `if cull_dir not in FACE_KEYS:
+cull_dir = None` — full-cube-ness does NOT infer culling, so a
+cullface-less full cube answers the none bucket, while a model
+with textures and no elements answers the missing BLOCK (the
+loader's early return) — which is why the ring's empty model
+carries no textures at all. And the mapping into the rectangle is
+not Python anywhere: the fragment stage does it per fragment
+(`render_chunk_330.frag`), `mix(b0, b1, mod(t, 1.0))` per axis —
+a floor-based mod, so a coordinate below zero wraps up, never
+clamps.
+
+**What mcme does.** The atlas now ALWAYS packs mcme's own missing
+image first — `mcme_atlas_build` synthesizes the sentinel (16x16
+RGB, an 8x8-quadrant magenta/black checker, `f800f8` where
+`(x < 8) == (y < 8)`, alpha ff — byte-identical to the reader's
+`missing_no.png`, verified) and takes the sentinel plus the
+caller's sorted paths, reversing D34's strip of the manager's
+copy; the empty pack answers the sentinel's own 16x16 page, and
+D34's 2x2 empty answer belonged to the stripped input and no
+longer reaches either side. `mcme_atlas_bounds` answers the exact
+key else the sentinel's rectangle — the reference's rule,
+fallback included. The table (`McmeAtlasMesh`, `mcme_atlas_mesh`)
+walks a mesh bucket by bucket in the face stream's own order —
+six rows per face — and per row answers the rectangle its
+triangle draws (`texture_indexes[f * 2 + k / 3]`, the same
+three-row step) and the mesh's coordinates mapped into it:
+`b0 + (b1 - b0) * (t - floor(t))`, the fragment stage's
+arithmetic transcribed. The word for the sentinel is
+`MCME_MISSING_TEXTURE` ("missing_no"), which the index and the
+mesh answer alike. The verb `mcme atlasmesh <pack> <block>`
+builds the block-level mesh through the shared
+`build_block_mesh` prelude (D33's selection, mesh, turn, merge)
+and answers the page's `size` plus each present direction's
+`bounds` (4 per row) and `auvs` (2 per row) under `--json`, the
+page line in human. The fixtures answer one namespace lesson:
+a colon-less texture reference resolves to `minecraft`, not to
+the model's own namespace — proven against the reference in both
+directions (a file only under the model's namespace →
+`missing_no`; the file only under `minecraft` → found), so the
+selftest's textures live under `assets/minecraft/textures/`.
+
+**How parity was measured.** `tools/ref_atlasmesh.py` (83
+checks) drives the editor's own chunk builder headless: it loads
+`textureatlas.py`, `resource_pack.py` (behind a shim standing in
+for the package that imports wx) and the compiled
+`chunk_builder_cy` extension by file path, builds an
+`OpenGLResourcePack` whose `_texture_bounds` is exactly
+`setup()`'s dict — `create_atlas` over the sentinel-first input
+both sides are handed — and shadows `get_block_model` with the
+manager's own method, which is the very call the pack makes
+after its universal-to-java translation; translation is the one
+step bypassed, recorded below. One block is placed at world
+origin in an 18-cube grid with air in the ring (meshed at loop
+zero, so its rows are the stream; each probe gets a fresh
+palette and a cleared model cache, because the builder's cache
+is keyed by `id()`), and the rows are sliced by the mesh's own
+face counts in the builder's cull-id order — none, up, down,
+north, east, south, west, the words mcme's JSON uses — with the
+array chosen by the mesh's transparency. Per row the pin
+compares position, coordinate and rectangle at float32 (1e-6;
+every in-domain number is dyadic and would compare exact, but
+the table is float32 and element rotation is not dyadic), then
+recomputes the auv from the builder's OWN raw coordinate and
+rectangle through the transcribed shader formula and compares
+it with mcme's — the mesh document itself travels at 1e-9
+(D33's ground, re-pinned on this verb so the new columns ride a
+mesh both sides agree on), and the atlas size is mcme's `size`
+against the reference image's. Eight crafted probes: the ring
+block itself (an empty mesh, no rows), a cullface-less full
+cube (the none bucket — `cull_dir = face.get("cullface", None)`
+verbatim), the same cube with a cullface per face (six buckets,
+the cull test walked beside air), a full cube on an alpha
+texture (the translucent stream, the other array), three faces
+on three textures inside one bucket (the three-row step), UVs
+past both edges (the mod wraps, it does not clamp), a texture
+the pack lacks (the sentinel's rectangle through the missing
+machinery), and a multipart merge (two cubes' rows concatenated
+in one bucket). The raw `java_vanilla_fix` adds 69 probes over
+real game data — one per blockstate file at its first variant
+key (the full key sweep is D33's ground), the completed pack
+given the air ring it does not ship (missing, the reference
+would answer the missing BLOCK and cull every face) — plus the
+broken-image refusal pair (the reference never finishes loading,
+Pillow refuses the file in its transparency-flag pass; mcme
+builds the mesh and refuses by name at the atlas, exit 6) and
+5 usage refusals (1 / 2 / 1 / 1 / 1, the block prelude's own).
+`ref_atlas.py` migrated to the sentinel-first input: 74 checks.
+The selftest's `test_atlases` was rewritten to the sentinel-first
+layout (the doubling probe became a 20x2 image; the old trio no
+longer forces the page to grow) and `test_atlas_uv` carries the
+same reference-verified expectations from the C side, ASan/UBSan
+clean. Gates: `./rebuild.sh test` PASS 5 suites, `./mcme
+selftest` PASS 6 suites (0 failures), battery 18/18 rc=0.
+
+**Out of domain, recorded.** The BRIGHTNESS-AND-SHADE fold: the
+builder multiplies its tint column by the per-direction
+brightness and the height-band shade; mcme's table carries the
+mesh's tint as D32 answered it, and the pin skips the tint
+columns entirely. The CULLING clauses: the pin keeps them
+satisfied (air's transparency 2 fires neither) rather than
+re-implementing them — every row the model has is a row both
+sides answer, and the rule itself stays D33's ground. The
+TRANSLATION step: `OpenGLResourcePack.get_block_model` first
+maps universal-to-java through PyMCTranslate; the pin shadows it
+with the manager's own method because mcme's domain is the java
+pack (D33's record) — the single bypassed step, here said so.
+The SENTRY IMAGE's carrier: the reference reads the file inside
+the reader's package, mcme synthesizes the same bytes — the
+bounds can not tell them apart, and the pin asserts the
+byte-identity on the C side. UV UNCLAMPED: the reader does not
+clamp element UVs; the wrap is the shader's mod at render, and
+nothing repairs the coordinates on the way into the table. The
+INPUT ORDER stands as D34 recorded it: both sides are handed the
+sentinel plus the sorted paths, and the app's own feeding order
+is out of domain. Blocks the reference tints are skipped by rule
+and counted (the fix pack ships none that trip it). The
+`id()`-keyed model cache the builder sets on the pack is a
+hazard of driving it out of the app — the pin clears it per
+probe — not a parity question.
+
+**Reverses if:** the fragment stage's `mix(b0, b1, mod(t, 1.0))`
+changes (then every auv follows it and the transcription with
+it), `texture_bounds` stops falling back to the missing image,
+the builder steps the rectangle per face instead of per triangle
+(a texture change mid-face is unreachable in the java format
+today — both triangles of a face share its texture — but a
+format that allowed it would move rows), the manager stops
+seeding `missing_no` first (the pin's input assertion fires),
+the loader stops routing cull buckets by the `cullface`
+attribute alone (then the cullface-less probes move), or the
+sentinel's bytes change on either side (the selftest's
+byte-identity check fires).

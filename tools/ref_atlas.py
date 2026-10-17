@@ -18,14 +18,17 @@ frame's sides. That module's package chain imports wx (needs a
 display we do not have), so the pin loads the file itself by path
 and runs the reference's own code verbatim.
 
-Both sides are handed the SAME input: the pack's texture paths
-sorted — the layout rides on the input order wherever the
-perimeter sort ties (a pack of 16x16 textures is one long tie),
-and the filesystem's directory order must not decide the answer.
-The reference side strips the manager's missing_no sentinel (its
-file lives inside the reader's package, not the pack) and asserts
-it was there; mcme's names come from its own index over the same
-pack, so the keys compare exactly — same paths, both sides.
+Both sides are handed the SAME input: the manager's own shape —
+its missing_no sentinel seeded FIRST (the file lives inside the
+reader's package, not the pack; mcme packs its own copy of the
+same image under the word "missing_no", D35), then the pack's
+texture paths sorted. The sentinel's place is fixed by the seed;
+the rest is sorted because the layout rides on the input order
+wherever the perimeter sort ties (a pack of 16x16 textures is one
+long tie) and the filesystem's directory order must not decide
+the answer. The pin canonicalises the reference's sentinel path
+to the word "missing_no"; every other key compares exactly —
+same paths, both sides.
 
 What is compared:
 
@@ -36,8 +39,9 @@ What is compared:
     order); a lone 2x4 (the bounds' min(h, w) top edge); 2x2,
     2x2, 3x2 (the first page estimate fails and doubles); all six
     images together (the tall/wide tie and a mixed layout); and
-    the empty pack (the reference's bit_length(-1) page of 2x2,
-    no bounds, a fully transparent page).
+    the empty pack (the missing image alone: the app's page is
+    never empty, the manager seeding its table, so the empty pack
+    answers the sentinel's own 16x16 rectangle).
 
   VANILLA FIX — the reader's own shipped pack as it ships: 22
     real images — 64x64 banners tying on perimeter, 16x16 blocks,
@@ -118,17 +122,25 @@ def make_manager(packdir: str):
 
 
 def ref_input(mgr) -> tuple[str, ...]:
-    """The pack's texture paths, sorted — the input both sides are
-    handed. The manager's table seeds its own missing_no sentinel
-    first (its file lives inside the reader's package, not the
-    pack); strip it, and assert it was there so the strip can not
-    silently stop working."""
+    """The input both sides are handed: the manager's own table
+    shape — its missing_no sentinel seeded FIRST (asserted, so the
+    seed can not silently stop working), then the pack's textures
+    sorted. D34 stripped the sentinel while mcme had no image of
+    its own; D35 gives it one and the strip is superseded."""
     from minecraft_model_reader.api.image import missing_no_path
 
     if missing_no_path not in mgr.textures:
         raise AssertionError("the manager's table has no missing_no sentinel")
     paths = [p for p in mgr.textures if p != missing_no_path]
-    return tuple(sorted(paths))
+    return (missing_no_path, *sorted(paths))
+
+
+def norm_name(path: str) -> str:
+    """The reference's sentinel path as the word both mcme and the
+    pins use for it (D32's canonicalisation)."""
+    from minecraft_model_reader.api.image import missing_no_path
+
+    return "missing_no" if path == missing_no_path else path
 
 
 def first_pixel_diff(a: bytes, b: bytes, size: int) -> str:
@@ -158,11 +170,13 @@ def check_pack(mcme: str, ref, packdir: str, tag: str, outdir: str,
 
     # The names: mcme's JSON order and the reference's dict order
     # are both the input order — the tie-break both sides keep.
-    want = list(paths)
+    # The reference's sentinel key canonicalises to the word
+    # mcme names its own copy with.
+    want = [norm_name(p) for p in paths]
     if list(doc["textures"]) != want:
         raise AssertionError(
             f"{tag}: mcme names {list(doc['textures'])}, want {want}")
-    if list(ref_bounds) != want:
+    if [norm_name(p) for p in ref_bounds] != want:
         raise AssertionError(
             f"{tag}: reference dict order {list(ref_bounds)}, want {want}")
     checks += 1
@@ -178,9 +192,9 @@ def check_pack(mcme: str, ref, packdir: str, tag: str, outdir: str,
 
     # The bounds: the keys were checked above as one order; 1e-9
     # on the values.
-    for name in want:
+    for raw, name in zip(paths, want):
         got = doc["textures"][name]
-        ref_b = list(ref_bounds[name])
+        ref_b = list(ref_bounds[raw])
         for i in range(4):
             if not math.isclose(got[i], ref_b[i], rel_tol=1e-9,
                                 abs_tol=1e-9):
@@ -254,7 +268,7 @@ CRAFTED = {
         "wide.png": ("RGBA", (4, 2), YELLOW),
     },
     # The manifest loads assets, the textures directory is empty:
-    # both sides answer the 2x2 page of nothing.
+    # both sides answer the missing image's own page.
     "empty": {},
 }
 
@@ -293,7 +307,7 @@ def main() -> int:
         _log(f"ok — crafted packs: {len(CRAFTED)} layouts answered "
              "alike — the perimeter sort and its stable ties, the "
              "min(h, w) top edge, the doubling page, the mixed pack "
-             "and the empty one's 2x2 page")
+             "and the empty one's missing-image page")
 
         # --- the reader's own shipped pack, real game data ---
         vanilla_fix = os.path.join(
@@ -343,10 +357,12 @@ def main() -> int:
                            os.path.join(tmp, "pack_tri"))
         if rc != 0:
             raise AssertionError(f"human mode: exit {rc}: {err.strip()}")
-        if "3 textures on a 4x4 page" not in out:
+        if "4 textures on a 32x32 page" not in out:
             raise AssertionError(f"human output {out!r}")
         checks += 1
-        _log("ok — human output: '3 textures on a 4x4 page'")
+        _log("ok — human output: '4 textures on a 32x32 page' — the "
+             "three pack textures and the missing image on the page "
+             "they grew")
 
         # --- usage refusals ---
         rc, _out, _err = run(args.mcme, "atlas")
