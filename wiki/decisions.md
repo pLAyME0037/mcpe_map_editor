@@ -2158,3 +2158,109 @@ learns to keep more than textures and elements, pack stacking
 arrives (later packs overwriting the texture table), or the
 blockstate rotation (D33) needs the mesh API to take a rotation
 before the verb can answer a selected model rotated.
+
+## D33 — The block-level mesh: selection, mesh, turn, merge
+
+**What the reference does.** `_get_model(block)` is `_get_model`
+composed of `_load_blockstate_model`, one apply at a time. The
+blockstate file is found by `(namespace, base_name)`; if it holds
+`variants`, each key is tried in file order — the `""` key matches
+unconditionally, other keys regex-match against the block's
+properties (a property the block LACKS matches, defaulting to the
+pair's own value) — and each matching key's apply is loaded inside
+a try: a load that raises is logged and the loop carries on to the
+next matching key, the first that loads being the answer; no match
+survives (or none matched) and the missing BLOCK answers.
+`multipart` is consulted only when `variants` is absent: every
+case whose `when` matches (OR/AND/plain, a `when` value the reader
+cannot parse skipping the whole case) contributes its apply's
+mesh, each load inside its own try so a refusal skips that case
+only, and the function ALWAYS ends in `BlockMesh.merge(models)` —
+a merge of nothing is the empty mesh, an answer.
+
+`_load_blockstate_model(apply)` takes a list apply's first element
+(a KeyError there being the caller's skip), then reads `model`,
+`x`, `y` and `uvlock`. A dict with no `model` key returns the
+missing block ACCEPTED — unrotated, untinted, merged in whole for
+multipart. `x`/`y` are Python floordiv by 90 (`-45` is step `-1`);
+`uvlock` is read and ignored, the reference's standing TODO. The
+model is loaded, deep-copied and `.rotate(rotx, roty)`-ed; any of
+those raising is the caller's catch — the apply is skipped.
+
+`BlockMesh.rotate` carries one precedence quirk in its guard:
+`if rotx or roty and (roty, rotx) in cull_remap_all:` — a NONZERO
+`rotx` skips the table test, so an out-of-range pair then raises a
+KeyError on the lookup; `rotx` zero with an out-of-range `roty`
+returns the mesh untouched; `(0, 0)` short-circuits. When it does
+turn, each present cull bucket's vertices rotate by `-90*rotx`
+about X then `-90*roty` about Y around `(0.5, 0.5, 0.5)` (the
+cull table maps the buckets by the same turns, `None` to `None`);
+texture coordinates and tint do not turn. `BlockMesh.merge`
+concatenates the parts' buckets per direction under running
+vertex counts (faces offset by the count BEFORE each part,
+texture indexes offset by each part's own list), makes the texture
+list the sorted set-union via `numpy.unique`, and takes the most
+transparent part.
+
+**What mcme does.** The walk gained one level:
+`mcme_blockstate_select` hands each winning apply to a callback
+that accepts or skips it — the lookup's own rules, one
+implementation, the lookup being the walk with an accepting
+callback. `mcme_mesh_rotate` mirrors the guard's three cases
+exactly (false for the raising one, true-and-untouched for the
+others); `mcme_mesh_merge` mirrors the sorted texture set and the
+index remap by string. The new `mcme_mesh_for_block` composes:
+no model means the missing cube accepted UNROTATED, a refusing
+build or turn is the reference's caught exception (skip), variants
+answer the first accepted apply, multipart merges what survived,
+and a selection nothing survived answers the missing cube — with
+`floor(x/90)` steps, so `-45` turns by `-1` the way Python floors.
+The verb `mcme blockmesh <pack> <block[states]>` answers human or
+`--json` (the same mesh document as `mcme mesh`) and is total:
+per-apply refusals are skips, answers exit 0, and only 1/2/6 exist
+as failures.
+
+**How parity was measured.** `tools/ref_getmodel.py` calls
+`mgr._get_model(Block)` directly and compares the BlockMesh field
+for field (the missing image normalized to the token mcme prints,
+the mesh pin's 1e-9 float rule). 19 crafted probes (x/y turns over
+real geometry, both passes at once, negative and non-multiple
+steps, the guard's two quirks, the refusal chain with and without
+the matching state, model-less applies, list applies, uvlock, a
+non-number x, multipart merges with and without a matching `when`,
+the empty merge, and both missing shapes), 702 probes over the
+reader's own `java_vanilla_fix` behind completed textures (one per
+variant key plus the empty probe, the cartesian of when-values for
+multipart under a per-file budget), the tint exclusion, one
+recorded-difference probe and 5 usage refusals: 731 checks. The
+selftest's `test_blockmeshes` covers the same ground from the C
+side — the turn's hand-computed corners, the bucket remap, the
+multi-face bucket walk, the quirks, the chain, the merges and the
+missing shapes — ASan/UBSan clean.
+
+**Out of domain, recorded.** Two shapes differ by record, not by
+accident. The block TINT: the reference colours redstone wire,
+the stems and the `BlockTints` names (grass, leaves, vine …) by
+block while mcme answers the fixed default `(1, 1, 1)` tint
+everywhere — the pin computes the reference's own tint function
+per probe and skips exactly what it colours, and pins that filter
+against four crafted tinted blocks (including the missing-property
+case where the reference's lookup itself raises). The MERGE
+texture sort: the reference sorts the raw paths, its sentinel
+image living at the package's own path, while mcme sorts its
+`missing_no` token — so a merge naming the missing texture orders
+its list differently on each side; one probe pins each side's own
+order (raw paths sorted there, tokens sorted here), the sets and
+the geometry agreeing with the indexes remapped through. The D30
+record for garbage blockstate shapes stands untouched: a
+non-object `variants` and a non-array `multipart` answer the way
+the lookup has always answered them.
+
+**Reverses if:** the reference implements uvlock (then texture
+coordinates must turn under the lock's rules), the guard's
+precedence is parenthesized (then out-of-range steps with zero
+`rotx` raise too, and the untouched case disappears), the tint
+reaches mcme (then the block-level mesh must multiply tint
+vertices per block, and the pin's exclusion inverts into a
+comparison), the merge sorts strings by a different key, or
+`BlockMesh.merge` grows a face_mode argument.

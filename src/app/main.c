@@ -82,6 +82,12 @@ static void print_usage(FILE *out)
         "                    vertices, UVs and faces grouped by cull\n"
         "                    direction, its resolved textures, the\n"
         "                    block's transparency\n"
+        "  blockmesh <pack> <block>\n"
+        "                    One block state as the game would mesh\n"
+        "                    it: the selection's winning model(s)\n"
+        "                    meshed and turned by x/y, multipart's\n"
+        "                    cases merged, a refusing model skipped\n"
+        "                    the way the reference catches it\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -910,6 +916,65 @@ static void json_add_u32s(struct cJSON *obj, const char *name,
         cJSON_AddItemToArray(arr, cJSON_CreateNumber(vals[i]));
 }
 
+/* The mesh document, the shape every mesh-printing verb shares
+   (D32's `mcme mesh`, D33's `mcme blockmesh`). */
+static struct cJSON *json_mesh(const McmeMesh *mesh)
+{
+    struct cJSON *doc = cJSON_CreateObject();
+    if (!doc) return NULL;
+    cJSON_AddNumberToObject(doc, "face_mode", 3);
+    struct cJSON *tex = cJSON_AddArrayToObject(doc, "textures");
+    for (size_t i = 0; i < mesh->texture_count; ++i)
+        cJSON_AddItemToArray(tex, cJSON_CreateString(mesh->textures[i]));
+    cJSON_AddNumberToObject(doc, "transparent", (double)mesh->transparency);
+    struct cJSON *dirs = cJSON_AddObjectToObject(doc, "dirs");
+    for (int i = 0; i < 7; ++i) {
+        if (!mesh->present[i]) continue;
+        const McmeMeshBucket *b = &mesh->buckets[i];
+        struct cJSON *d = cJSON_AddObjectToObject(dirs, k_dir_names[i]);
+        if (!d) continue;
+        json_add_floats(d, "verts", b->verts, b->vert_count * 3);
+        json_add_floats(d, "tverts", b->tverts, b->vert_count * 2);
+        json_add_floats(d, "tint_verts", b->tint_verts,
+                        b->vert_count * 3);
+        json_add_u32s(d, "faces", b->faces, b->face_count * 6);
+        json_add_u32s(d, "texture_indexes", b->texture_indexes,
+                      b->face_count * 2);
+    }
+    return doc;
+}
+
+static bool print_mesh(const McmeMesh *mesh, const char *heading)
+{
+    if (g_opts.json) {
+        struct cJSON *doc = json_mesh(mesh);
+        if (!doc) return false; /* the caller reports the heap */
+        char *text = cJSON_PrintUnformatted(doc);
+        printf("%s\n", text ? text : "{}");
+        if (text) cJSON_free(text);
+        cJSON_Delete(doc);
+        return true;
+    }
+
+    static const char *const trans_words[3] = {
+        "opaque", "translucent", "partial" };
+    printf("%s\n", heading);
+    printf("  transparency  %s\n", trans_words[mesh->transparency]);
+    printf("  textures      %zu\n", mesh->texture_count);
+    for (size_t i = 0; i < mesh->texture_count; ++i)
+        printf("    %s\n", mesh->textures[i]);
+    bool any = false;
+    for (int i = 0; i < 7; ++i) {
+        if (!mesh->present[i]) continue;
+        any = true;
+        printf("  %-6s        %zu faces, %zu verts\n",
+               k_dir_names[i], mesh->buckets[i].face_count,
+               mesh->buckets[i].vert_count);
+    }
+    if (!any) printf("  (this mesh has no faces)\n");
+    return true;
+}
+
 static int cmd_mesh(const char *pack_dir, const char *ref)
 {
     if (!mcme_fs_exists(pack_dir)) {
@@ -952,58 +1017,153 @@ static int cmd_mesh(const char *pack_dir, const char *ref)
     mcme_model_index_close(models);
     mcme_texture_index_close(tex_index);
 
-    if (g_opts.json) {
-        struct cJSON *doc = cJSON_CreateObject();
-        if (!doc) {
-            mcme_set_error("mesh: out of memory");
-            mcme_mesh_free(&mesh);
-            return MCME_EXIT_INTERNAL;
-        }
-        cJSON_AddNumberToObject(doc, "face_mode", 3);
-        struct cJSON *tex = cJSON_AddArrayToObject(doc, "textures");
-        for (size_t i = 0; i < mesh.texture_count; ++i)
-            cJSON_AddItemToArray(tex,
-                                 cJSON_CreateString(mesh.textures[i]));
-        cJSON_AddNumberToObject(doc, "transparent",
-                                (double)mesh.transparency);
-        struct cJSON *dirs = cJSON_AddObjectToObject(doc, "dirs");
-        for (int i = 0; i < 7; ++i) {
-            if (!mesh.present[i]) continue;
-            const McmeMeshBucket *b = &mesh.buckets[i];
-            struct cJSON *d = cJSON_AddObjectToObject(dirs, k_dir_names[i]);
-            if (!d) continue;
-            json_add_floats(d, "verts", b->verts, b->vert_count * 3);
-            json_add_floats(d, "tverts", b->tverts, b->vert_count * 2);
-            json_add_floats(d, "tint_verts", b->tint_verts,
-                            b->vert_count * 3);
-            json_add_u32s(d, "faces", b->faces, b->face_count * 6);
-            json_add_u32s(d, "texture_indexes", b->texture_indexes,
-                          b->face_count * 2);
-        }
-        char *text = cJSON_PrintUnformatted(doc);
-        printf("%s\n", text ? text : "{}");
-        if (text) cJSON_free(text);
-        cJSON_Delete(doc);
-    } else {
-        static const char *const trans_words[3] = {
-            "opaque", "translucent", "partial" };
-        printf("%s:%s\n", ns, base);
-        printf("  transparency  %s\n", trans_words[mesh.transparency]);
-        printf("  textures      %zu\n", mesh.texture_count);
-        for (size_t i = 0; i < mesh.texture_count; ++i)
-            printf("    %s\n", mesh.textures[i]);
-        bool any = false;
-        for (int i = 0; i < 7; ++i) {
-            if (!mesh.present[i]) continue;
-            any = true;
-            printf("  %-6s        %zu faces, %zu verts\n",
-                   k_dir_names[i], mesh.buckets[i].face_count,
-                   mesh.buckets[i].vert_count);
-        }
-        if (!any) printf("  (this model has no faces)\n");
+    char heading[512];
+    snprintf(heading, sizeof heading, "%s:%s", ns, base);
+    bool shown = print_mesh(&mesh, heading);
+    mcme_mesh_free(&mesh);
+    if (!shown) {
+        mcme_set_error("mesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    return MCME_OK;
+}
+
+/*
+ * blockmesh — one block state as the game would mesh it: the
+ * blockstate selection walked, the winning model(s) meshed and
+ * turned by x/y (uvlock read and ignored, the reference's own
+ * no-op), multipart's cases merged. The block-level answer is
+ * total — a model that refuses to mesh is skipped the way the
+ * reference catches it, and the missing block stands in when
+ * nothing survives. Human and --json (the mesh document).
+ */
+static int cmd_blockmesh(const char *pack_dir, const char *spec)
+{
+    if (!mcme_fs_exists(pack_dir)) {
+        mcme_set_error("blockmesh: '%s' is not a directory", pack_dir);
+        return MCME_EXIT_NOT_FOUND;
     }
 
+    McmeArena *arena = mcme_arena_new();
+    if (!arena) {
+        mcme_set_error("blockmesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    char name[256];
+    const McmeTag *states = NULL;
+    int rc = parse_block_spec("blockmesh", spec, arena, name,
+                              sizeof name, &states);
+    if (rc != MCME_OK) {
+        mcme_arena_free(arena);
+        return rc;
+    }
+
+    /* Split the name into namespace and block, the way
+       cmd_blockstate does. */
+    char ns[256];
+    const char *colon = strchr(name, ':');
+    const char *base;
+    if (colon) {
+        size_t ns_len = (size_t)(colon - name);
+        if (ns_len == 0 || ns_len >= sizeof ns) {
+            mcme_set_error("blockmesh: block '%s' has an empty or "
+                           "too-long namespace", spec);
+            mcme_arena_free(arena);
+            return MCME_EXIT_USAGE;
+        }
+        memcpy(ns, name, ns_len);
+        ns[ns_len] = '\0';
+        base = colon + 1;
+    } else {
+        snprintf(ns, sizeof ns, "minecraft");
+        base = name;
+    }
+    if (*base == '\0') {
+        mcme_set_error("blockmesh: block '%s' has an empty name", spec);
+        mcme_arena_free(arena);
+        return MCME_EXIT_USAGE;
+    }
+
+    /* The block's states, as the lookup wants them — the game's
+       own domain: a non-string state is a refusal, not a
+       coercion, exactly as cmd_blockstate enforces it. */
+    McmeState props[64];
+    size_t prop_count = 0;
+    if (states) {
+        for (size_t i = 0; i < states->compound.len; ++i) {
+            const McmeCompoundEntry *e = &states->compound.entries[i];
+            if (e->value->type != MCME_TAG_String) {
+                mcme_set_error("blockmesh: state '%.*s' is not a "
+                               "string — Java blockstate properties "
+                               "are strings",
+                               (int)e->name.len, e->name.data);
+                mcme_arena_free(arena);
+                return MCME_EXIT_USAGE;
+            }
+            if (prop_count >= sizeof props / sizeof props[0]) {
+                mcme_set_error("blockmesh: block '%s' has more than "
+                               "%zu states", spec,
+                               sizeof props / sizeof props[0]);
+                mcme_arena_free(arena);
+                return MCME_EXIT_USAGE;
+            }
+            props[prop_count].name  = e->name.data;
+            props[prop_count].value = e->value->string.data;
+            prop_count++;
+        }
+    }
+
+    McmeBlockstateIndex *blockstates = NULL;
+    if (!mcme_blockstate_index_open(pack_dir, &blockstates)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("blockmesh: %s", why);
+        mcme_arena_free(arena);
+        return MCME_EXIT_INTERNAL;
+    }
+    McmeModelIndex *models = NULL;
+    if (!mcme_model_index_open(pack_dir, &models)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("blockmesh: %s", why);
+        mcme_blockstate_index_close(blockstates);
+        mcme_arena_free(arena);
+        return MCME_EXIT_INTERNAL;
+    }
+    McmeTextureIndex *tex_index = NULL;
+    if (!mcme_texture_index_open(pack_dir, &tex_index)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("blockmesh: %s", why);
+        mcme_model_index_close(models);
+        mcme_blockstate_index_close(blockstates);
+        mcme_arena_free(arena);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    McmeMesh mesh;
+    bool ok = mcme_mesh_for_block(blockstates, models, tex_index, ns, base,
+                                  props, prop_count, &mesh);
+    mcme_texture_index_close(tex_index);
+    mcme_model_index_close(models);
+    mcme_blockstate_index_close(blockstates);
+    mcme_arena_free(arena);
+    if (!ok) {
+        /* The heap refused, never the pack: the block-level answer
+           is total. */
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("blockmesh: %s", why);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    bool shown = print_mesh(&mesh, spec);
     mcme_mesh_free(&mesh);
+    if (!shown) {
+        mcme_set_error("blockmesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
     return MCME_OK;
 }
 
@@ -3640,6 +3800,15 @@ static int dispatch(int argc, char **argv)
             return MCME_EXIT_USAGE;
         }
         return cmd_mesh(args[0], args[1]);
+    }
+
+    if (strcmp(cmd, "blockmesh") == 0) {
+        if (rest != 2) {
+            mcme_set_error("blockmesh: usage: mcme blockmesh "
+                           "<pack-dir> <block>");
+            return MCME_EXIT_USAGE;
+        }
+        return cmd_blockmesh(args[0], args[1]);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can

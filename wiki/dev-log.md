@@ -7,6 +7,98 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — The block-level mesh: one block state, as the game would mesh it
+
+### Built
+
+- The selection walk gained a level (D33): `mcme_blockstate_select`
+  hands each winning apply to a callback that accepts or skips it,
+  mirroring the reference's `_get_model` — a variant whose model
+  refuses is logged and passed over for the next matching key, a
+  multipart case's refusal skips that case only, and the lookup is
+  the same walk with an accepting callback, one implementation of
+  the matching rules.
+- Whole-mesh rotation (`mcme_mesh_rotate`): the reference's
+  `BlockMesh.rotate` with its guard quirk intact — a nonzero `rotx`
+  skips the cull-table membership test so an out-of-range step
+  raises there (mcme: false, by name), `rotx` zero out of range
+  returns the mesh untouched, `(0, 0)` short-circuits. Vertices
+  turn by `-90*rotx` about X then `-90*roty` about Y around the
+  block centre; buckets remap by the same turns through the
+  reference's own table construction; texture coordinates do not
+  turn, uvlock's TODO standing.
+- The multipart merge (`mcme_mesh_merge`): per direction the parts'
+  buckets concatenate under running vertex counts, faces offset by
+  the count before each part, the texture list the sorted
+  set-union of the parts' lists with every index remapped through
+  it by string, transparency the most transparent part; zero parts
+  merge to the empty mesh.
+- The composition (`mcme_mesh_for_block`, new `blockmesh.c`): an
+  apply without a model is the missing cube accepted UNROTATED
+  (the reference's rotate sits under its load), a refusing build
+  or turn is its caught exception — the apply is skipped, never
+  fatal — steps are degrees floored Python's way (`-45` is `-1`),
+  variants answer the first apply that meshes, multipart merges
+  what survived, and a selection nothing survived answers the
+  missing cube.
+- The verb `mcme blockmesh <pack> <block[states]>`: human or
+  `--json` (the same mesh document `mcme mesh` prints — the
+  emitter factored into `json_mesh`, shared with the model verb),
+  total like the reference: per-apply refusals are skips, every
+  answer exits 0, and only 1 usage / 2 not found / 6 internal
+  remain.
+- The resource suite's fifth test pins the layer from the C side:
+  the turn's hand-computed corners, the bucket remap alone and
+  both passes at once, a whole bucket of six faces turning in
+  place, the guard's two quirks, the refusal chain with and
+  without the matching state, list applies, uvlock, a model-less
+  apply's unturned missing cube, multipart merges (bucket
+  concatenation, index offsets, the sorted texture set, the turned
+  case), the empty merge as the EMPTY mesh, and the missing block
+  from both routes.
+- `tools/ref_getmodel.py` calls `mgr._get_model` directly and
+  compares the BlockMesh back: 19 crafted probes, 702 probes over
+  the reader's own `java_vanilla_fix` behind completed textures,
+  the tint exclusion pinned against four tinted blocks, one
+  recorded-difference probe, 5 usage refusals — 731 checks.
+- Gates: `./rebuild.sh test` PASS 6 suites; `./mcme selftest`
+  PASS 6 suites under the default ASan+UBSan+leak run; battery
+  16/16 rc=0 with `ref_getmodel` added. Nothing under `tests/`
+  staged; the golden stores show no tracked changes.
+
+### Notes
+
+- The pin caught a real bug on its first run, and the selftest
+  got the probe that would have: the rotate loop stepped face
+  starts by four in VERT units but indexed the double array as if
+  they were doubles (`&verts[v]` for `&verts[v * 3]`), so every
+  rotated bucket of more than one face read and clobbered its
+  neighbours. Every selftest rotation until then had exactly one
+  face per bucket, `v == 0` — the one place the bug hides. The
+  crafted pack's cull-free cube (six faces, the one `none` bucket)
+  exposed it; the selftest now carries that shape.
+- The tint exclusion earned a pin of its own: the vanilla fix pack
+  ships no blockstates for the blocks the reference colours, so
+  the filter ran zero times over 702 probes and would have rotted
+  unnoticed. Four crafted blocks — grass by name, redstone wire
+  and stems by property, and the missing-property case where the
+  reference's lookup itself raises — now assert the filter skips
+  them.
+- The merge's texture sort is the reference's `numpy.unique`:
+  sorted on the strings each side holds. The reference's sentinel
+  image lives at the package's own path, mcme's at the token it
+  prints — a merge naming the missing texture orders its list
+  differently on each side, both orders pinned, indexes remapped
+  through the shared strings for the geometry.
+- Recorded in decisions.md#D33: the tint domain, the merge sort
+  keys, and the D30 garbage-shape records standing untouched.
+
+### Next
+
+- The atlas: meshes travel with named textures still; the
+  reference packs them into one image per page, and the renderer
+  will want the coordinates it hands back.
+
 ## 2026-10-17 — The mesh layer: one model, as the game would build it
 
 ### Built

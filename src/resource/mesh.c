@@ -46,7 +46,10 @@
  * the pack does not know is the empty mesh — an answer.
  *
  * The blockstate selection's rotation of the whole mesh (x, y,
- * and the reference's ignored uvlock) is the next layer.
+ * and the reference's ignored uvlock), the multipart merge and
+ * the block-level composition of both are layer D33's — see
+ * mcme_mesh_missing_block, mcme_mesh_rotate, mcme_mesh_merge and
+ * mcme_mesh_for_block (blockmesh.c) below.
  */
 
 /* The reference's cube tables (its cube module). */
@@ -760,8 +763,15 @@ static bool build_element(BuildCtx *ctx, const struct cJSON *el,
 
 /* The missing BLOCK: the reference's unit cube of the missing
    image, opaque, every face under its own direction. */
-static bool build_missing_cube(McmeMesh *out)
+bool mcme_mesh_missing_block(McmeMesh *out)
 {
+    if (!out) {
+        mcme_set_error("missing block: null argument");
+        return false;
+    }
+    memset(out, 0, sizeof *out);
+    out->transparency = MCME_TRANSPARENCY_PARTIAL;
+
     BuildCtx ctx;
     memset(&ctx, 0, sizeof ctx);
     ctx.mesh = out;
@@ -820,7 +830,7 @@ bool mcme_mesh_build(const McmeModelIndex *models,
         /* The reference answers its missing BLOCK here, not an
            empty mesh: textures, nothing to draw them on. */
         cJSON_Delete(doc);
-        return build_missing_cube(out);
+        return mcme_mesh_missing_block(out);
     }
 
     BuildCtx ctx;
@@ -862,4 +872,264 @@ bool mcme_mesh_build(const McmeModelIndex *models,
     }
     cJSON_Delete(doc);
     return true;
+}
+
+/* ========================================================================
+ * Rotation and merge — the selection's x/y over a finished mesh,
+ * and multipart's many meshes into one (D33)
+ * ======================================================================== */
+
+/* Python's `%` on the step numbers: the reference's table walks
+   roty_map[roty:] + roty_map[:roty], which a negative slice turns
+   the other way. */
+static int mod4(int k)
+{
+    return ((k % 4) + 4) % 4;
+}
+
+/* The reference's `_create_cull_map` entry for one (roty, rotx)
+   step pair, built the way the reference builds its table: the
+   horizontal ring turns by roty first, then the vertical remap —
+   whose first and third members are horizontal names, straight
+   from the turned ring — turns by rotx. remap[i] is the bucket the
+   i-th direction (McmeCullDir order) moves to; "none" maps to
+   "none". */
+static void cull_remap_build(int rotx, int roty, int remap[7])
+{
+    static const char *const ring[4] = { "north", "east", "south",
+                                         "west" };
+    const char *ring_rot[4];
+    for (int i = 0; i < 4; ++i)
+        ring_rot[i] = ring[mod4(roty + i)];
+
+    const char *vring[4] = { ring_rot[0], "down", ring_rot[2], "up" };
+    const char *vring_rot[4];
+    for (int i = 0; i < 4; ++i)
+        vring_rot[i] = vring[mod4(rotx + i)];
+
+    static const char *const names[7] = { "down", "up", "north",
+                                          "east", "south", "west",
+                                          NULL };
+    for (int i = 0; i < 7; ++i) {
+        remap[i] = i; /* "none" maps to "none"; so does an unmoved name */
+        if (!names[i]) continue;
+
+        const char *turned = names[i];
+        for (int j = 0; j < 4; ++j)
+            if (strcmp(ring[j], turned) == 0) {
+                turned = ring_rot[j];
+                break;
+            }
+        for (int j = 0; j < 4; ++j)
+            if (strcmp(vring[j], turned) == 0) {
+                turned = vring_rot[j];
+                break;
+            }
+        for (int j = 0; j < 7; ++j)
+            if (names[j] && strcmp(names[j], turned) == 0) {
+                remap[i] = j;
+                break;
+            }
+    }
+}
+
+bool mcme_mesh_rotate(McmeMesh *m, int32_t rotx, int32_t roty)
+{
+    if (!m) {
+        mcme_set_error("mesh rotate: null argument");
+        return false;
+    }
+
+    /* The reference's guard is `if rotx or roty and (roty, rotx) in
+       cull_remap_all:` — operator precedence gives rotx first
+       refusal: a nonzero rotx skips the membership test, and the
+       lookup then raises for a pair outside the -3..3 table; rotx
+       zero with an out-of-range roty returns the mesh untouched;
+       (0, 0) short-circuits. */
+    bool in_table = rotx >= -3 && rotx <= 3 && roty >= -3 && roty <= 3;
+    if (rotx == 0 && roty == 0) return true;
+    if (!in_table) {
+        if (rotx == 0) return true; /* the guard's false half: self */
+        mcme_set_error("mesh rotate: the steps x %d y %d are outside "
+                       "the cull map", (int)rotx, (int)roty);
+        return false;
+    }
+
+    /* Each present bucket's vertices turn — the X pass then the Y
+       pass, both about (0.5, 0.5, 0.5) and both negated — and every
+       bucket's data moves to its remapped direction. Texture
+       coordinates do not turn: uvlock's TODO in the reference is a
+       permanent no-op. The remap is a permutation, so the buckets
+       reshuffle under a scratch copy. */
+    int remap[7];
+    cull_remap_build((int)rotx, (int)roty, remap);
+
+    McmeMeshBucket scratch[7];
+    bool was[7];
+    for (int i = 0; i < 7; ++i) {
+        scratch[i] = m->buckets[i];
+        was[i] = m->present[i];
+        m->present[i] = false;
+    }
+
+    for (int dir = 0; dir < 7; ++dir) {
+        if (!was[dir]) continue;
+        int dst = remap[dir];
+        m->buckets[dst] = scratch[dir]; /* the arrays move */
+        m->present[dst] = true;
+
+        McmeMeshBucket *b = &m->buckets[dst];
+        for (size_t v = 0; v < b->vert_count; v += 4) {
+            rotate_3d((double (*)[3])(&b->verts[v * 3]), -rotx * 90.0, 0, 0,
+                      0.5, 0.5, 0.5, false);
+            rotate_3d((double (*)[3])(&b->verts[v * 3]), 0, -roty * 90.0, 0,
+                      0.5, 0.5, 0.5, false);
+        }
+    }
+    return true;
+}
+
+/* qsort's order over the gathered texture list — the reference's
+   numpy.unique sorts its strings the same lexicographic way. */
+static int cmp_str_ptr(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* The position of one texture path in a sorted mesh's list. Every
+   merge input was gathered first, so a miss cannot happen; the
+   bool is the belt for that unreachable. */
+static bool texture_position(const McmeMesh *m, const char *path,
+                             uint32_t *out)
+{
+    size_t lo = 0, hi = m->texture_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = strcmp(m->textures[mid], path);
+        if (c == 0) { *out = (uint32_t)mid; return true; }
+        if (c < 0) lo = mid + 1;
+        else       hi = mid;
+    }
+    return false;
+}
+
+bool mcme_mesh_merge(const McmeMesh *const *parts, size_t count,
+                     McmeMesh *out)
+{
+    if (!out || (count > 0 && !parts)) {
+        mcme_set_error("mesh merge: null argument");
+        return false;
+    }
+
+    memset(out, 0, sizeof *out);
+    out->transparency = MCME_TRANSPARENCY_PARTIAL;
+
+    /* Every part's textures, gathered in part order and then
+       sorted and deduplicated — the reference runs numpy.unique
+       over the concatenation — so that each part's indexes can
+       remap through the result by string. */
+    size_t total = 0;
+    for (size_t p = 0; p < count; ++p) total += parts[p]->texture_count;
+
+    char **sorted = total ? malloc(total * sizeof *sorted) : NULL;
+    if (total && !sorted) {
+        mcme_set_error("mesh merge: out of memory");
+        return false;
+    }
+    size_t nsorted = 0;
+    for (size_t p = 0; p < count; ++p) {
+        for (size_t i = 0; i < parts[p]->texture_count; ++i) {
+            char *copy = ndup(parts[p]->textures[i],
+                              strlen(parts[p]->textures[i]));
+            if (!copy) {
+                while (nsorted) free(sorted[--nsorted]);
+                free(sorted);
+                mcme_set_error("mesh merge: out of memory");
+                return false;
+            }
+            sorted[nsorted++] = copy;
+        }
+    }
+    qsort(sorted, nsorted, sizeof *sorted, cmp_str_ptr);
+    size_t kept = 0;
+    for (size_t i = 0; i < nsorted; ++i) {
+        if (kept && strcmp(sorted[kept - 1], sorted[i]) == 0) {
+            free(sorted[i]); /* the set-union drops a repeat */
+            continue;
+        }
+        sorted[kept++] = sorted[i];
+    }
+    out->textures = sorted;
+    out->texture_count = kept;
+
+    /* The most transparent part wins: transparency is the minimum,
+       Partial standing when there are none. */
+    for (size_t p = 0; p < count; ++p)
+        if (parts[p]->transparency < out->transparency)
+            out->transparency = parts[p]->transparency;
+
+    /* Per direction: the buckets concatenate, faces offset by the
+       running vertex count and texture indexes by each part's own
+       list, all under the reference's running counts. */
+    for (int dir = 0; dir < 7; ++dir) {
+        size_t vtotal = 0, ftotal = 0;
+        for (size_t p = 0; p < count; ++p)
+            if (parts[p]->present[dir]) {
+                vtotal += parts[p]->buckets[dir].vert_count;
+                ftotal += parts[p]->buckets[dir].face_count;
+            }
+        if (!ftotal) continue; /* the reference omits empty buckets */
+
+        McmeMeshBucket *b = &out->buckets[dir];
+        out->present[dir] = true;
+        b->vert_count = vtotal;
+        b->face_count = ftotal;
+        b->verts          = malloc(vtotal * 3 * sizeof *b->verts);
+        b->tverts         = malloc(vtotal * 2 * sizeof *b->tverts);
+        b->tint_verts     = malloc(vtotal * 3 * sizeof *b->tint_verts);
+        b->faces          = malloc(ftotal * 6 * sizeof *b->faces);
+        b->texture_indexes = malloc(ftotal * 2 * sizeof *b->texture_indexes);
+        if (!b->verts || !b->tverts || !b->tint_verts || !b->faces ||
+            !b->texture_indexes)
+            goto oom;
+
+        size_t voff = 0, foff = 0;
+        for (size_t p = 0; p < count; ++p) {
+            const McmeMesh *m = parts[p];
+            if (!m->present[dir]) continue;
+            const McmeMeshBucket *sb = &m->buckets[dir];
+
+            memcpy(b->verts + voff * 3, sb->verts,
+                   sb->vert_count * 3 * sizeof *b->verts);
+            memcpy(b->tverts + voff * 2, sb->tverts,
+                   sb->vert_count * 2 * sizeof *b->tverts);
+            memcpy(b->tint_verts + voff * 3, sb->tint_verts,
+                   sb->vert_count * 3 * sizeof *b->tint_verts);
+
+            for (size_t i = 0; i < sb->face_count; ++i)
+                for (int t = 0; t < 6; ++t)
+                    b->faces[(foff + i) * 6 + t] =
+                        sb->faces[i * 6 + t] + (uint32_t)voff;
+
+            for (size_t i = 0; i < sb->face_count; ++i)
+                for (int t = 0; t < 2; ++t) {
+                    uint32_t mapped;
+                    if (!texture_position(out,
+                                          m->textures[sb->texture_indexes
+                                                      [i * 2 + t]],
+                                          &mapped))
+                        goto oom; /* unreachable; belt */
+                    b->texture_indexes[(foff + i) * 2 + t] = mapped;
+                }
+
+            voff += sb->vert_count;
+            foff += sb->face_count;
+        }
+    }
+    return true;
+
+oom:
+    mcme_mesh_free(out);
+    mcme_set_error("mesh merge: out of memory");
+    return false;
 }

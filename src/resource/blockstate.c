@@ -11,14 +11,16 @@
 /*
  * Blockstate selection: which model(s) a block state picks out of a
  * pack, mirroring the reference reader's `_get_model` rule for rule
- * (decisions.md#D30). The quirks below are the reference's own
- * answers, not inventions — the map follows the reference.
+ * (decisions.md#D30, extended in D33). The quirks below are the
+ * reference's own answers, not inventions — the map follows the
+ * reference.
  *
- * Selection stops at the model STRING. The parent-merge, the
- * rotations applied at mesh time and the atlas come in the next
- * drop; here an answer is the winning variant's or matching
- * multipart cases' apply, in selection order, with the game's
- * defaults (x 0, y 0, uvlock false) filled in.
+ * One walk serves two consumers: the lookup answers the winning
+ * apply STRING(S) — with the game's defaults (x 0, y 0, uvlock
+ * false) filled in — while the mesh layer accepts or skips each
+ * apply as its load succeeds or refuses, the way the reference's
+ * per-apply try/except does. The parent-merge, the rotations
+ * applied at mesh time and the atlas are layer D33's.
  *
  * The two branches differ on purpose, and both differences are
  * mirrored:
@@ -288,34 +290,25 @@ static bool variant_pair(const char *name, size_t nlen,
     return true; /* keep scanning; all() collects every pair */
 }
 
-/* Emits one `apply` value into the answer. Returns false when the
-   value is a shape the reference's `_load_blockstate_model` would
-   raise on (empty list, non-object, non-string model, non-number
-   x/y) — the caller then skips that variant or case, as the
-   reference's catch does. */
-static bool emit_apply(const cJSON *value, McmeBlockstate *out)
+/* Parses one `apply` value into `out` (its model heap-copied).
+   Returns false when the value is a shape the reference's
+   `_load_blockstate_model` would raise on (empty list, non-object,
+   non-string model, non-number x/y) — the caller then skips that
+   variant or case, as the reference's catch does. */
+static bool parse_apply(const cJSON *value, McmeModelRef *out)
 {
+    *out = (McmeModelRef){ NULL, 0, 0, false };
     if (cJSON_IsArray(value)) {
         value = value->child; /* first element only */
         if (!value) return false;
     }
     if (!cJSON_IsObject(value)) return false;
 
-    McmeModelRef *grown = realloc(out->models,
-                                  (out->count + 1) * sizeof *grown);
-    if (!grown) return false;
-    out->models = grown;
-    McmeModelRef *ref = &out->models[out->count];
-    *ref = (McmeModelRef){ NULL, 0, 0, false };
-
     const cJSON *model = cJSON_GetObjectItemCaseSensitive(value, "model");
     if (model) {
-        if (!cJSON_IsString(model)) { /* reference: later .split raises */
-            /* undo the reservation: this apply is not emitted */
-            return false;
-        }
-        ref->model = ndup(model->valuestring, strlen(model->valuestring));
-        if (!ref->model) return false;
+        if (!cJSON_IsString(model)) return false; /* .split would raise */
+        out->model = ndup(model->valuestring, strlen(model->valuestring));
+        if (!out->model) return false;
     }
     /* No model: the reference answers its missing mesh; the
        selection still happened, so the entry is kept with model
@@ -323,46 +316,17 @@ static bool emit_apply(const cJSON *value, McmeBlockstate *out)
 
     const cJSON *x = cJSON_GetObjectItemCaseSensitive(value, "x");
     if (x) {
-        if (!cJSON_IsNumber(x)) { free(ref->model); return false; }
-        ref->x = (int32_t)x->valuedouble;
+        if (!cJSON_IsNumber(x)) { free(out->model); return false; }
+        out->x = (int32_t)x->valuedouble;
     }
     const cJSON *y = cJSON_GetObjectItemCaseSensitive(value, "y");
     if (y) {
-        if (!cJSON_IsNumber(y)) { free(ref->model); return false; }
-        ref->y = (int32_t)y->valuedouble;
+        if (!cJSON_IsNumber(y)) { free(out->model); return false; }
+        out->y = (int32_t)y->valuedouble;
     }
-    ref->uvlock = cJSON_IsTrue(
+    out->uvlock = cJSON_IsTrue(
         cJSON_GetObjectItemCaseSensitive(value, "uvlock"));
-
-    out->count++;
     return true;
-}
-
-/* The `variants` branch: first match in file order wins outright. */
-static void resolve_variants(const cJSON *variants,
-                             const McmeState *states, size_t n,
-                             McmeBlockstate *out)
-{
-    for (const cJSON *item = variants->child; item; item = item->next) {
-        const char *key = item->string ? item->string : "";
-        bool match;
-
-        if (key[0] == '\0') {
-            match = true; /* the "" key matches unconditionally */
-        } else {
-            struct PairCtx ctx = { states, n, true };
-            scan_variant_pairs(key, variant_pair, &ctx);
-            match = ctx.all_match;
-        }
-
-        if (!match) continue;
-        if (!emit_apply(item, out)) continue; /* reference: catch, next */
-        out->missing = false;
-        return;
-    }
-    /* No key matched: the reference falls through to its missing
-       mesh. multipart is never consulted once variants exists. */
-    out->missing = true;
 }
 
 /* Multipart `when` evaluation. The reference compares membership:
@@ -435,15 +399,74 @@ static enum WhenResult eval_when(const cJSON *when,
     return one_arm(when, states, n); /* the plain prop=value form */
 }
 
-/* The `multipart` branch: every matching case contributes, in file
-   order; all failing is an empty selection, NOT missing. */
-static void resolve_multipart(const cJSON *cases, const McmeState *states,
-                              size_t n, McmeBlockstate *out)
+/*
+ * The shared selection walk (see mcme_blockstate_select). The
+ * branches differ on purpose, and both differences are mirrored:
+ *
+ *   variants — a pair whose property the block lacks MATCHES (the
+ *     reference defaults the missing property to the pair's own
+ *     value), a key no regex pair can be found in matches
+ *     everything, and the first key whose apply the callback
+ *     ACCEPTS wins outright — a refusal there is the reference's
+ *     caught load, logged and passed over for the next key.
+ *   multipart — a property the block lacks NEVER matches (the
+ *     reference looks it up as None), every matching case goes to
+ *     the callback (a refusal skips that case only), and a `when`
+ *     value the reference cannot parse (a number, a nested object)
+ *     skips that whole case.
+ */
+static void select_walk(const struct cJSON *doc, const McmeState *states,
+                        size_t n, McmeApplyFn take, void *ud,
+                        McmeSelectKind *kind)
 {
-    out->missing = false;
-    if (!cJSON_IsArray(cases)) return; /* garbage: contributes nothing */
+    *kind = MCME_SELECT_MISSING;
 
-    for (const cJSON *item = cases->child; item; item = item->next) {
+    const struct cJSON *variants =
+        cJSON_GetObjectItemCaseSensitive(doc, "variants");
+    if (variants && cJSON_IsObject(variants)) {
+        for (const cJSON *item = variants->child; item;
+             item = item->next) {
+            const char *key = item->string ? item->string : "";
+            bool match;
+
+            if (key[0] == '\0') {
+                match = true; /* the "" key matches unconditionally */
+            } else {
+                struct PairCtx ctx = { states, n, true };
+                scan_variant_pairs(key, variant_pair, &ctx);
+                match = ctx.all_match;
+            }
+            if (!match) continue;
+
+            McmeModelRef ref;
+            if (!parse_apply(item, &ref)) continue; /* catch, next */
+            bool accepted = take(&ref, ud);
+            free(ref.model);
+            if (accepted) {
+                *kind = MCME_SELECT_VARIANTS;
+                return;
+            }
+            /* refused: the reference logs it and keeps walking */
+        }
+        /* No match, or every match refused to mesh: the reference
+           falls through to its missing mesh. multipart is never
+           consulted once variants exists. */
+        return;
+    }
+
+    const struct cJSON *multipart =
+        cJSON_GetObjectItemCaseSensitive(doc, "multipart");
+    if (!multipart) {
+        /* A file holding neither key is the reference's missing
+           mesh. */
+        return;
+    }
+
+    *kind = MCME_SELECT_MULTIPART;
+    if (!cJSON_IsArray(multipart)) return; /* garbage: contributes
+                                              nothing */
+
+    for (const cJSON *item = multipart->child; item; item = item->next) {
         if (!cJSON_IsObject(item)) continue; /* case not an object */
 
         const cJSON *when = cJSON_GetObjectItemCaseSensitive(item, "when");
@@ -456,8 +479,67 @@ static void resolve_multipart(const cJSON *cases, const McmeState *states,
         const cJSON *apply = cJSON_GetObjectItemCaseSensitive(item,
                                                               "apply");
         if (!apply) continue; /* a matched case with nothing to add */
-        if (!emit_apply(apply, out)) continue; /* reference: catch */
+
+        McmeModelRef ref;
+        if (!parse_apply(apply, &ref)) continue; /* reference: catch */
+        take(&ref, ud); /* a refusal skips the case; the rest merge */
+        free(ref.model);
     }
+}
+
+bool mcme_blockstate_select(const McmeBlockstateIndex *index,
+                            const char *namespace, const char *base_name,
+                            const McmeState *states, size_t state_count,
+                            McmeApplyFn take, void *ud,
+                            McmeSelectKind *kind)
+{
+    if (!index || !namespace || !base_name || !take || !kind) {
+        mcme_set_error("blockstate select: null argument");
+        return false;
+    }
+
+    const struct cJSON *doc = NULL;
+    for (size_t i = 0; i < index->count; ++i) {
+        const BlockstateEntry *e = &index->entries[i];
+        if (strcmp(e->ns, namespace) == 0 &&
+            strcmp(e->name, base_name) == 0) {
+            doc = e->doc;
+            break;
+        }
+    }
+    if (!doc) { /* no file: missing, the renderer's cue */
+        *kind = MCME_SELECT_MISSING;
+        return true;
+    }
+
+    select_walk(doc, states, state_count, take, ud, kind);
+    return true;
+}
+
+/* The lookup's take: keep a copy of the apply. The SELECTION is
+   not load-sensitive — the reference's spy observes the call even
+   when the load raises — so this always accepts; skipping a load
+   that refuses is the mesh layer's call to make. */
+static bool record_apply(const McmeModelRef *ref, void *ud)
+{
+    McmeBlockstate *out = ud;
+
+    McmeModelRef *grown = realloc(out->models,
+                                  (out->count + 1) * sizeof *grown);
+    if (!grown) return false;
+    out->models = grown;
+
+    McmeModelRef *slot = &out->models[out->count];
+    *slot = *ref;
+    slot->model = NULL;
+    if (ref->model) {
+        slot->model = ndup(ref->model, strlen(ref->model));
+        if (!slot->model) return false; /* OOM: not counted; the walk
+                                           treats it as the old
+                                           emit's failure — skipped */
+    }
+    out->count++;
+    return true;
 }
 
 bool mcme_blockstate_lookup(const McmeBlockstateIndex *index,
@@ -472,32 +554,11 @@ bool mcme_blockstate_lookup(const McmeBlockstateIndex *index,
 
     *out = (McmeBlockstate){ NULL, 0, true };
 
-    const struct cJSON *doc = NULL;
-    for (size_t i = 0; i < index->count; ++i) {
-        const BlockstateEntry *e = &index->entries[i];
-        if (strcmp(e->ns, namespace) == 0 &&
-            strcmp(e->name, base_name) == 0) {
-            doc = e->doc;
-            break;
-        }
-    }
-    if (!doc) return true; /* no file: missing, the renderer's cue */
-
-    const struct cJSON *variants =
-        cJSON_GetObjectItemCaseSensitive(doc, "variants");
-    if (variants && cJSON_IsObject(variants)) {
-        resolve_variants(variants, states, state_count, out);
-        return true;
-    }
-
-    const struct cJSON *multipart =
-        cJSON_GetObjectItemCaseSensitive(doc, "multipart");
-    if (multipart) {
-        resolve_multipart(multipart, states, state_count, out);
-        return true;
-    }
-
-    /* A file holding neither key is the reference's missing mesh. */
+    McmeSelectKind kind;
+    if (!mcme_blockstate_select(index, namespace, base_name, states,
+                                state_count, record_apply, out, &kind))
+        return false; /* null argument, already reported */
+    out->missing = kind == MCME_SELECT_MISSING;
     return true;
 }
 

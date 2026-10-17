@@ -1206,6 +1206,445 @@ static void test_meshes(void)
     mcme_clear_error();
 }
 
+/* ========================================================================
+ * Block-level meshes (D33): the reference's `_get_model` — the
+ * selection walked, each winning apply meshed and turned by its
+ * x/y, refusals skipped, multipart merged.
+ * ======================================================================== */
+
+#define BFIXDIR "build/blockmesh_fixtures/pack"
+
+static const char *const k_bmesh_dirs[7] = {
+    "down", "up", "north", "east", "south", "west", "none"
+};
+
+/* Checks that `m` is the reference's missing BLOCK: the unit cube
+   of the missing image, one face per cull direction, opaque. */
+static void check_missing_block(const McmeMesh *m, const char *what)
+{
+    static const double lo[3] = { 0, 0, 0 }, hi[3] = { 1, 1, 1 };
+    double unit[8][3];
+    box_corners(lo, hi, unit);
+
+    CHECK_MSG(m->transparency == MCME_TRANSPARENCY_OPAQUE,
+              "%s: transparency %d, want the missing block's opaque",
+              what, m->transparency);
+    check_textures(m, (const char *const[]){ "missing_no" }, 1);
+    for (int d = 0; d < 6; ++d) {
+        CHECK_MSG(m->present[d], "%s: the missing block holds no '%s' "
+                  "face", what, k_bmesh_dirs[d]);
+        const McmeMeshBucket *b = &m->buckets[d];
+        CHECK_MSG(b->face_count == 1 && b->vert_count == 4,
+                  "%s: '%s' has %zu faces, want 1", what,
+                  k_bmesh_dirs[d], b->face_count);
+        double want[12];
+        face_verts(unit, d, want);
+        check_floats(what, b->verts, 12, want, 12);
+    }
+    for (int d = 6; d < 7; ++d)
+        CHECK_MSG(!m->present[d], "%s: the missing block holds a "
+                  "'%s' face", what, k_bmesh_dirs[d]);
+}
+
+static void test_blockmeshes(void)
+{
+    printf("  resource (blockmeshes)\n");
+
+    /* --- fixtures --- */
+    put(BFIXDIR "/pack.mcmeta",
+        "{\"pack\":{\"pack_format\":9,\"description\":\"blockmeshes\"}}");
+    put_png(BFIXDIR "/assets/minecraft/textures/block/opaque.png", 4,
+            k_opaque_px);
+    put_png(BFIXDIR "/assets/minecraft/textures/block/alpha.png", 4,
+            k_alpha_px);
+
+    /* One up face on a partial cube: the none bucket, and geometry
+       that moves visibly under a turn. */
+    put(BFIXDIR "/assets/mc/models/block/tex.json",
+        "{\"textures\":{\"a\":\"block/alpha\"},"
+        "\"elements\":[{\"from\":[2,2,2],\"to\":[14,14,14],"
+        "\"faces\":{\"up\":{\"texture\":\"#a\",\"uv\":[0,0,16,16]}}}]}");
+    /* The same shape on the other texture, for merge probes. */
+    put(BFIXDIR "/assets/mc/models/block/texb.json",
+        "{\"textures\":{\"a\":\"block/opaque\"},"
+        "\"elements\":[{\"from\":[2,2,2],\"to\":[14,14,14],"
+        "\"faces\":{\"up\":{\"texture\":\"#a\",\"uv\":[0,0,16,16]}}}]}");
+    /* A full cube culling every direction: six buckets to remap. */
+    put(BFIXDIR "/assets/mc/models/block/cull6.json",
+        "{\"textures\":{\"a\":\"block/opaque\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16],"
+        "\"faces\":{"
+          "\"down\":{\"texture\":\"#a\",\"cullface\":\"down\"},"
+          "\"up\":{\"texture\":\"#a\",\"cullface\":\"up\"},"
+          "\"north\":{\"texture\":\"#a\",\"cullface\":\"north\"},"
+          "\"east\":{\"texture\":\"#a\",\"cullface\":\"east\"},"
+          "\"south\":{\"texture\":\"#a\",\"cullface\":\"south\"},"
+          "\"west\":{\"texture\":\"#a\",\"cullface\":\"west\"}}}]}");
+    /* A full cube on a texture the pack lacks: it refuses to mesh,
+       the reference's transparency-table read raising. */
+    put(BFIXDIR "/assets/mc/models/block/full_missing.json",
+        "{\"textures\":{\"a\":\"block/nonexistent\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16],"
+        "\"faces\":{"
+          "\"down\":{\"texture\":\"#a\"},\"up\":{\"texture\":\"#a\"},"
+          "\"north\":{\"texture\":\"#a\"},\"east\":{\"texture\":\"#a\"},"
+          "\"south\":{\"texture\":\"#a\"},\"west\":{\"texture\":\"#a\"}}}]}");
+    /* Six faces, no cullface: all six in the one none bucket, so a
+       turn walks several faces inside one bucket. */
+    put(BFIXDIR "/assets/mc/models/block/multi6.json",
+        "{\"textures\":{\"a\":\"block/opaque\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16],"
+        "\"faces\":{"
+          "\"down\":{\"texture\":\"#a\"},\"up\":{\"texture\":\"#a\"},"
+          "\"north\":{\"texture\":\"#a\"},\"east\":{\"texture\":\"#a\"},"
+          "\"south\":{\"texture\":\"#a\"},\"west\":{\"texture\":\"#a\"}}}]}");
+
+    put(BFIXDIR "/assets/mc/blockstates/rot_x.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/tex\",\"x\":90}}}");
+    put(BFIXDIR "/assets/mc/blockstates/rot_y.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/cull6\",\"y\":90}}}");
+    put(BFIXDIR "/assets/mc/blockstates/rot_xy.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/cull6\","
+        "\"x\":90,\"y\":90}}}");
+    /* A turn over a bucket holding SEVERAL faces: the none bucket's
+       six faces must all turn, each in place. */
+    put(BFIXDIR "/assets/mc/blockstates/rot_multi.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/multi6\",\"y\":90}}}");
+    /* y 450 is step 5 — out of the cull map, and with rotx zero the
+       reference's guard returns the mesh untouched. */
+    put(BFIXDIR "/assets/mc/blockstates/rot_ywide.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/tex\",\"y\":450}}}");
+    /* x 360 is step 4 — out of the cull map with a nonzero rotx,
+       where the reference's lookup raises: this apply is skipped,
+       nothing matches after it, and the missing block answers. */
+    put(BFIXDIR "/assets/mc/blockstates/rot_xbad.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/tex\",\"x\":360}}}");
+    /* The first matching key refuses to mesh; the "" key after it
+       must still answer. */
+    put(BFIXDIR "/assets/mc/blockstates/rot_skip.json",
+        "{\"variants\":{"
+          "\"a=1\":{\"model\":\"mc:block/full_missing\"},"
+          "\"\":{\"model\":\"mc:block/tex\",\"x\":90}}}");
+    put(BFIXDIR "/assets/mc/blockstates/rot_allrefuse.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/full_missing\","
+        "\"x\":90}}}");
+    /* No model at all: the missing block stands in, unturned. */
+    put(BFIXDIR "/assets/mc/blockstates/rot_nomodel.json",
+        "{\"variants\":{\"\":{\"x\":90}}}");
+    /* A list apply answers its first element. */
+    put(BFIXDIR "/assets/mc/blockstates/rot_list.json",
+        "{\"variants\":{\"\":[{\"model\":\"mc:block/tex\"},"
+        "{\"model\":\"mc:block/texb\"}]}}");
+    /* uvlock is read and ignored — the reference's standing TODO. */
+    put(BFIXDIR "/assets/mc/blockstates/rot_uv.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/tex\","
+        "\"uvlock\":true}}}");
+    put(BFIXDIR "/assets/mc/blockstates/neither.json", "{\"foo\":1}");
+
+    /* Multipart: two applies and one behind a when that only a
+       matching block reaches, the third turned as it merges. */
+    put(BFIXDIR "/assets/mc/blockstates/merge.json",
+        "{\"multipart\":["
+          "{\"apply\":{\"model\":\"mc:block/texb\"}},"
+          "{\"when\":{\"a\":\"1\"},\"apply\":{\"model\":\"mc:block/tex\"}},"
+          "{\"apply\":{\"model\":\"mc:block/texb\",\"y\":90}}]}");
+    put(BFIXDIR "/assets/mc/blockstates/merge_empty.json",
+        "{\"multipart\":[{\"when\":{\"a\":\"1\"},"
+        "\"apply\":{\"model\":\"mc:block/tex\"}}]}");
+
+    /* --- indexes --- */
+    McmeBlockstateIndex *states = NULL;
+    CHECK_MSG(mcme_blockstate_index_open(BFIXDIR, &states),
+              "blockstate index: %s", mcme_last_error());
+    McmeTextureIndex *tex = NULL;
+    CHECK_MSG(mcme_texture_index_open(BFIXDIR, &tex),
+              "texture index: %s", mcme_last_error());
+    McmeModelIndex *models = NULL;
+    CHECK_MSG(mcme_model_index_open(BFIXDIR, &models),
+              "model index: %s", mcme_last_error());
+    if (!states || !tex || !models) { mcme_clear_error(); return; }
+
+    const char *opaque_path =
+        BFIXDIR "/assets/minecraft/textures/block/opaque.png";
+    const char *alpha_path =
+        BFIXDIR "/assets/minecraft/textures/block/alpha.png";
+    static const double tverts_default[8] = { 0,1, 1,1, 1,0, 0,0 };
+
+    /* Helper: one block query, refusal-free. */
+#define BLOCKMESH(stem, qs, out) \
+    do { \
+        McmeState qs_[64]; \
+        size_t qn_ = 0; \
+        for (const char *const *p_ = (qs); p_ && *p_; p_ += 2) { \
+            qs_[qn_].name = p_[0]; \
+            qs_[qn_].value = p_[1]; \
+            qn_++; \
+        } \
+        CHECK_MSG(mcme_mesh_for_block(states, models, tex, "mc", (stem), \
+                                      qs_, qn_, (out)), \
+                  "%s: %s", (stem), mcme_last_error()); \
+    } while (0)
+
+    /* --- x 90: the up face turns, the none bucket stays --- */
+    {
+        McmeMesh m;
+        BLOCKMESH("rot_x", NULL, &m);
+        CHECK_MSG(m.transparency == MCME_TRANSPARENCY_PARTIAL,
+                  "rot_x transparency %d", m.transparency);
+        check_textures(&m, (const char *const[]){ alpha_path }, 1);
+        for (int d = 0; d < 6; ++d) CHECK(!m.present[d]);
+        CHECK(m.present[MCME_CULL_NONE]);
+        /* The X pass maps (x, y, z) to (x, z, 1 - y) about the
+           block centre — the up face lands on the block's north
+           side while its bucket name stays "none". */
+        static const double want[12] = {
+            0.125, 0.875, 0.125,  0.875, 0.875, 0.125,
+            0.875, 0.125, 0.125,  0.125, 0.125, 0.125 };
+        check_floats("rot_x verts", m.buckets[MCME_CULL_NONE].verts,
+                     12, want, 12);
+        check_floats("rot_x tverts", m.buckets[MCME_CULL_NONE].tverts,
+                     8, tverts_default, 8); /* uvlock's no-op */
+        check_u32s("rot_x faces", m.buckets[MCME_CULL_NONE].faces,
+                   6, (const uint32_t[]){ 0, 1, 2, 0, 2, 3 }, 6);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- y 90 over the culling cube: buckets turn --- */
+    {
+        McmeMesh m;
+        BLOCKMESH("rot_y", NULL, &m);
+        CHECK(m.transparency == MCME_TRANSPARENCY_OPAQUE);
+        check_textures(&m, (const char *const[]){ opaque_path }, 1);
+        /* The horizontal ring turns: north's face now culls east,
+           east south, south west, west north; the poles stay. */
+        static const int want_dir[7] = {
+            MCME_CULL_DOWN, MCME_CULL_UP, MCME_CULL_EAST, MCME_CULL_SOUTH,
+            MCME_CULL_WEST, MCME_CULL_NORTH, MCME_CULL_NONE };
+        for (int d = 0; d < 7; ++d) {
+            CHECK_MSG(m.present[want_dir[d]] == (d < 6),
+                      "rot_y bucket '%s'", k_bmesh_dirs[d]);
+            if (d < 6) {
+                const McmeMeshBucket *b = &m.buckets[want_dir[d]];
+                CHECK(b->face_count == 1 && b->vert_count == 4);
+            }
+        }
+        /* The face now in east came from north: the Y pass maps
+           (x, y, z) to (1 - z, y, x). */
+        static const double want_east[12] = {
+            1, 0, 1,  1, 0, 0,  1, 1, 0,  1, 1, 1 };
+        check_floats("rot_y east verts",
+                     m.buckets[MCME_CULL_EAST].verts, 12, want_east, 12);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- x 90 and y 90 together: the vertical remap reads the
+       turned ring --- */
+    {
+        McmeMesh m;
+        BLOCKMESH("rot_xy", NULL, &m);
+        /* north->down, up->east, south->up, west->north, down->west,
+           east->south — both passes, X first. */
+        static const int want_dir[6] = {
+            MCME_CULL_WEST, MCME_CULL_EAST, MCME_CULL_DOWN,
+            MCME_CULL_SOUTH, MCME_CULL_UP, MCME_CULL_NORTH };
+        for (int d = 0; d < 6; ++d)
+            CHECK_MSG(m.present[want_dir[d]], "rot_xy bucket '%s'",
+                      k_bmesh_dirs[want_dir[d]]);
+        /* Both passes map (x, y, z) to (y, z, x); the face now in
+           west came from down. */
+        static const double want_west[12] = {
+            0, 0, 0,  0, 0, 1,  0, 1, 1,  0, 1, 0 };
+        check_floats("rot_xy west verts", m.buckets[MCME_CULL_WEST].verts,
+                     12, want_west, 12);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- one bucket, six faces: every face turns, each in its own
+       slot (a whole-bucket walk, not just the first face) --- */
+    {
+        McmeMesh m;
+        BLOCKMESH("rot_multi", NULL, &m);
+        const McmeMeshBucket *b = &m.buckets[MCME_CULL_NONE];
+        CHECK_MSG(b->face_count == 6 && b->vert_count == 24,
+                  "rot_multi has %zu faces, want 6", b->face_count);
+        for (int d = 0; d < 7; ++d)
+            CHECK_MSG(m.present[d] == (d == MCME_CULL_NONE),
+                      "rot_multi bucket '%s'", k_bmesh_dirs[d]);
+        /* Faces 0 and 1 (down and up) under (1 - z, y, x). */
+        static const double want_first8[24] = {
+            1, 0, 0,  1, 0, 1,  0, 0, 1,  0, 0, 0,   /* down turned */
+            0, 1, 0,  0, 1, 1,  1, 1, 1,  1, 1, 0 }; /* up turned */
+        check_floats("rot_multi faces 0-1", b->verts, 24, want_first8, 24);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the guard's quirks: roty out of range with rotx zero is
+       untouched; rotx out of range raises and the apply is
+       skipped --- */
+    {
+        McmeMesh plain, wide, refused, nomodel;
+        CHECK(build_mesh(models, tex, "mc", "block/tex", &plain));
+        BLOCKMESH("rot_ywide", NULL, &wide);
+        check_floats("rot_ywide verts", wide.buckets[MCME_CULL_NONE].verts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 3,
+                     plain.buckets[MCME_CULL_NONE].verts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 3);
+        check_floats("rot_ywide tverts", wide.buckets[MCME_CULL_NONE].tverts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 2,
+                     plain.buckets[MCME_CULL_NONE].tverts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 2);
+        mcme_mesh_free(&wide);
+        mcme_mesh_free(&plain);
+
+        BLOCKMESH("rot_xbad", NULL, &refused);
+        check_missing_block(&refused, "rot_xbad");
+        mcme_mesh_free(&refused);
+
+        /* No model: the missing block stands in, and its x 90 is
+           never applied — the rotate call sits under the load. */
+        BLOCKMESH("rot_nomodel", NULL, &nomodel);
+        check_missing_block(&nomodel, "rot_nomodel");
+        static const double want_down[12] = {
+            0, 0, 0,  1, 0, 0,  1, 0, 1,  0, 0, 1 };
+        check_floats("rot_nomodel down (unturned)",
+                     nomodel.buckets[MCME_CULL_DOWN].verts, 12,
+                     want_down, 12);
+        mcme_mesh_free(&nomodel);
+    }
+
+    /* --- the refusal chain: the first matching key skips, the ""
+       key answers; an all-refusing selection is the missing block;
+       the block's own states change nothing (a property the block
+       lacks matches) --- */
+    {
+        McmeMesh skipped, skipped_no_props, rotated, allrefused;
+        static const char *const a1[] = { "a", "1", NULL };
+        BLOCKMESH("rot_skip", a1, &skipped);
+        BLOCKMESH("rot_skip", NULL, &skipped_no_props);
+        BLOCKMESH("rot_x", NULL, &rotated);
+        check_floats("rot_skip verts",
+                     skipped.buckets[MCME_CULL_NONE].verts, 12,
+                     rotated.buckets[MCME_CULL_NONE].verts, 12);
+        check_floats("rot_skip (no props) verts",
+                     skipped_no_props.buckets[MCME_CULL_NONE].verts, 12,
+                     rotated.buckets[MCME_CULL_NONE].verts, 12);
+        mcme_mesh_free(&skipped);
+        mcme_mesh_free(&skipped_no_props);
+        mcme_mesh_free(&rotated);
+
+        BLOCKMESH("rot_allrefuse", NULL, &allrefused);
+        check_missing_block(&allrefused, "rot_allrefuse");
+        mcme_mesh_free(&allrefused);
+    }
+
+    /* --- list apply, uvlock, and both routes to the missing block
+       --- */
+    {
+        McmeMesh listed, uvlocked, plain, neither, absent;
+        CHECK(build_mesh(models, tex, "mc", "block/tex", &plain));
+        BLOCKMESH("rot_list", NULL, &listed);
+        BLOCKMESH("rot_uv", NULL, &uvlocked);
+        check_floats("rot_list verts", listed.buckets[MCME_CULL_NONE].verts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 3,
+                     plain.buckets[MCME_CULL_NONE].verts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 3);
+        check_floats("rot_uv verts", uvlocked.buckets[MCME_CULL_NONE].verts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 3,
+                     plain.buckets[MCME_CULL_NONE].verts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 3);
+        check_floats("rot_uv tverts", uvlocked.buckets[MCME_CULL_NONE].tverts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 2,
+                     plain.buckets[MCME_CULL_NONE].tverts,
+                     plain.buckets[MCME_CULL_NONE].vert_count * 2);
+        mcme_mesh_free(&listed);
+        mcme_mesh_free(&uvlocked);
+        mcme_mesh_free(&plain);
+
+        BLOCKMESH("neither", NULL, &neither);
+        check_missing_block(&neither, "neither");
+        mcme_mesh_free(&neither);
+        BLOCKMESH("absent", NULL, &absent);
+        check_missing_block(&absent, "absent");
+        mcme_mesh_free(&absent);
+    }
+
+    /* --- multipart merge: buckets concatenate, faces offset, the
+       texture list sorts and remaps, the turned case turns --- */
+    {
+        McmeMesh m;
+        BLOCKMESH("merge", NULL, &m); /* no a=1: the middle case is out */
+        CHECK(m.transparency == MCME_TRANSPARENCY_PARTIAL);
+        /* The sorted set-union of the parts' lists: only opaque
+           survives here. */
+        check_textures(&m, (const char *const[]){ opaque_path }, 1);
+        for (int d = 0; d < 6; ++d) CHECK(!m.present[d]);
+        const McmeMeshBucket *b = &m.buckets[MCME_CULL_NONE];
+        CHECK_MSG(b->face_count == 2 && b->vert_count == 8,
+                  "merge has %zu faces, want 2", b->face_count);
+        static const double turn[12] = {
+            0.125, 0.875, 0.125,  0.125, 0.875, 0.875,
+            0.875, 0.875, 0.875,  0.875, 0.875, 0.125 };
+        check_floats("merge second face (y 90)", b->verts + 12, 12,
+                     turn, 12);
+        check_u32s("merge faces", b->faces, 12,
+                   (const uint32_t[]){ 0,1,2,0,2,3, 4,5,6,4,6,7 }, 12);
+        check_u32s("merge texture indexes", b->texture_indexes, 4,
+                   (const uint32_t[]){ 0,0, 0,0 }, 4);
+        mcme_mesh_free(&m);
+
+        /* With the state matching, the middle case joins: alpha
+           sorts before opaque and every index remaps through the
+           two-entry list. */
+        McmeMesh full;
+        static const char *const a1[] = { "a", "1", NULL };
+        BLOCKMESH("merge", a1, &full);
+        check_textures(&full, (const char *const[]){ alpha_path,
+                                                     opaque_path }, 2);
+        const McmeMeshBucket *fb = &full.buckets[MCME_CULL_NONE];
+        CHECK_MSG(fb->face_count == 3 && fb->vert_count == 12,
+                  "merge[a=1] has %zu faces, want 3", fb->face_count);
+        check_u32s("merge[a=1] texture indexes", fb->texture_indexes, 6,
+                   (const uint32_t[]){ 1,1, 0,0, 1,1 }, 6);
+        mcme_mesh_free(&full);
+
+        /* A multipart whose cases all fall away is the EMPTY mesh —
+           not the missing block. */
+        McmeMesh empty;
+        BLOCKMESH("merge_empty", NULL, &empty);
+        CHECK_MSG(empty.transparency == MCME_TRANSPARENCY_PARTIAL,
+                  "merge_empty transparency %d", empty.transparency);
+        CHECK_MSG(empty.texture_count == 0,
+                  "merge_empty has %zu textures", empty.texture_count);
+        for (int d = 0; d < 7; ++d) CHECK(!empty.present[d]);
+        mcme_mesh_free(&empty);
+    }
+
+    /* --- null arguments --- */
+    {
+        McmeMesh m;
+        CHECK(!mcme_mesh_for_block(NULL, models, tex, "mc", "rot_x",
+                                   NULL, 0, &m));
+        CHECK(!mcme_mesh_for_block(states, NULL, tex, "mc", "rot_x",
+                                   NULL, 0, &m));
+        CHECK(!mcme_mesh_for_block(states, models, NULL, "mc", "rot_x",
+                                   NULL, 0, &m));
+        CHECK(!mcme_mesh_for_block(states, models, tex, NULL, "rot_x",
+                                   NULL, 0, &m));
+        CHECK(!mcme_mesh_for_block(states, models, tex, "mc", NULL,
+                                   NULL, 0, &m));
+        CHECK(!mcme_mesh_for_block(states, models, tex, "mc", "rot_x",
+                                   NULL, 0, NULL));
+        CHECK(!mcme_mesh_rotate(NULL, 1, 0));
+        CHECK(!mcme_mesh_merge(NULL, 1, &m));
+        CHECK(!mcme_mesh_merge((const McmeMesh *const[]){ &m }, 1, NULL));
+    }
+
+    mcme_blockstate_index_close(states);
+    mcme_texture_index_close(tex);
+    mcme_model_index_close(models);
+    mcme_clear_error();
+}
+
 int mcme_test_resource(void)
 {
     g_failed = 0;
@@ -1213,5 +1652,6 @@ int mcme_test_resource(void)
     test_blockstates();
     test_models();
     test_meshes();
+    test_blockmeshes();
     return g_failed;
 }

@@ -157,6 +157,50 @@ bool mcme_blockstate_lookup(const McmeBlockstateIndex *index,
 void mcme_blockstate_free(McmeBlockstate *state);
 
 /*
+ * What a selection WALK answered (D33):
+ *
+ *   MCME_SELECT_MISSING — no file, no usable key, or variants that
+ *     matched nothing or refused every match: the reference falls
+ *     through to its missing block.
+ *   MCME_SELECT_VARIANTS — one apply won: the callback accepted it
+ *     and the walk stopped, the way the reference's variants loop
+ *     returns at the first load that does not raise.
+ *   MCME_SELECT_MULTIPART — every matching case went to the
+ *     callback, refusals skipped, possibly none: the meshes merge
+ *     (an empty merge is an answer here, not a missing block).
+ */
+typedef enum {
+    MCME_SELECT_MISSING = 0,
+    MCME_SELECT_VARIANTS,
+    MCME_SELECT_MULTIPART
+} McmeSelectKind;
+
+/*
+ * Hands one winning apply to the walk. False means "this apply did
+ * not produce an answer" — the reference's per-apply try/except
+ * catching a load or rotation that raised: variants carry on to the
+ * next matching key, multipart skips the case. `ref` is borrowed
+ * and valid only for the call; a NULL `ref->model` is the
+ * reference's missing mesh, accepted as it stands.
+ */
+typedef bool (*McmeApplyFn)(const McmeModelRef *ref, void *ud);
+
+/*
+ * The reference's `_get_model` walk, one level above the lookup:
+ * mcme_blockstate_lookup answers the first matching apply outright,
+ * while block-level meshing must accept-or-skip each one in
+ * selection order, because a first match whose model refuses to
+ * mesh does not end the reference's search. The matching rules (and
+ * their quirks) are the lookup's own — one implementation. Returns
+ * false only on a null argument; `*kind` always answers.
+ */
+bool mcme_blockstate_select(const McmeBlockstateIndex *index,
+                            const char *namespace, const char *base_name,
+                            const McmeState *states, size_t state_count,
+                            McmeApplyFn take, void *ud,
+                            McmeSelectKind *kind);
+
+/*
  * Does the reference's loader load ANYTHING from this directory?
  * Its whole load — textures, blockstates, models alike — sits
  * under one guard: the pack must be valid (the manifest parsed and
@@ -327,7 +371,9 @@ bool mcme_texture_transparent(const McmeTextureIndex *index,
  *     does not mesh.
  *
  * Rotation of the whole mesh by the blockstate selection's x/y
- * (and the reference's ignored uvlock) is the next layer's.
+ * (and the reference's ignored uvlock), the merge of multipart's
+ * many meshes and the block-level loader that composes them all
+ * are layer D33's; see the declarations below.
  */
 
 typedef enum {
@@ -383,6 +429,69 @@ bool mcme_mesh_build(const McmeModelIndex *models,
                      const McmeTextureIndex *textures,
                      const char *namespace, const char *path,
                      McmeMesh *out);
+
+/*
+ * The reference's `get_missing_block`: the unit cube wearing the
+ * missing image, opaque, one bucket per cull direction. It answers
+ * a block the pack's blockstates do not know, and the block-level
+ * loader's winning applies whose `apply` carried no model at all.
+ */
+bool mcme_mesh_missing_block(McmeMesh *out);
+
+/*
+ * Turns a whole mesh by the selection's x/y — the reference's
+ * `BlockMesh.rotate`, quirks included (decisions.md#D33):
+ *
+ *   - `rotx`/`roty` are quarter-turn steps, degrees floored the
+ *     way Python floors division: x -45 is step -1, not 0.
+ *   - The reference's guard reads `if rotx or roty and (roty,
+ *     rotx) in cull_remap_all:` — a NONZERO rotx skips the table
+ *     test, so an out-of-range step (magnitude above 3) then
+ *     raises on the lookup; rotx zero with an out-of-range roty
+ *     returns the mesh untouched; (0, 0) short-circuits. This
+ *     function mirrors that exactly: false with mcme_last_error()
+ *     for the raising case, true and untouched for the others.
+ *   - Vertices turn about (0.5, 0.5, 0.5) by -90*rotx about X then
+ *     -90*roty about Y; texture coordinates do not turn (uvlock's
+ *     TODO in the reference has stood unimplemented since it was
+ *     written, and mcme follows the reference); culling buckets
+ *     are remapped by the same turns, "none" to "none".
+ *
+ * The mesh is rewritten in place. On the raising refusal nothing
+ * moves.
+ */
+bool mcme_mesh_rotate(McmeMesh *mesh, int32_t rotx, int32_t roty);
+
+/*
+ * Merges `count` meshes into `*out` (released with
+ * mcme_mesh_free) — the reference's `BlockMesh.merge`: per cull
+ * direction the buckets concatenate with faces offset by the
+ * running vertex count, the texture list becomes the sorted set of
+ * every part's textures with each part's indexes remapped through
+ * it, and transparency is the most transparent part. Zero parts
+ * merge to the empty mesh. The parts stay owned by the caller.
+ *
+ * Returns false only on a null argument or an exhausted heap.
+ */
+bool mcme_mesh_merge(const McmeMesh *const *parts, size_t count,
+                     McmeMesh *out);
+
+/*
+ * The reference's `_get_model` as one call (D33): the block
+ * state's selection walked, each winning apply meshed and turned
+ * by its x/y — variants answering the first apply that meshes and
+ * multipart merging every one that does, refusals skipped, the
+ * missing block standing in for applies without a model. The
+ * block-level answer is total: the reference catches every load
+ * failure, so false here is a null argument or an exhausted heap,
+ * never a bad pack.
+ */
+bool mcme_mesh_for_block(const McmeBlockstateIndex *blockstates,
+                         const McmeModelIndex *models,
+                         const McmeTextureIndex *textures,
+                         const char *namespace, const char *base_name,
+                         const McmeState *states, size_t state_count,
+                         McmeMesh *out);
 
 /* Releases a mesh and everything it owns. NULL is a no-op. */
 void mcme_mesh_free(McmeMesh *mesh);
