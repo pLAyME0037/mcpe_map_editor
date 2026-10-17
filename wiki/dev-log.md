@@ -7,6 +7,54 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — Phase 5 opens: the pack announces itself from one manifest
+
+### Built
+
+- The resource subsystem (D29): `mcme_pack_open` reads a Java
+  resource pack's `pack.mcmeta` into an int32 `format`, a heap
+  `description`, a `has_icon` flag and the `root` it came from,
+  freed by one `mcme_pack_free`. Three refusals — no readable
+  manifest, a manifest that is not the game's `{pack:{...}}` shape,
+  no `pack.pack_format` — and a missing description answers the
+  empty string, the reference's own default. The verb is
+  `mcme pack info <dir>`, human and `--json`, with usage refusals
+  on exit 1 and pack refusals on exit 2.
+- The sixth selftest suite (`resource`, 6 suites now) writes its
+  fixtures under `build/pack_fixtures` and pins the happy path, the
+  description default, all three refusals, the null arguments and
+  the error-clear the other suites use.
+- `tools/ref_pack.py` proves the CLI against
+  minecraft_model_reader's `JavaResourcePack` itself: three valid
+  packs (a crafted one, a description-less one, and the reader's own
+  shipped `java_vanilla_fix`) compared field by field, the four
+  not-a-packs the reader marks invalid refused on exit 2 with empty
+  stdout, and both usage refusals — 9 checks.
+
+### Notes
+
+- The manifest reader is deliberately stricter than the reference
+  where a manifest leaves the domain the game writes: mcme requires
+  the integer `pack_format` (the reference keeps any JSON type) and
+  a string description (the reference `str()`-coerces anything).
+  Recorded in decisions.md#D29 rather than matched: mcme's field is
+  int32, and a value it cannot trust is refused, not reported.
+- During this drop the leveldb suite failed three `log_count`
+  checks: an untracked `000006.log` left in a golden fixture db by
+  an earlier selftest run in the session was counted by the
+  counter. Removing the untracked artifacts (tracked fixtures
+  untouched, `git checkout` restored) made all 6 suites green under
+  the default ASan+UBSan+leak run. The leveldb suite's sensitivity
+  to leftover compaction files in `tests/golden` is pre-existing and
+  recorded here; nothing under `tests/` was staged.
+
+### Next
+
+- Phase 5's core: blockstate resolution — the reference manager's
+  `variants` matching (per-property, first-match in file order) and
+  `multipart` case lists, then the model parent-merge — measured
+  through `minecraft_model_reader`, the same way D29 pinned the
+  manifest. Atlas and mesher stay after that (Simplexity 9).
 ## 2026-10-16 — The name map grows to the whole spec: the 63 blocks no census reached
 
 ### Built

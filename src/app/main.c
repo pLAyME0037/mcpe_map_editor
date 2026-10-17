@@ -28,6 +28,7 @@
 #include "mcme/nbt.h"
 #include "mcme/prune.h"
 #include "mcme/region.h"
+#include "mcme/resource.h"
 #include "mcme/world.h"
 
 #include "cJSON.h"   /* for the config subcommand's tree surgery */
@@ -68,6 +69,7 @@ static void print_usage(FILE *out)
         "  selftest        Run built-in tests for every compiled-in subsystem\n"
         "  lang            Inspect the bundled .lang translation files\n"
         "  config          Read and write user configuration (JSON)\n"
+        "  pack info <dir>  Summarise a Java resource pack's manifest\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -205,6 +207,7 @@ int mcme_test_nbt(void);
 int mcme_test_compress(void);
 int mcme_test_world(void);
 int mcme_test_leveldb(void);
+int mcme_test_resource(void);
 
 static int run_selftest(void)
 {
@@ -217,6 +220,7 @@ static int run_selftest(void)
         { "compress", mcme_test_compress },
         { "world"   , mcme_test_world },
         { "leveldb" , mcme_test_leveldb },
+        { "resource", mcme_test_resource },
     };
 
     const size_t n = sizeof(suites) / sizeof(suites[0]);
@@ -530,6 +534,57 @@ static int cmd_nbt_dump(int argc, char **argv)
 
     mcme_buffer_free(&out);
     mcme_arena_free(arena);
+    return MCME_OK;
+}
+
+/* ========================================================================
+ * pack
+ *
+ * A Java resource pack's manifest. The reference reader (the project's
+ * oracle for Phase 5) calls a directory a pack by one test — pack.mcmeta is
+ * a file — and reads pack_format, description, and validity. `pack info`
+ * reports exactly that; the model and atlas layers come later.
+ * ======================================================================== */
+
+static int cmd_pack_info(const char *dir)
+{
+    if (!dir) {
+        mcme_set_error("pack info: missing <dir>");
+        return MCME_EXIT_USAGE;
+    }
+
+    McmePack *pack = NULL;
+    if (!mcme_pack_open(dir, &pack)) {
+        /* mcme_last_error() already names the refusal. */
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    if (g_opts.json) {
+        /* Build one object and print it — the same shape the human output
+           carries, so --json callers parse one stable schema. */
+        struct cJSON *o = cJSON_CreateObject();
+        if (o) {
+            cJSON_AddItemToObject(o, "dir", cJSON_CreateString(pack->root));
+            cJSON_AddItemToObject(o, "format", cJSON_CreateNumber(pack->format));
+            cJSON_AddItemToObject(o, "description",
+                                  cJSON_CreateString(pack->description));
+            cJSON_AddItemToObject(o, "has_icon",
+                                  cJSON_CreateBool(pack->has_icon));
+            char *t = cJSON_PrintUnformatted(o);
+            printf("%s\n", t ? t : "null");
+            if (t) cJSON_free(t);
+            cJSON_Delete(o);
+        } else {
+            printf("null\n");
+        }
+    } else {
+        printf("%s\n", pack->root);
+        printf("  pack_format  %d\n", pack->format);
+        printf("  description  %s\n", pack->description);
+        printf("  pack.png     %s\n", pack->has_icon ? "yes" : "no");
+    }
+
+    mcme_pack_free(pack);
     return MCME_OK;
 }
 
@@ -3127,6 +3182,14 @@ static int dispatch(int argc, char **argv)
             return cmd_config_set(args[1], args[2]);
         }
         mcme_set_error("config: unknown subcommand '%s' (expected path|get|set|dump)", args[0]);
+        return MCME_EXIT_USAGE;
+    }
+
+    if (strcmp(cmd, "pack") == 0) {
+        if (rest > 0 && strcmp(args[0], "info") == 0) {
+            return cmd_pack_info(rest > 1 ? args[1] : NULL);
+        }
+        mcme_set_error("pack: unknown subcommand '%s' (expected info)", rest > 0 ? args[0] : "");
         return MCME_EXIT_USAGE;
     }
 

@@ -1831,3 +1831,55 @@ rule proves too weak for a name that needs three conditions to
 cover (the two-condition rows are the table's ceiling), or the
 spec gains blocks the reference has not learned (they would be
 measured, and their cells counted the way D17 counted its gaps).
+
+## D29 — Phase 5 opens on the manifest: a directory names itself a pack
+
+**What the reference does.** The reader the original Python used for
+the whole resource half — `minecraft_model_reader`'s
+`JavaResourcePack` — decides a directory is a resource pack by one
+test: `pack.mcmeta` is a file. From it the reader keeps three
+things: `pack_format` as whatever JSON type it found, `description`
+coerced with `str()`, and whether `pack.png` sits beside the
+manifest. Its validity flag turns on exactly one condition:
+`pack.pack_format` is *present* — no type check, no description
+required. Everything else Phase 5 needs (blockstates, models, the
+atlas) hangs off this identity layer.
+
+**What mcme does.** `mcme_pack_open` (src/resource/pack.c) reads the
+same manifest through cJSON and fills an `McmePack` the caller frees
+with one `mcme_pack_free`: an int32 `format`, a heap `description`,
+a `has_icon` flag, the `root` it came from. Three refusals, all of
+them conditions the reference also calls not-a-pack: no readable
+`pack.mcmeta`, a manifest that is not the game's `{pack:{...}}` shape
+(having no `pack` object), and no `pack.pack_format`. A missing
+description is the empty string, exactly the reference's default —
+not a refusal. The verb is `mcme pack info <dir>` with
+`--json {dir,format,description,has_icon}` (D3: the CLI is the
+product; the render layer later calls the same function).
+
+**The recorded difference.** The reference accepts `pack_format` at
+any JSON type and keeps the raw value; mcme requires an integer and
+refuses any other type, because its field is int32 and the game
+writes integers. The reference `str()`-coerces any description type
+(a translation-key object becomes a Python repr); mcme reads a
+string description and defaults to empty otherwise. Real packs carry
+both as the game writes them, so the shared domain is total — but a
+manifest out of that domain is where the two readers part, and it is
+recorded here rather than papered over: mcme is the stricter of the
+two, and it refuses instead of reporting a value it cannot trust.
+`tools/ref_pack.py` pins the shared domain against the reader itself,
+including the reader's own shipped `java_vanilla_fix` pack.
+
+**Why the manifest first.** Simplexity 9 — test the parser before
+the pretty part. The manifest is the one file every later layer
+opens the pack through, it answers with data the reference answers
+with, and the whole slice runs with no pixels, no GL and no atlas in
+sight. Blockstate and model resolution (the `variants`/`multipart`
+matching and parent merge in the reference's manager) is the next
+drop's subject, measured the same way.
+
+**Reverses if:** the game's manifest grows a field the model layer
+cannot wait for, multi-pack stacking forces the merge question
+earlier than the reader's list-of-packs model, or the atlas lands
+before blockstates need it (then the identity layer moves up a drop,
+and this one still answers `pack info`).
