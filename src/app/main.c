@@ -70,6 +70,9 @@ static void print_usage(FILE *out)
         "  lang            Inspect the bundled .lang translation files\n"
         "  config          Read and write user configuration (JSON)\n"
         "  pack info <dir>  Summarise a Java resource pack's manifest\n"
+        "  blockstate <pack> <block>\n"
+        "                    Which model(s) the pack's blockstates select\n"
+        "                    for the block state — model, x, y, uvlock\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -589,6 +592,174 @@ static int cmd_pack_info(const char *dir)
 }
 
 /* ========================================================================
+ * blockstate
+ *
+ * `mcme blockstate <pack-dir> <block>` — which model(s) the pack's
+ * blockstates select for one block state, the CLI face of the D30
+ * selection layer. A selection is an answer, never a refusal: a
+ * block the pack holds no state file for prints `missing` and
+ * exits 0, because that is what the reference answers too (its
+ * renderer then draws the missing texture). Only the arguments
+ * refuse — a pack directory that does not exist is exit 2, so a
+ * typo never reads as "every block is missing".
+ * ======================================================================== */
+
+/* Shared with the chunk verbs below; defined with them. */
+static int parse_block_spec(const char *verb, const char *spec,
+                            McmeArena *arena, char *name,
+                            size_t name_cap, const McmeTag **states);
+
+static int cmd_blockstate(const char *pack_dir, const char *spec)
+{
+    if (!mcme_fs_exists(pack_dir)) {
+        mcme_set_error("blockstate: '%s' is not a directory", pack_dir);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    McmeArena *arena = mcme_arena_new();
+    if (!arena) {
+        mcme_set_error("blockstate: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+
+    char name[256];
+    const McmeTag *states = NULL;
+    int rc = parse_block_spec("blockstate", spec, arena, name,
+                              sizeof name, &states);
+    if (rc != MCME_OK) {
+        mcme_arena_free(arena);
+        return rc;
+    }
+
+    /* Split the name into namespace and block, defaulting the way
+       the game does. */
+    char ns[256];
+    const char *colon = strchr(name, ':');
+    const char *base;
+    if (colon) {
+        size_t ns_len = (size_t)(colon - name);
+        if (ns_len == 0 || ns_len >= sizeof ns) {
+            mcme_set_error("blockstate: block '%s' has an empty or "
+                           "too-long namespace", spec);
+            mcme_arena_free(arena);
+            return MCME_EXIT_USAGE;
+        }
+        memcpy(ns, name, ns_len);
+        ns[ns_len] = '\0';
+        base = colon + 1;
+    } else {
+        snprintf(ns, sizeof ns, "minecraft");
+        base = name;
+    }
+    if (*base == '\0') {
+        mcme_set_error("blockstate: block '%s' has an empty name", spec);
+        mcme_arena_free(arena);
+        return MCME_EXIT_USAGE;
+    }
+
+    /* Java blockstate properties are strings — the game's own
+       domain. A numeric state is a refusal, not a coercion, so it
+       can never masquerade as a property that matches nothing. */
+    McmeState props[64];
+    size_t prop_count = 0;
+    if (states) {
+        for (size_t i = 0; i < states->compound.len; ++i) {
+            const McmeCompoundEntry *e = &states->compound.entries[i];
+            if (e->value->type != MCME_TAG_String) {
+                mcme_set_error("blockstate: state '%.*s' is not a "
+                               "string — Java blockstate properties "
+                               "are strings",
+                               (int)e->name.len, e->name.data);
+                mcme_arena_free(arena);
+                return MCME_EXIT_USAGE;
+            }
+            if (prop_count >= sizeof props / sizeof props[0]) {
+                mcme_set_error("blockstate: block '%s' has more than "
+                               "%zu states", spec,
+                               sizeof props / sizeof props[0]);
+                mcme_arena_free(arena);
+                return MCME_EXIT_USAGE;
+            }
+            props[prop_count].name  = e->name.data;
+            props[prop_count].value = e->value->string.data;
+            prop_count++;
+        }
+    }
+
+    McmeBlockstateIndex *index = NULL;
+    if (!mcme_blockstate_index_open(pack_dir, &index)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("blockstate: %s", why);
+        mcme_arena_free(arena);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    McmeBlockstate answer;
+    if (!mcme_blockstate_lookup(index, ns, base, props, prop_count,
+                                &answer)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("blockstate: %s", why);
+        mcme_blockstate_index_close(index);
+        mcme_arena_free(arena);
+        return MCME_EXIT_INTERNAL;
+    }
+    mcme_blockstate_index_close(index);
+
+    if (g_opts.json) {
+        struct cJSON *o = cJSON_CreateObject();
+        if (o) {
+            char full[512];
+            snprintf(full, sizeof full, "%s:%s", ns, base);
+            cJSON_AddItemToObject(o, "block", cJSON_CreateString(full));
+            cJSON_AddItemToObject(o, "missing", cJSON_CreateBool(answer.missing));
+            cJSON_AddItemToObject(o, "models", cJSON_CreateArray());
+            cJSON *arr = cJSON_GetObjectItemCaseSensitive(o, "models");
+            for (size_t i = 0; i < answer.count; ++i) {
+                const McmeModelRef *ref = &answer.models[i];
+                cJSON *m = cJSON_CreateObject();
+                cJSON_AddItemToObject(m, "model",
+                    ref->model ? cJSON_CreateString(ref->model)
+                               : cJSON_CreateNull());
+                cJSON_AddItemToObject(m, "x", cJSON_CreateNumber(ref->x));
+                cJSON_AddItemToObject(m, "y", cJSON_CreateNumber(ref->y));
+                cJSON_AddItemToObject(m, "uvlock", cJSON_CreateBool(ref->uvlock));
+                cJSON_AddItemToArray(arr, m);
+            }
+            char *text = cJSON_PrintUnformatted(o);
+            printf("%s\n", text ? text : "null");
+            if (text) cJSON_free(text);
+            cJSON_Delete(o);
+        } else {
+            printf("null\n");
+        }
+    } else {
+        printf("%s:%s", ns, base);
+        for (size_t i = 0; i < prop_count; ++i)
+            printf("%s%s:\"%s\"", i ? "," : "{", props[i].name,
+                   props[i].value);
+        if (prop_count) printf("}");
+        if (answer.missing) {
+            printf("  (no blockstate in this pack)\n");
+        } else {
+            printf("  %zu model%s\n", answer.count,
+                   answer.count == 1 ? "" : "s");
+            for (size_t i = 0; i < answer.count; ++i) {
+                const McmeModelRef *ref = &answer.models[i];
+                printf("  %s  x %d y %d  uvlock %s\n",
+                       ref->model ? ref->model : "(no model)",
+                       ref->x, ref->y, ref->uvlock ? "true" : "false");
+            }
+        }
+    }
+
+    mcme_blockstate_free(&answer);
+    mcme_arena_free(arena);
+    return MCME_OK;
+}
+
+/* ========================================================================
  * info
  *
  * Summarise a world directory. This is the first command that exercises the
@@ -1025,8 +1196,11 @@ static int cmd_chunks(int argc, char **argv)
 
 /* Splits a block spec into name and states. States, when present,
    must parse as one SNBT compound; the tag is arena-rooted and
-   borrowed for the call that uses it. */
-static int parse_block_spec(const char *spec, McmeArena *arena,
+   borrowed for the call that uses it. `verb` names the command
+   that asked — the parser is shared, and every message it sets
+   names the command that asked, like parse_coord. */
+static int parse_block_spec(const char *verb, const char *spec,
+                            McmeArena *arena,
                             char *name, size_t name_cap,
                             const McmeTag **states)
 {
@@ -1040,8 +1214,8 @@ static int parse_block_spec(const char *spec, McmeArena *arena,
     } else {
         name_len = (size_t)(open - spec);
         if (spec_len == 0 || spec[spec_len - 1] != '}') {
-            mcme_set_error("chunk: block '%s' has '{' without a "
-                           "closing '}'", spec);
+            mcme_set_error("%s: block '%s' has '{' without a "
+                           "closing '}'", verb, spec);
             return MCME_EXIT_USAGE;
         }
         McmeTag *tag = NULL;
@@ -1049,24 +1223,24 @@ static int parse_block_spec(const char *spec, McmeArena *arena,
                                  spec_len - name_len, &tag)) {
             char why[256];
             snprintf(why, sizeof why, "%s", mcme_last_error());
-            mcme_set_error("chunk: states of block '%s' do not "
-                           "parse: %s", spec, why);
+            mcme_set_error("%s: states of block '%s' do not "
+                           "parse: %s", verb, spec, why);
             return MCME_EXIT_USAGE;
         }
         if (tag == NULL || tag->type != MCME_TAG_Compound) {
-            mcme_set_error("chunk: states of block '%s' are not "
-                           "a compound", spec);
+            mcme_set_error("%s: states of block '%s' are not "
+                           "a compound", verb, spec);
             return MCME_EXIT_USAGE;
         }
         *states = tag;
     }
 
     if (name_len == 0) {
-        mcme_set_error("chunk: block '%s' has an empty name", spec);
+        mcme_set_error("%s: block '%s' has an empty name", verb, spec);
         return MCME_EXIT_USAGE;
     }
     if (name_len >= name_cap) {
-        mcme_set_error("chunk: block name '%s' is too long", spec);
+        mcme_set_error("%s: block name '%s' is too long", verb, spec);
         return MCME_EXIT_USAGE;
     }
     memcpy(name, spec, name_len);
@@ -2000,7 +2174,7 @@ static int cmd_chunk_set(int argc, char **argv)
 
     char name[256];
     const McmeTag *states = NULL;
-    int rc = parse_block_spec(argv[4], arena, name, sizeof name,
+    int rc = parse_block_spec("chunk", argv[4], arena, name, sizeof name,
                               &states);
     if (rc == MCME_OK) {
         if (info.kind == MCME_WORLD_JAVA) {
@@ -2193,7 +2367,7 @@ static int cmd_chunk_fill(int argc, char **argv)
     }
     char name[256];
     const McmeTag *states = NULL;
-    int rc = parse_block_spec(argv[7], arena, name, sizeof name,
+    int rc = parse_block_spec("chunk", argv[7], arena, name, sizeof name,
                               &states);
     McmeNbtDoc entry;
     if (rc == MCME_OK && info.kind == MCME_WORLD_BEDROCK
@@ -3191,6 +3365,15 @@ static int dispatch(int argc, char **argv)
         }
         mcme_set_error("pack: unknown subcommand '%s' (expected info)", rest > 0 ? args[0] : "");
         return MCME_EXIT_USAGE;
+    }
+
+    if (strcmp(cmd, "blockstate") == 0) {
+        if (rest != 2) {
+            mcme_set_error("blockstate: usage: mcme blockstate "
+                           "<pack-dir> <block>");
+            return MCME_EXIT_USAGE;
+        }
+        return cmd_blockstate(args[0], args[1]);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can

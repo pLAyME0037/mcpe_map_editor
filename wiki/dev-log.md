@@ -7,6 +7,70 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — The blockstates answer: the selection layer, decided alongside the reference
+
+### Built
+
+- Blockstate resolution (D30): `mcme_blockstate_index_open`
+  parses every blockstate file under a pack's `assets/<ns>/`,
+  skipping an unparseable one with a warning — the reference's
+  loader catches that error per file too — and
+  `mcme_blockstate_lookup` answers one block state with the
+  selected models in selection order (`model` as written or NULL,
+  `x`, `y`, `uvlock`) and `missing`, which is true only for
+  no-file / no-key / no-matching-variant and never for multipart's
+  empty selection. Every rule is the reference's own: variants
+  first-match in file order with the missing-property default and
+  the comma regex that never sees a `|` second value, multipart
+  collecting every matching case under the opposite absent-property
+  rule with `OR`/`AND`/booleans/empty-`when` and the numeric value
+  that skips its case, list applies taking their first element.
+- The verb `mcme blockstate <pack-dir> <block[states]>`, human and
+  `--json {block,missing,models[]}`, reusing `parse_block_spec` —
+  which grew a `verb` parameter so its messages name the command
+  that asked, the way `parse_coord` already does. Missing
+  selections exit 0 (they are answers); a pack directory that does
+  not exist exits 2; a non-string Java state is refused.
+- The resource suite's second test pins ~25 lookups across 14
+  fixture files — every quirk above, plus the three missing shapes
+  and the skipped bad file — and its first run earned its keep:
+  the pair scanner passed the name slice *through* the `=` (the
+  advancing index was reused after the value scan), so every
+  variant key looked states-less and the first key always won. The
+  failure shape — probes whose states were silently invisible —
+  is exactly what a polluted name looks like.
+- `tools/ref_blockstate.py`: the reference's `_get_model` decides
+  for itself while the pin records what it selects (a wrap on
+  `_load_blockstate_model`, the one funnel every selection passes,
+  returning the missing mesh so no model file opens). 27 crafted
+  probes, 500 probes over the reader's own `java_vanilla_fix`
+  blockstates (per variant key plus each multipart file's
+  `when`-value cartesian under a budget), 3 usage refusals —
+  530 checks. Its stderr shows the reference's own skip paths
+  firing (the bad fixture, the numeric `when`); mcme answered the
+  same on each.
+- Gates: `./rebuild.sh test` PASS 5 suites; `./mcme selftest`
+  PASS 6 suites under the default ASan+UBSan+leak run; battery
+  13/13 rc=0 with `ref_blockstate` added. Nothing under `tests/`
+  staged; the golden stores show no tracked changes.
+
+### Notes
+
+- Out-of-domain shapes are recorded in decisions.md#D30 rather
+  than mirrored into fantasies: a non-object `variants` key would
+  crash the reference and mcme answers missing; everything the
+  reference's per-case catch skips, mcme skips.
+- The index is a linear scan — right for a verb, wrong for a
+  mesher. The hash arrives when the mesher does (rule: build the
+  abstraction when the consumer does).
+
+### Next
+
+- The model layer's own selection: `_recursive_load_block_model` —
+  parent chains merged child-over-parent, the `textures` dict with
+  `#reference` substitution, `elements`/`faces` validation and the
+  default `display` — measured through the same wrapped reference
+  the D30 pin used. Rotation at mesh time and the atlas follow.
 ## 2026-10-17 — Phase 5 opens: the pack announces itself from one manifest
 
 ### Built

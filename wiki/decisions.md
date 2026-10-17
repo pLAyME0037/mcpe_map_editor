@@ -1883,3 +1883,82 @@ cannot wait for, multi-pack stacking forces the merge question
 earlier than the reader's list-of-packs model, or the atlas lands
 before blockstates need it (then the identity layer moves up a drop,
 and this one still answers `pack info`).
+
+## D30 — The blockstates answer: variants first-match, multipart collects
+
+**What the reference does.** `_get_model` in the reader's manager
+answers one block state with a mesh, but the *selection* — which
+JSON apply values it feeds the mesher — is where the rules live,
+and the two branches of a blockstate file follow deliberately
+different laws:
+
+- `variants` is consulted in **file order** and the first key that
+  matches wins outright. A key is comma-separated `name=value`
+  pairs matched by the regex `,(name)=(value)` over `[a-z0-9_]+`:
+  text the regex cannot pair — a `|`-separated second value, an
+  unpairable key — is never seen (and a key it pairs nothing from
+  matches *everything*, `all([])` being true). A pair whose
+  property the block does **not** have matches anyway, because the
+  reference defaults the missing property to the pair's own value.
+  A `""` key matches unconditionally at its position. No key
+  matching, no file, or a file holding neither key answers the
+  missing mesh.
+- `multipart` consults every case in order and **every** matching
+  case contributes its `apply` — an empty result list is an empty
+  selection, *not* missing. Here a property the block does not
+  have **never** matches (the reference looks it up as None).
+  `OR` needs one arm, `AND` needs all, an empty arm or empty
+  `when` matches, a `when` value splits on `|` or is a JSON
+  boolean, and a value of any other type raises — which the
+  reference's per-case catch turns into *skip this case*.
+- An `apply` that is a list contributes its **first** element; one
+  without a `model` degrades the whole selection to the missing
+  mesh on the variants branch while the selection still happened.
+
+**What mcme does.** `src/resource/blockstate.c` mirrors those laws
+pair for pair, arm for arm, quirk for quirk — including the two
+opposite absent-property rules, which differ on purpose. The index
+parses every blockstate file at open and skips an unparseable one
+with a warning, the reference's loader catching that error per
+file the same way. The answer is `McmeBlockstate`: the selected
+models in selection order with `model` as written (NULL when the
+apply carried none), `x`, `y`, `uvlock`, and `missing` — true only
+for no-file / no-key / no-matching-variant, never for multipart's
+empty selection. The verb is `mcme blockstate <pack-dir>
+<block[states]>`, human and `--json`; a selection is an answer, so
+`missing` exits 0, while a pack directory that does not exist
+exits 2 so a typo cannot read as "every block is missing". Java
+state properties are strings and a numeric state is refused, not
+coerced, because a number can never be the string it pretends to
+be.
+
+**How parity was measured.** The reference answers with a mesh,
+so the pin observes the selection where it happens: it wraps
+`_load_blockstate_model` — the single function every selected
+variant and every matching multipart case passes through — records
+the raw apply values in order, and returns the missing mesh so no
+model file ever opens. What lands in the record plus whether
+nothing was recorded and the result *is* the missing mesh is
+exactly mcme's two fields. `tools/ref_blockstate.py` runs that
+against 27 crafted probes (every quirk above), 500 probes across
+the reader's own `java_vanilla_fix` pack's real game files (one
+per variant key, the cartesian of each multipart file's `when`
+values under a budget), and 3 usage refusals — 530 checks. The
+reference's logged exceptions during the run (the bad fixture
+file, the numeric `when` value) are its skip paths firing; mcme
+answered the same on each.
+
+**Out of domain, recorded.** A `variants` key that is not a JSON
+object would crash the reference outright; mcme answers missing
+instead. Shapes the reference's own catch skips (a non-object
+`when` or `apply`, an empty apply list) mcme skips too. The index
+is a linear scan — thousands of files per lookup is fine for a
+verb and would not be for a mesher; the index grows a hash when
+the mesher arrives, not before.
+
+**Reverses if:** pack stacking arrives (the reference lets later
+packs overwrite earlier ones; mcme takes one pack directory), the
+model layer needs rotations applied at *this* layer rather than
+at mesh time, or a game format retires variants/multipart for
+something else entirely — in which case `pack info` and the index
+still stand and only `resolve_*` changes.
