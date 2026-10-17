@@ -587,10 +587,9 @@ void mcme_mesh_free(McmeMesh *mesh);
  *     rectangle, tint — built per cull bucket as
  *     `verts[faces]`, `tverts[faces]`, the rectangle written once
  *     per THREE rows (one triangle) from the bucket's per-triangle
- *     texture index, and the tint multiplied by a per-direction
- *     brightness. The brightness and the chunk-level light fold
- *     are the builder's shading, out of this layer's domain; the
- *     rows' rectangles are here.
+ *     texture index, and the tint folded twice — the per-direction
+ *     brightness, then the band shade — which the table's `tints`
+ *     answers (D36); the rows' rectangles are here.
  *   - The rectangle for a texture path comes from one rule: the
  *     page's rectangle under that exact name, or the missing
  *     image's own rectangle when the name is not on the page. The
@@ -624,6 +623,38 @@ void mcme_mesh_free(McmeMesh *mesh);
 bool mcme_atlas_bounds(const McmeAtlas *atlas, const char *name,
                        double out[4]);
 
+/* ========================================================================
+ * The tint column (D36)
+ *
+ * The builder's table's last group is the vertex's colour, and it
+ * is the mesh's tint folded twice before the rows are done. First
+ * with a per-direction brightness the builder owns: a step of 0.15
+ * per side — down three steps, the east/west pair two, the
+ * north/south pair one, up and the cullless none bucket none — one
+ * grey on all three components. Then with a band shade the vertex's
+ * WORLD height reads out of a triangular wave: (y / 32) % 2,
+ * folded back over 1 where it passes the top, and scaled — 0.9 +
+ * 0.2 of it. The light runs 0.9 at the trough to 1.1 at the peak,
+ * 0.1 either side of flat, and back every 64 blocks: the trough
+ * belongs to t == 0 (y a multiple of 64) and the peak to t == 1
+ * (y == 32, 96, ...) because the reference folds `shade > 1`, not
+ * `>=`.
+ *
+ * The wave reads the block's world height — the builder adds the
+ * chunk offset to the vertex before shading — so the table's
+ * answer takes the block's own y. The modulo in that read is
+ * numpy's: its remainder carries the DIVISOR's sign, so a block
+ * below zero walks the wave like any other. C's fmod would answer
+ * negative and fold to a light below the trough; mcme adds the
+ * period back.
+ *
+ * Under the fold the mesh's tint is D32's answer: the default
+ * (1, 1, 1) for every block the reference does not colour. The
+ * block tints themselves — grass, foliage — stay out of this
+ * layer; the pins skip the blocks the reference tints, by the
+ * reference's own tint function.
+ */
+
 /* One cull bucket's rows in atlas space — one row per vertex of
    the face stream (six per face: the two triangles the builder
    draws), in stream order, so a row's rectangle is its
@@ -632,6 +663,7 @@ typedef struct {
     double *bounds;   /* 4 per row: u0 v0 u1 v1                  */
     double *auvs;     /* 2 per row: the coordinates mapped into
                          that rectangle                          */
+    double *tints;    /* 3 per row: r g b under the two folds     */
     size_t  row_count;
 } McmeAtlasBucket;
 
@@ -640,15 +672,17 @@ typedef struct {
     bool            present[7]; /* as the mesh has them          */
 } McmeAtlasMesh;
 
-/* Answers the mesh's texture coordinates in atlas space:
-   `bounds` naming the rectangle every row's triangle draws from
-   (its texture looked up by the rule above) and `auvs` the mesh's
-   own coordinates mapped through it, the fragment stage's
-   arithmetic done here. Answers `*out` (released with
-   mcme_atlas_mesh_free); false only on a null argument or an
-   exhausted heap. */
+/* Answers the mesh's texture coordinates in atlas space and its
+   colour: `bounds` naming the rectangle every row's triangle draws
+   from (its texture looked up by the rule above), `auvs` the
+   mesh's own coordinates mapped through it — the fragment stage's
+   arithmetic done here — and `tints` the mesh's tint folded the
+   builder's way, brightness and band shade (D36), the shade
+   reading the block's world height as `block_y` plus the vertex's
+   own. Answers `*out` (released with mcme_atlas_mesh_free); false
+   only on a null argument or an exhausted heap. */
 bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
-                     McmeAtlasMesh *out);
+                     long block_y, McmeAtlasMesh *out);
 
 /* Releases an atlas-space mesh and everything it owns. NULL is a
    no-op. */

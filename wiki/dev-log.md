@@ -7,6 +7,78 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-17 — The tint column: brightness and the band shade
+
+### Built
+
+- The table grew its last column: every row of every bucket now
+  carries `tints` — the mesh's own tint folded the builder's way,
+  in its order — under `mcme_atlas_mesh(..., block_y, ...)`.
+  First the per-direction brightness, the builder's step table
+  (down three steps of 0.15, east/west two, north/south one, up
+  and the cullless none bucket none, one grey on all three
+  components); then the band shade, the vertex's WORLD height
+  reading a triangular wave — `(y / 32) % 2`, folded back over 1
+  where it passes the top, scaled to `0.9 + 0.2` of it, so the
+  light runs 0.9 to 1.1 and back every 64 blocks.
+- Three quirks answered the way the reference answers them: the
+  peak belongs to `t == 1` (the fold is `shade > 1`, not `>=` —
+  y ≡ 32 mod 64 is the brightest, y ≡ 0 the darkest); the modulo
+  is numpy's, whose remainder carries the DIVISOR's sign, so a
+  block below zero walks the wave where C's fmod would slide
+  under the trough (mcme adds the period back); and the shade
+  reads the vertex AFTER the chunk offset lands on it, so the
+  table's answer takes the block's world height.
+- The verb grew `--y <n>`: the block's world height for the
+  fold, an integer of any sign, default 0 — the one number the
+  builder's shading reads that the block alone does not carry
+  (x and z never enter the fold). Bad or missing values refuse
+  with usage, exit 1. `--json` prints `tints` beside `bounds`
+  and `auvs` per direction.
+- The resource suite's `test_atlas_uv` grew two tint sections:
+  cube6's rows at the origin, the fold checked per row against
+  the mesh's own vertex heights with literal anchors on the flat
+  faces (down 0.495, up 0.90625), and the wave over the block's
+  height — 0 / 0 / 32 / 32 / 64 / -32 / -1 with their literal
+  answers, the negative pair the fmod trap.
+- `tools/ref_atlasmesh.py` now compares the table's tint column
+  row for row (builder's cols 9:12 against mcme's `tints`, the
+  mesh-document strip aware of the new key), drives the builder
+  at `[0, y, 0]` with mcme at the matching `--y` (the position
+  comparison subtracts the offset back — the probe still meshes
+  at loop zero inside the grid's padding), re-runs the cull cube
+  over eight world heights — 16, 32, 48, 63, 64, 96, -1, -32 —
+  and adds the two `--y` usage refusals: 93 checks.
+
+### Notes
+
+- The brightness table is greyscale by construction — the
+  builder multiplies all three tint components by the same
+  scalar — so the fold's three answers are always equal for a
+  mesh tinted (1, 1, 1); the selftest's per-component equality
+  doubles as a check that the mesh's tint under the fold is
+  D32's default.
+- The non-dyadic numbers are what the float32 tolerance now
+  earns: 0.85 and 0.9 are not powers of two, and the table
+  rounds the fold through its storage where mcme keeps doubles.
+- The block tints — grass, foliage, the coloured wires — stay
+  out of domain by the same rule as before: mcme answers the
+  default (1, 1, 1) under the fold, so the pins skip the blocks
+  the reference tints, by the reference's own tint function.
+- Gates: battery 18/18 rc=0 with `ref_atlasmesh` at 93 checks;
+  `./mcme selftest` PASS 6 suites, 0 failures under ASan+UBSan;
+  `./rebuild.sh test` PASS. Nothing under `tests/` staged; the
+  golden stores show no tracked changes.
+
+### Next
+
+- The table now answers position, coordinates and colour —
+  everything the vertex stream carries. The next question is
+  what the editor does with them beyond the builder: the
+  renderer's own consumption (AO, the light columns the builder
+  does not bake) or the write-side verbs returning to the
+  world's own data.
+
 ## 2026-10-17 — Texture coordinates in atlas space
 
 ### Built

@@ -2016,7 +2016,7 @@ static void test_atlas_uv(void)
                   "cube6 transparency %d, want opaque",
                   (int)m.transparency);
         McmeAtlasMesh t;
-        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, &t),
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
                   "cube6 table: %s", mcme_last_error());
         for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
             CHECK_MSG(t.present[d], "cube6 bucket %d absent", d);
@@ -2056,7 +2056,7 @@ static void test_atlas_uv(void)
         McmeMesh m;
         CHECK(build_mesh(models, tex, "mc", "block/wrap", &m));
         McmeAtlasMesh t;
-        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, &t),
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
                   "wrap table: %s", mcme_last_error());
         CHECK_MSG(t.present[MCME_CULL_NONE],
                   "wrap: no cullface, so the none bucket");
@@ -2092,7 +2092,7 @@ static void test_atlas_uv(void)
         static const char *const want_tex[] = { "missing_no" };
         check_textures(&m, want_tex, 1);
         McmeAtlasMesh t;
-        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, &t),
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
                   "missingpart table: %s", mcme_last_error());
         CHECK(t.present[MCME_CULL_NONE]);
         const McmeAtlasBucket *b_ = &t.buckets[MCME_CULL_NONE];
@@ -2111,14 +2111,98 @@ static void test_atlas_uv(void)
         mcme_mesh_free(&m);
     }
 
+    /* --- the tint fold: the direction's brightness first, then the
+           band shade at the vertex's world height — the block's y
+           under its own. cube6's faces sit at model heights 0 and 1;
+           at the origin the wave is the rising ramp alone (t under 1,
+           nothing folded back), so the shade reads 0.9 + 0.2 y/32
+           and the fold the direction's step of 0.15 --- */
+    {
+        /* down three steps, east/west two, north/south one, up and
+           the cullless bucket none — the builder's table, D36 */
+        static const double k_bright[7] = {
+            0.55, 1.0, 0.85, 0.70, 0.85, 0.70, 1.0
+        };
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/cube6", &m));
+        McmeAtlasMesh t;
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
+                  "cube6 tint table: %s", mcme_last_error());
+        for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
+            const McmeAtlasBucket *b_ = &t.buckets[d];
+            if (!b_->tints) continue;
+            for (size_t r = 0; r < b_->row_count; ++r) {
+                double y = m.buckets[d].verts[
+                    m.buckets[d].faces[r] * 3 + 1];
+                double want = k_bright[d] * (0.9 + 0.2 * y / 32.0);
+                const double *tint = &b_->tints[r * 3];
+                CHECK_MSG(fabs(tint[0] - want) < 1e-9 &&
+                          fabs(tint[1] - want) < 1e-9 &&
+                          fabs(tint[2] - want) < 1e-9,
+                          "cube6 bucket %d row %zu tint %g %g %g, "
+                          "want %g", d, r, tint[0], tint[1], tint[2],
+                          want);
+            }
+        }
+        /* The flat faces anchor the literals: down at height 0 the
+           trough under three steps, up at height 1 the ramp's first
+           notch. */
+        for (size_t r = 0; r < 6; ++r) {
+            const double *tint = &t.buckets[MCME_CULL_DOWN]
+                                     .tints[r * 3];
+            CHECK(fabs(tint[0] - 0.495) < 1e-9 &&
+                  fabs(tint[1] - 0.495) < 1e-9 &&
+                  fabs(tint[2] - 0.495) < 1e-9);
+            tint = &t.buckets[MCME_CULL_UP].tints[r * 3];
+            CHECK(fabs(tint[0] - 0.90625) < 1e-9 &&
+                  fabs(tint[1] - 0.90625) < 1e-9 &&
+                  fabs(tint[2] - 0.90625) < 1e-9);
+        }
+        mcme_atlas_mesh_free(&t);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the wave, over the block's world height: at 32 the peak
+           (t == 1 — the reference folds `shade > 1`, so the peak
+           belongs to the top, not past it), at 64 the trough again,
+           and below zero numpy's remainder walks the wave where C's
+           fmod would answer negative and slide under the trough --- */
+    {
+        static const struct { long by; int d; double want; } k_wave[] = {
+            {   0, MCME_CULL_DOWN, 0.495 },
+            {   0, MCME_CULL_UP,   0.90625 },
+            {  32, MCME_CULL_DOWN, 0.605 },
+            {  32, MCME_CULL_UP,   1.09375 },
+            {  64, MCME_CULL_DOWN, 0.495 },
+            { -32, MCME_CULL_DOWN, 0.605 },
+            {  -1, MCME_CULL_DOWN, 0.4984375 }
+        };
+        McmeMesh m;
+        CHECK(build_mesh(models, tex, "mc", "block/cube6", &m));
+        for (size_t i = 0; i < sizeof k_wave / sizeof *k_wave; ++i) {
+            McmeAtlasMesh t;
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &m, k_wave[i].by, &t),
+                      "wave table: %s", mcme_last_error());
+            const double *tint = t.buckets[k_wave[i].d].tints;
+            CHECK_MSG(tint && fabs(tint[0] - k_wave[i].want) < 1e-9 &&
+                      fabs(tint[1] - k_wave[i].want) < 1e-9 &&
+                      fabs(tint[2] - k_wave[i].want) < 1e-9,
+                      "wave by %ld bucket %d tint %g, want %g",
+                      k_wave[i].by, k_wave[i].d, tint ? tint[0] : -1.0,
+                      k_wave[i].want);
+            mcme_atlas_mesh_free(&t);
+        }
+        mcme_mesh_free(&m);
+    }
+
     /* --- refusals --- */
     {
         McmeMesh m;
         CHECK(build_mesh(models, tex, "mc", "block/wrap", &m));
         McmeAtlasMesh t;
-        CHECK(!mcme_atlas_mesh(NULL, &m, &t));
-        CHECK(!mcme_atlas_mesh(&atlas, NULL, &t));
-        CHECK(!mcme_atlas_mesh(&atlas, &m, NULL));
+        CHECK(!mcme_atlas_mesh(NULL, &m, 0, &t));
+        CHECK(!mcme_atlas_mesh(&atlas, NULL, 0, &t));
+        CHECK(!mcme_atlas_mesh(&atlas, &m, 0, NULL));
         mcme_clear_error();
         mcme_mesh_free(&m);
         mcme_atlas_mesh_free(NULL);

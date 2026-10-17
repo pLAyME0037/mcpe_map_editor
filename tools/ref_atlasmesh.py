@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Cross-check: `mcme atlasmesh` — one block state, its texture
-coordinates in atlas space, answered by mcme and by the editor's own
-chunk builder plus its resource pack's bounds rule deciding the same
-question (decisions.md#D35).
+coordinates and its colour in atlas space, answered by mcme and by
+the editor's own chunk builder plus its resource pack's bounds rule
+deciding the same questions (decisions.md#D35, D36).
 
 How the reference is observed. The table is the editor's chunk
 builder (chunk_builder_cy.pyx) run headless: one block placed in an
@@ -11,7 +11,9 @@ builder (chunk_builder_cy.pyx) run headless: one block placed in an
 rows are the stream; each 12-float row carries position, texture
 coordinate, the texture rectangle — written per THREE rows, one
 triangle, stepping the block mesh's per-triangle texture index — and
-the vertex tint the shader will shade. The rectangles come from the
+the vertex tint, which the builder folds twice before the table is
+done: the direction's brightness, then the band shade over the
+vertex's world height (D36). The rectangles come from the
 editor's OpenGL resource pack's own texture_bounds rule (exact key,
 else the missing image's rectangle) over the atlas the editor's own
 textureatlas module builds from the input mcme is handed: the
@@ -27,6 +29,14 @@ recorded. The pack's model manager caches by id(), so the pin hands
 each probe a fresh palette and clears the cache: id reuse between
 probes would otherwise answer a probe with the previous block's
 geometry.
+
+The world height the shade reads is the pin's to set: the builder
+adds dy = chunk_offset[1] plus the sub-chunk's own y — the pin's
+sub-chunk y is 0 — to the vertex before shading, so the pin drives
+the builder at offset [0, y, 0] and mcme with `--y y`. The probe at
+grid (1, 1, 1) meshes at loop zero inside the grid's one-cell
+padding, so nothing else moves with y; the rows' positions ride the
+offset, and the position comparison subtracts it back.
 
 The mapping the coordinates live in is the fragment stage's own
 arithmetic (render_chunk_330.frag), transcribed: mix(b0, b1,
@@ -58,14 +68,25 @@ What is compared:
     sentinel's rectangle through the missing machinery); and a
     multipart merge (two cubes' rows concatenated in one bucket).
 
+  WORLD HEIGHTS — the cull cube re-run over eight block heights for
+    the wave the shade reads out of: 16 (mid-ramp), 32 (the peak,
+    where t == 1 and the reference's `shade > 1` fold has not fired
+    yet), 48 (past the top, folded back), 63 (just under the far
+    side of the wave), 64 and 96 (the period, the next peak), and
+    two below zero — -1, where numpy's remainder walks the wave
+    C's fmod would answer negative and slide under the trough, and
+    -32, at the peak on the same parting. Every row's tint must
+    agree, and so must the positions, the offset subtracted back.
+
   VANILLA FIX — the reader's own shipped pack, completed with an
     opaque RGBA image behind every texture its models can name and
     given the air ring it does not ship, one probe per blockstate
     file at its first variant key (the full key sweep is D33's
     ground; D35's table rides on the meshes it pinned). Blocks the
     reference tints are skipped by rule and counted — D32 answered
-    the default tint, and the tint column is out of this pin's
-    domain alike.
+    the default tint, and under the fold mcme's default would part
+    company with the reference's colour. The block tints stay out of
+    this pin's domain alike.
 
   BROKEN IMAGE — a pack whose only texture is not a PNG: the
     reference's manager never finishes loading (Pillow refuses the
@@ -76,13 +97,18 @@ What is compared:
 
   USAGE — missing arguments exit 1, a pack directory that does not
     exist exit 2, an empty namespace or name exit 1, a non-string
-    state exit 1 — the block prelude's own answers (D33).
+    state exit 1, `--y` without a value or with a non-integer one
+    exit 1 — the block prelude's own answers (D33) and the flag's
+    own refusal.
 
 The comparison tolerance is float32: the builder's table is float32,
-so its values are compared with a 1e-6 slack. Every in-domain number
-is dyadic and would compare exact — pages are powers of two,
-coordinates divide by 16 — but the storage precision is the honest
-bound, and element rotation is not dyadic at all.
+so its values are compared with a 1e-6 slack. The rectangles and
+coordinates are dyadic and would compare exact — pages are powers of
+two, coordinates divide by 16 — but the fold is not dyadic at all:
+the brightness steps of 0.15 and the shade's 0.9 + 0.2 round
+through the table's storage where mcme keeps doubles, and the
+storage precision is the honest bound. Element rotation is not
+dyadic either.
 
 Usage:
     venv/bin/python tools/ref_atlasmesh.py --mcme ./mcme
@@ -270,13 +296,16 @@ def build_opack(mgr):
     return opack, img
 
 
-def ref_table(opack, name: str, props: dict[str, str]):
-    """The builder's own table for one block at the world origin.
-    The probe sits at grid (1, 1, 1) — meshed at loop zero, its rows
-    the stream's own — with air in every ring cell: air is not a
-    full block, so the cull test keeps every face. The palette gets
-    a fresh list (the pack caches by id()) and the cache is cleared:
-    id reuse between probes would answer with stale geometry."""
+def ref_table(opack, name: str, props: dict[str, str],
+              y: int = 0):
+    """The builder's own table for one block at world height y (the
+    chunk offset sets it; the sub-chunk's own y is 0 — dy is their
+    sum). The probe sits at grid (1, 1, 1) — meshed at loop zero,
+    its rows the stream's own — with air in every ring cell: air is
+    not a full block, so the cull test keeps every face. The palette
+    gets a fresh list (the pack caches by id()) and the cache is
+    cleared: id reuse between probes would answer with stale
+    geometry."""
     import numpy
 
     grid = numpy.zeros((18, 18, 18), numpy.uint32)
@@ -284,7 +313,7 @@ def ref_table(opack, name: str, props: dict[str, str]):
     palette = [make_block("air", {}), make_block(name, props)]
     opack.block_model_manager = {}
     opaque, trans = _REF.cb.create_lod0_chunk(
-        opack, numpy.array([0, 0, 0], numpy.int64), [(grid, 0)],
+        opack, numpy.array([0, y, 0], numpy.int64), [(grid, 0)],
         palette, 12)
     rows_o = numpy.frombuffer(opaque[0], numpy.float32).reshape(-1, 12)
     rows_t = numpy.frombuffer(trans[0], numpy.float32).reshape(-1, 12)
@@ -314,18 +343,19 @@ def mcme_spec(name: str, props: dict[str, str]) -> str:
 
 
 def mcme_atlasmesh(mcme: str, packdir: str, name: str,
-                   props: dict[str, str]) -> dict:
+                   props: dict[str, str], y: int = 0) -> dict:
     rc, out, err = run(mcme, "atlasmesh", packdir,
-                       mcme_spec(name, props), "--json")
+                       mcme_spec(name, props), "--json", "--y", str(y))
     if rc != 0:
         raise AssertionError(
-            f"atlasmesh {mcme_spec(name, props)}: exit {rc}, "
+            f"atlasmesh {mcme_spec(name, props)} --y {y}: exit {rc}, "
             f"stderr {err.strip()!r}")
     try:
         return json.loads(out)
     except json.JSONDecodeError:
         raise AssertionError(
-            f"atlasmesh {mcme_spec(name, props)}: unparseable JSON {out!r}")
+            f"atlasmesh {mcme_spec(name, props)} --y {y}: "
+            f"unparseable JSON {out!r}")
 
 
 def mesh_diff(got, want, path: str = "mesh") -> str | None:
@@ -378,13 +408,17 @@ def f32_diff(got, want, what: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
-                props: dict[str, str], checks: int, why: str) -> int:
+                props: dict[str, str], checks: int, why: str,
+                y: int = 0) -> int:
     """The reference answers its mesh document and its builder's
-    table; mcme answers the same document plus the table's two new
-    columns, and every row must agree."""
+    table; mcme answers the same document plus the table's new
+    columns, and every row must agree. At world height y the rows
+    carry the offset in their positions and their tints; the
+    document mcme prints is the block's own, so the position
+    comparison subtracts the offset back."""
     spec = mcme_spec(name, props)
     want = ref_get_model(mgr, name, props)
-    got = mcme_atlasmesh(mcme, packdir, name, props)
+    got = mcme_atlasmesh(mcme, packdir, name, props, y)
 
     # The mesh document: D33's ground, re-pinned on this verb so the
     # new columns are read off a mesh both sides agree on. Fresh
@@ -392,7 +426,7 @@ def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
     got_mesh = {k: v for k, v in got.items() if k != "size"}
     got_mesh["dirs"] = {
         dname: {k: v for k, v in d.items()
-                if k not in ("bounds", "auvs")}
+                if k not in ("bounds", "auvs", "tints")}
         for dname, d in got.get("dirs", {}).items()}
     d = mesh_diff(got_mesh, want, spec)
     if d:
@@ -405,7 +439,7 @@ def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
 
     # The builder's table, split into its two streams — only one
     # holds the probe's rows; the ring block answers no faces.
-    rows_o, rows_t = ref_table(opack, name, props)
+    rows_o, rows_t = ref_table(opack, name, props, y)
     rows, other = ((rows_t, rows_o) if want["transparent"] == 1
                    else (rows_o, rows_t))
     if len(other):
@@ -437,13 +471,20 @@ def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
             raise AssertionError(
                 f"{why}: {spec} {dname}: {len(g['auvs'])} auv values "
                 f"for {n} rows")
+        if len(g["tints"]) != 3 * n:
+            raise AssertionError(
+                f"{why}: {spec} {dname}: {len(g['tints'])} tint values "
+                f"for {n} rows")
         verts, tverts, faces = g["verts"], g["tverts"], g["faces"]
         for r in range(n):
             row = rows[walked + r]
             fi = faces[r]
             pos, tv, rect = row[0:3], row[3:5], row[5:9]
             for seq, want_seq, what in (
-                (pos, verts[3 * fi:3 * fi + 3], "position"),
+                # The builder's rows ride the world offset; the
+                # document mcme prints is the block's own.
+                (pos, (verts[3 * fi], verts[3 * fi + 1] + y,
+                       verts[3 * fi + 2]), "position"),
                 (tv, tverts[2 * fi:2 * fi + 2], "tvert"),
                 (rect, g["bounds"][4 * r:4 * r + 4], "bounds"),
             ):
@@ -456,6 +497,13 @@ def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
             # arithmetic, must be the auv mcme printed.
             d = f32_diff(g["auvs"][2 * r:2 * r + 2], shader_auv(tv, rect),
                          f"{spec} {dname} row {r} auv")
+            if d:
+                raise AssertionError(f"{why}: {d}")
+            # The tint the builder folded — the mesh's tint times the
+            # direction's brightness times the band shade at the
+            # row's world height — must be the tints mcme printed.
+            d = f32_diff(g["tints"][3 * r:3 * r + 3], row[9:12],
+                         f"{spec} {dname} row {r} tint")
             if d:
                 raise AssertionError(f"{why}: {d}")
         walked += n
@@ -489,6 +537,16 @@ def check_usage(mcme: str, pack: str, tmp: str, checks: int) -> int:
                          'minecraft:atlas_cube{a:1}')
     if rc != 1:
         raise AssertionError(f"non-string state: exit {rc}, want 1")
+    checks += 1
+    rc, _out, _err = run(mcme, "atlasmesh", pack,
+                         "minecraft:atlas_cube", "--y")
+    if rc != 1:
+        raise AssertionError(f"`--y` without a value: exit {rc}, want 1")
+    checks += 1
+    rc, _out, _err = run(mcme, "atlasmesh", pack,
+                         "minecraft:atlas_cube", "--y", "nope")
+    if rc != 1:
+        raise AssertionError(f"`--y nope`: exit {rc}, want 1")
     return checks + 1
 
 
@@ -880,11 +938,23 @@ def main() -> int:
              "none and cull buckets, the translucent stream, three "
              "rectangles in one bucket, UVs wrapped not clamped, the "
              "sentinel behind a missing texture, and a multipart "
-             "merge")
+             "merge — every row's rectangle, auv and tint alike")
+
+        # --- the band shade over the world height: the wave the
+        # builder reads out of the vertex's y, at every turn ---
+        for y in (16, 32, 48, 63, 64, 96, -1, -32):
+            checks = check_probe(args.mcme, pack, mgr, opack,
+                                 img.size[0], "atlas_cull", {}, checks,
+                                 f"world y {y}", y)
+        _log("ok — world heights: the cull cube at 16 / 32 / 48 / 63 / "
+             "64 / 96 / -1 / -32 — mid-ramp, the peak where t == 1, "
+             "folded back past the top, the near-trough, the period, "
+             "the next peak, and two below zero where numpy's modulo "
+             "parts ways with C's fmod")
 
         # --- the usage refusals, the block prelude's own ---
         checks = check_usage(args.mcme, pack, tmp, checks)
-        _log("ok — usage refusals: 1 / 2 / 1 / 1 / 1")
+        _log("ok — usage refusals: 1 / 2 / 1 / 1 / 1 / 1 / 1")
 
         # --- the pack whose texture is not an image: each side
         # pinned to its own refusal ---
@@ -915,9 +985,10 @@ def main() -> int:
         _log(f"ok — java_vanilla_fix: {len(probes) - tinted} probes "
              f"answered alike over real game data — banners, chests, "
              f"heads and statues; {tinted} skipped as blocks the "
-             f"reference tints (the tint column is out of domain), "
-             f"{wrote} opaque images behind the pack and the air ring "
-             f"it does not ship")
+             f"reference tints (the block tints stay out of domain — "
+             f"under the fold mcme's default would part company with "
+             f"the reference's colour), {wrote} opaque images behind "
+             f"the pack and the air ring it does not ship")
 
         _log(f"ok — {checks} checks")
         return 0

@@ -428,8 +428,32 @@ bool mcme_atlas_bounds(const McmeAtlas *atlas, const char *name,
     return true;
 }
 
+/* The builder's per-direction brightness (chunk_builder_cy.pyx: a
+   step of 0.15 per side — down three steps, the east/west pair
+   two, the north/south pair one, up and the cullless none bucket
+   none) — indexed by McmeCullDir, DOWN first. */
+static const double k_brightness[7] = {
+    0.55, 1.0, 0.85, 0.70, 0.85, 0.70, 1.0
+};
+
+/* The band shade at a vertex's world height: the builder's
+   triangular wave — (y / 32) % 2, folded back over 1 where it
+   passes the top, scaled to 0.9 + 0.2 of it — so the light runs
+   0.9 at the trough to 1.1 at the peak and back every 64 blocks.
+   The reference reads the wave with numpy's modulo, whose
+   remainder carries the DIVISOR's sign; C's fmod keeps the
+   dividend's, so the period is added back for a vertex below zero
+   (D36). */
+static double band_shade(double y)
+{
+    double t = fmod(y / 32.0, 2.0);
+    if (t < 0.0) t += 2.0;
+    if (t > 1.0) t = 2.0 - t;
+    return 0.9 + 0.2 * t;
+}
+
 bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
-                     McmeAtlasMesh *out)
+                     long block_y, McmeAtlasMesh *out)
 {
     if (!atlas || !mesh || !out) {
         mcme_set_error("atlas mesh: null argument");
@@ -453,7 +477,8 @@ bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
         if (rows == 0) continue;
         m->bounds = calloc(rows * 4, sizeof *m->bounds);
         m->auvs = calloc(rows * 2, sizeof *m->auvs);
-        if (!m->bounds || !m->auvs) {
+        m->tints = calloc(rows * 3, sizeof *m->tints);
+        if (!m->bounds || !m->auvs || !m->tints) {
             mcme_set_error("atlas mesh: out of memory");
             mcme_atlas_mesh_free(out);
             return false;
@@ -489,6 +514,19 @@ bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
                     uv[axis] = rect[axis] +
                         (rect[axis + 2] - rect[axis]) * wrapped;
                 }
+
+                /* The tint column: the mesh's own tint folded the
+                   builder's way, in its order — the direction's
+                   brightness, then the band shade at the vertex's
+                   world height, the block's y under it (D36). The
+                   reference rounds each fold through its float32
+                   storage; mcme's doubles hold the exact product. */
+                double shade = band_shade(
+                    (double)block_y + b->verts[vert * 3 + 1]);
+                double *tint = &m->tints[row * 3];
+                for (int c = 0; c < 3; ++c)
+                    tint[c] = b->tint_verts[vert * 3 + c] *
+                        k_brightness[i] * shade;
             }
         }
     }
@@ -501,6 +539,7 @@ void mcme_atlas_mesh_free(McmeAtlasMesh *m)
     for (int i = 0; i < 7; ++i) {
         free(m->buckets[i].bounds);
         free(m->buckets[i].auvs);
+        free(m->buckets[i].tints);
     }
     memset(m, 0, sizeof *m);
 }

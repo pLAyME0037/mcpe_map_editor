@@ -2528,3 +2528,98 @@ the loader stops routing cull buckets by the `cullface`
 attribute alone (then the cullface-less probes move), or the
 sentinel's bytes change on either side (the selftest's
 byte-identity check fires).
+
+## D36 — the tint column: brightness and the band shade
+
+**What the reference does.** The builder's table folds its last
+column twice before the rows are done, and both folds multiply the
+mesh's tint into the vertex's colour (`chunk_builder_cy.pyx`). First
+the per-direction brightness — `_brightness_step = 0.15` and
+`_brightness_multiplier` keyed by the cull direction: `None` and
+`"up"` answer `(1,) * 3`, `"north"` and `"south"` `(1 - step,) * 3`,
+`"east"` and `"west"` `(1 - step * 2,) * 3`, `"down"` `(1 - step *
+3,) * 3` — greyscale, one scalar on all three components. Then the
+band shade, applied in BOTH stream branches, after the world offset
+lands on the position, to columns 9..12 only (lines 303-311 and
+322-330):
+
+    shade = ((y / 32) % 2)
+    if shade > 1:
+        shade = -shade + 2
+    shade = 0.9 + 0.2 * shade
+
+— a triangular wave in the vertex's WORLD height. The modulo is
+numpy's float32 `%`, whose remainder carries the DIVISOR's sign; the
+fold is `shade > 1`, so the peak belongs to t == 1 and the trough to
+t == 0; the scale runs the light 0.9 to 1.1 and back every 64
+blocks. The world height is the block's offset plus the vertex's
+own: `block_array.dy` is `chunk_offset[1] + sub_chunk_y` (pyx
+358-366), added to the position column before the shade reads the
+stored position back.
+
+**What mcme does.** The table grew the column: every bucket's rows
+carry `tints` (3 per row), and `mcme_atlas_mesh` takes the block's
+world height — `block_y` — as the fold's input. The brightness table
+sits indexed by McmeCullDir, DOWN first: 0.55, 1.0, 0.85, 0.70,
+0.85, 0.70, 1.0. The wave is `band_shade`: fmod into [0, 2), the
+period added back below zero (numpy's remainder rule — C's fmod
+would answer negative and slide under the trough), folded back over
+1 above it, scaled 0.9 + 0.2. The fold runs the builder's order on
+doubles: tint x brightness x shade. The mesh's tint under the fold
+is D32's default (1, 1, 1); the block tints themselves stay out.
+The verb grew `--y <n>` — default 0, any sign, bad or missing
+values refusing with usage, exit 1 — because the shade reads one
+number the block alone does not carry: x and z never enter the
+fold, so `--y` is the one positional input the fold takes. `--json`
+prints `tints` per direction beside `bounds` and `auvs`.
+
+**How parity was measured.** `ref_atlasmesh.py` grew the tint
+comparison: per row, mcme's `tints` against the builder's columns
+9:12 at the table's float32 precision. The fold is NOT dyadic —
+0.15, 0.85 and 0.9 are not powers of two — so the storage bound the
+D35 pin carried for element rotation now earns its keep on every
+tint row. The pin drives the builder at chunk offset [0, y, 0] (dy
+= the offset plus the sub-chunk's own 0) and mcme at the matching
+`--y`; the position comparison subtracts the offset back, the probe
+still meshing at loop zero inside the grid's one-cell padding. The
+cull cube (six buckets, all five brightness values) re-runs at
+eight world heights: 16 (mid-ramp), 32 (the peak — t == 1, the
+`> 1` fold not yet fired), 48 (past the top, folded back), 63
+(just under the far side of the wave), 64 (the trough again — the
+period), 96 (the next peak), and -1 and -32 (below zero, where
+numpy's modulo and C's fmod part ways — fmod would answer -0.03125
+and -1 and slide the light under the trough). Two `--y` usage
+refusals join the five: 93 checks. The selftest's `test_atlas_uv`
+grew the same expectations from the C side: the fold per row over
+cube6's own vertex heights with literal anchors on the flat faces
+(down 0.495 at the trough, up 0.90625 at the ramp's first notch)
+and the wave over the block's height (0.605 at 32, 1.09375 for the
+up face above it, 0.495 at 64, 0.605 and 0.4984375 below zero —
+the fmod trap written as literals). Gates: battery 18/18 rc=0,
+selftest 6 suites 0 failures under ASan+UBSan, `./rebuild.sh test`
+PASS.
+
+**Out of domain, recorded.** The BLOCK TINTS — grass, foliage, the
+coloured wires — the mesh's own colour before any fold: mcme
+answers the default (1, 1, 1) as D32 recorded it, and the pins skip
+the blocks the reference tints by the reference's own tint
+function, so the fold is compared only where its input agrees.
+D35's BRIGHTNESS-AND-SHADE exclusion is SUPERSEDED — this drop is
+that column, pinned. AO and the light columns: the builder does not
+bake them into this table; what the editor shows for skylight and
+block light is a different stage's answer. The x and z offsets:
+they ride the position column in the builder and never enter the
+fold, so `--y` takes the one number the shade reads, and the verb
+says so.
+
+**Reverses if:** the builder's step changes (the brightness table
+follows it), the wave's constants move (0.9 + 0.2, the 32, the 64),
+the fold's order changes (tint x brightness then x shade is what
+the float32 stores round — mcme's doubles hold the product exactly,
+so a reorder is invisible at this tolerance unless the reference
+starts rounding differently), the fold reads the position BEFORE the
+offset lands (then the world-height half of the pin's sweep moves),
+numpy's modulo semantics change under the builder (the two
+below-zero probes fire), or the reference tints a block mcme's tint
+filter no longer skips (the vanilla sweep's tint comparison parts
+company).

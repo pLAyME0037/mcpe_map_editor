@@ -10,6 +10,7 @@
  * this file a thin dispatcher is deliberate (wiki/decisions.md#D3).
  */
 
+#include <errno.h>   /* strtol's range check, for --y */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,11 +94,14 @@ static void print_usage(FILE *out)
         "                    square page: its size and where each\n"
         "                    texture landed as bounds; --out writes\n"
         "                    the page PNG\n"
-        "  atlasmesh <pack> <block>\n"
+        "  atlasmesh <pack> <block> [--y <n>]\n"
         "                    One block state, its texture coordinates\n"
         "                    in atlas space: every row carrying the\n"
-        "                    rectangle its triangle draws from and\n"
-        "                    the mesh's coordinates mapped into it\n"
+        "                    rectangle its triangle draws from, the\n"
+        "                    mesh's coordinates mapped into it, and\n"
+        "                    the tint under the builder's two folds;\n"
+        "                    --y is the block's world height, what\n"
+        "                    the band shade reads\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -1302,16 +1306,36 @@ static int cmd_atlas(const char *pack_dir, const char *out_png)
 /*
  * atlasmesh — one block state, its texture coordinates in atlas
  * space: the block-level mesh, with every row of every bucket
- * carrying the rectangle its triangle draws from and the mesh's
- * own coordinates mapped into it — the editor's chunk builder's
- * table and its fragment stage's arithmetic, quirks included
- * (D35, decisions.md#D35). The page is the pack's own (missing
- * image and all, the same build `mcme atlas` answers). --json
- * adds the page's `size` and, per direction, `bounds` and `auvs`
- * beside the mesh document; human adds the page line.
+ * carrying the rectangle its triangle draws from, the mesh's
+ * own coordinates mapped into it, and the tint the builder's
+ * two folds leave — the editor's chunk builder's table and its
+ * stages' arithmetic, quirks included (D35, D36,
+ * decisions.md#D35). The page is the pack's own (missing image
+ * and all, the same build `mcme atlas` answers). --json adds the
+ * page's `size` and, per direction, `bounds`, `auvs` and `tints`
+ * beside the mesh document; human adds the page line. --y is the
+ * block's world height for the band shade, an integer of any
+ * sign, default 0: the builder adds the chunk offset to the
+ * vertex before shading, and the block-level verb takes the one
+ * number the fold reads.
  */
-static int cmd_atlasmesh(const char *pack_dir, const char *spec)
+static int cmd_atlasmesh(const char *pack_dir, const char *spec,
+                         const char *y_arg)
 {
+    /* The block's world height for the fold: any integer, the
+       wave's own input. */
+    long block_y = 0;
+    if (y_arg) {
+        char *end = NULL;
+        errno = 0;
+        block_y = strtol(y_arg, &end, 10);
+        if (errno != 0 || end == y_arg || *end != '\0') {
+            mcme_set_error("atlasmesh: usage: --y wants an integer, "
+                           "got '%s'", y_arg);
+            return MCME_EXIT_USAGE;
+        }
+    }
+
     McmeMesh mesh;
     McmeTextureIndex *tex = NULL;
     int rc = build_block_mesh("atlasmesh", pack_dir, spec, &mesh,
@@ -1347,7 +1371,7 @@ static int cmd_atlasmesh(const char *pack_dir, const char *spec)
     }
 
     McmeAtlasMesh table;
-    if (!mcme_atlas_mesh(&atlas, &mesh, &table)) {
+    if (!mcme_atlas_mesh(&atlas, &mesh, block_y, &table)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
         mcme_set_error("atlasmesh: %s", why);
@@ -1371,6 +1395,8 @@ static int cmd_atlasmesh(const char *pack_dir, const char *spec)
                                 table.buckets[i].row_count * 4);
                 json_add_floats(d, "auvs", table.buckets[i].auvs,
                                 table.buckets[i].row_count * 2);
+                json_add_floats(d, "tints", table.buckets[i].tints,
+                                table.buckets[i].row_count * 3);
             }
             char *text = cJSON_PrintUnformatted(doc);
             printf("%s\n", text ? text : "{}");
@@ -4046,12 +4072,13 @@ static int dispatch(int argc, char **argv)
     }
 
     if (strcmp(cmd, "atlasmesh") == 0) {
-        if (rest != 2) {
+        if (rest != 2 && !(rest == 4 && strcmp(args[2], "--y") == 0)) {
             mcme_set_error("atlasmesh: usage: mcme atlasmesh "
-                           "<pack-dir> <block>");
+                           "<pack-dir> <block> [--y <n>]");
             return MCME_EXIT_USAGE;
         }
-        return cmd_atlasmesh(args[0], args[1]);
+        return cmd_atlasmesh(args[0], args[1],
+                             rest == 4 ? args[3] : NULL);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can
