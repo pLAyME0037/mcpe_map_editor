@@ -7,6 +7,49 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-16 — The name map grows to the whole spec: the 63 blocks no census reached
+
+### Built
+
+- The name table answers every block the Bedrock 1.20.80 spec
+  registers, not only the ones a real world's census was known to
+  hold (D17). A generator measured all 1,087 blocks against the
+  reference's own answers over the cells the state map walks, and
+  wrote 264 new rows as 244 new groups in the byte order the lookup
+  walks — the 309 rows D17 wrote stand unchanged. Where the answer
+  moves everywhere alike the row is a wholesale rename; where it
+  varies, value rows whose condition the reference answers
+  uniformly, first-match, the empty cell's answer as the default
+  last. The wood hanging signs are the conditional family —
+  attached_bit or hanging at 1 keeps the floor variant's name, both
+  at 0 is the wall variant — the shape bamboo already had.
+- The state map inherits the newly-named blocks: 2,207 → 2,496
+  single rows, 324 → 366 rescues, and the probe's name-skips go
+  from 6,077 cells in 63 blocks to zero. All 12,252 probe cells now
+  answer, none skipped and none failed. lit_blast_furnace carries
+  facing/lit, light_block carries level, tuff_stairs carries
+  oak_stairs' facing, the piston head carries facing/short/type.
+
+### Notes
+
+- 8 cells fabricated on a /tmp copy of the bedrock-chunks fixture
+  (level.dat from the bedrock fixture), converted through
+  `mcme convert --to java/1.20`, read back through `chunk get`, and
+  checked against the reference: 8/8 pass props_match. copper_door
+  answers oak_door, border_block and copper_bulb answer as air,
+  tuff_stairs answers oak_stairs facing south, light_block answers
+  light with its level, the hanging sign answers its wall variant
+  at both bits 0.
+- Gates green: 5 unit suites under ASan+UBSan, the selftest, and
+  the 11-script battery (rc=0); ref_convert's own 15 checks include
+  the name pin (573 rows re-asked at their conditions) and the
+  state pin.
+
+### Next
+
+- The translate layer's generated tables now cover names, states,
+  biomes, the flat map and the legacy map. Phase 4's convert
+  surface is complete for the bedrock → java/1.20 pair.
 ---
 
 ## 2026-10-16 — The state map: 3,174 generated rows answer what the keeps guessed

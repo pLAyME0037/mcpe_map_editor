@@ -1773,3 +1773,61 @@ battery run), the tag-type strictness proves too strict for a
 real-world palette the fixture never held, or the rescue families
 outgrow the two-condition rows — the probe's pair enumeration is
 the measure, and it is re-runnable from the generator.
+
+## D28 — The name map grows to the whole spec: 244 groups, the blocks no census reached
+
+**What the reference does, measured from its own answers.** D17's
+name table was the cases a real world was known to hold — the
+census of one store, 828 distinct names, and the blocks it never
+contained were left passing their Bedrock spelling straight to
+Java, where the chunk parser cannot read it. The census is gone;
+the spec is not. Every block the Bedrock 1.20.80 spec registers
+(1,087 of them) was measured against PyMCTranslate's own answers
+over the same cells the state map walks — base, every single state
+value, every one-state partial, every pair — and 63 of them
+answered a Java name mcme did not carry: the ten wood hanging
+signs, the standing signs, the copper doors and trapdoors and
+bulbs, the tuff and double-slab families, the legacy spellings
+(tripWire, pistonArmCollision), the blocks Java 1.20 does not have
+(border_block, the chemistry tables, the coloured torches).
+6,077 probe cells went unanswered because of those 63 names.
+
+**The table, grown the way D27 grew its own.** A generator
+(`/tmp/opencode/d28_gen4.py`) measured every block's cells through
+the reference, and where the answer moved it synthesized the cover:
+a wholesale row where the name moves everywhere alike, and where
+it varies, value rows whose condition the reference answers
+uniformly — every measured cell satisfying the condition names the
+same Java block — emitted in first-match order with the empty
+cell's answer as the default row last. The 309 rows D17 wrote stand
+byte-for-byte; the 264 new rows join as 244 new groups in the byte
+order the lookup walks. The acceptance is the same walk the state
+map's probe runs: every measured cell of every block resolves
+through the finished table to the reference's answer, and
+`pin_name_map` re-asks every row at its own conditions against the
+reference on every battery run.
+
+**The conditional family.** The wood hanging signs are the one
+block whose Java name hangs off the states: `attached_bit` at 1 or
+`hanging` at 1 keeps the floor variant's name, both at 0 is the
+wall variant. That is the shape bamboo_hanging_sign already had
+from D17 (the census held bamboo); the other ten wood types get
+the same three rows. Every other new block is a wholesale rename,
+several of them to `minecraft:air` for blocks Java 1.20 does not
+have — the answer is the reference's own, quirks included.
+
+**What the state map inherits.** Once the names answer, the state
+map grows rows for the blocks it had skipped: 2,207 → 2,496 single
+rows, 324 → 366 rescues. lit_blast_furnace now carries
+`facing`/`lit`, light_block carries `level` at its
+`block_light_level`, tuff_stairs carries oak_stairs' `facing`,
+piston heads carry their `facing`/`short`/`type`. The name skips go
+to zero: the probe's full 12,252 cells answer, none skipped, none
+failed.
+
+**Reverses if:** PyMCTranslate's answers move (the pin re-asks
+every row, and the probe re-measures every cell), the uniformity
+rule proves too weak for a name that needs three conditions to
+cover (the two-condition rows are the table's ceiling), or the
+spec gains blocks the reference has not learned (they would be
+measured, and their cells counted the way D17 counted its gaps).

@@ -4620,6 +4620,43 @@ static void test_translate(void)
         "{Name: \"minecraft:redstone_wire\", "
         "Properties: {power: \"7\"}}");
 
+    /* D28: the name map answers every block the Bedrock 1.20.80 spec
+       registers, not only the ones a real world's census was known to
+       hold. The name-only renames carry no states; a copper door has
+       no Java 1.20 counterpart and answers oak_door, a border block
+       answers as air, tuff's stairs answer as oak stairs. The wood
+       hanging signs are the conditional family: attached_bit or
+       hanging at 1 keeps the floor variant's name, both at 0 is the
+       wall variant. */
+    check_translate(arena,
+        "{name:\"minecraft:copper_door\",states:{},version:1}",
+        "{Name: \"minecraft:oak_door\"}");
+    check_translate(arena,
+        "{name:\"minecraft:border_block\",states:{},version:1}",
+        "{Name: \"minecraft:air\"}");
+    check_translate(arena,
+        "{name:\"minecraft:tuff_stairs\","
+        "states:{weirdo_direction:2},version:1}",
+        "{Name: \"minecraft:oak_stairs\", "
+        "Properties: {facing: \"south\"}}");
+    check_translate(arena,
+        "{name:\"minecraft:oak_hanging_sign\","
+        "states:{attached_bit:1b,hanging:0b},version:1}",
+        "{Name: \"minecraft:oak_hanging_sign\", "
+        "Properties: {attached: \"true\"}}");
+    check_translate(arena,
+        "{name:\"minecraft:oak_hanging_sign\","
+        "states:{attached_bit:0b,hanging:1b},version:1}",
+        "{Name: \"minecraft:oak_hanging_sign\", "
+        "Properties: {rotation: \"8\"}}");
+    check_translate(arena,
+        "{name:\"minecraft:oak_hanging_sign\","
+        "states:{attached_bit:0b,hanging:0b},version:1}",
+        "{Name: \"minecraft:oak_wall_hanging_sign\"}");
+    check_translate(arena,
+        "{name:\"minecraft:tripWire\",states:{},version:1}",
+        "{Name: \"minecraft:tripwire\"}");
+
     /* States the map does not know take the Java default — the
        reference's own answer — and a val-only entry answers through
        the loader's own branch: the table's rows, its five defaults,
