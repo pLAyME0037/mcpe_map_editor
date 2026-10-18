@@ -838,6 +838,14 @@ def craft_pack(root: str) -> str:
             {"apply": {"model": "mc:block/cube_mag"}}]},
         "ring_opaque": variants("ring_cube"),
         "ring_translucent": variants("ring_cubea"),
+        # States select the model (D41): three keys, first-match in
+        # file order — axis=x, then axis=y, the un-stated default
+        # last — each pointing at a model the pack already holds, so
+        # the texture table and its page stay exactly D34's.
+        "atlas_turn": {"variants": {
+            "axis=x": {"model": "mc:block/three_up"},
+            "axis=y": {"model": "mc:block/cube_red"},
+            "": {"model": "mc:block/ring_cube"}}},
     }
     for name, doc in blockstates.items():
         write_json(os.path.join(bsdir, name + ".json"), doc)

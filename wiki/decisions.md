@@ -2966,3 +2966,63 @@ edge rule changes at sub-chunk scale (a neighbour's unstored
 chunk or section reading anything but air, the target's
 refusing), the Java section's transcription into the layers'
 order changes, or D33-D39's ground changes beneath them.
+
+## D41 — the states: one name, three models, through every read
+
+What the reference does. A palette entry carries a name AND its
+states, and the manager resolves the blockstate file's variant
+keys first-match in file order (D30's ground: each key's
+properties must all match, extra block properties allowed, the
+un-stated key the last resort) — so the SAME name meshes three
+different ways depending on the states written beside it. The
+walks spell the entry back verbatim: name plus `k: "v"` pairs,
+keys sorted case-insensitively — the palette's own values,
+quoted, on both formats.
+
+What mcme does. Nothing new — and that is the finding. `chunk
+set` stores name and states (D16), `chunk get` spells them back
+round-trip, the world reads produce the same text
+(mcme_bedrock_block_spec on Bedrock, the Java entry_spec, both
+SNBT with the walk's own spacing), and the mesh verbs already
+parse that spec through D30's selection into the variant's own
+model. Every line carried states already; what was missing was
+a probe — the pack had no blockstate with variant keys, so the
+states rode all of it unobserved.
+
+How parity was measured. The crafted pack gains ONE blockstate —
+atlas_turn: axis=x → three_up (partial, none-bucket rows),
+axis=y → cube_red (opaque, no cullface), the un-stated default →
+ring_cube (opaque, six buckets) — three models the pack already
+holds, so its texture table and every page stay D34's exactly
+and no bounds pin moves. Four probes per format: two variants,
+the un-stated default, and a probe whose stateful NEIGHBOUR's
+variant decides its own transparency — atlas_cull's east faces
+stand against three_up's partial, and a dropped state there
+would read the default ring_cube, opaque, and lose six rows to
+the cull. All four written with `chunk set` (261 cells now, 108
+more), read back verbatim by both walks, compared through
+`chunk mesh`'s document and the builder's table — and the
+probes' own sub-chunk (0, 6, 0) through `chunk submesh` on both
+formats, the batched read carrying the same specs, the
+sub-chunk helpers parameterized by sub with D40's defaults
+intact and the split assertion kept where the wall stands. 27
+checks rc=0 on the first run; battery rc=0; no mcme change.
+
+Out of domain, recorded. MULTI-KEY STATE ORDER: the walks sort
+keys case-insensitively when spelling, mcme's SNBT emits stored
+order — one-key probes spell identically by construction, two-
+key spelling parity unpinned. NON-STRING STATES: the walk quotes
+every value; SNBT types them (`1b` against `"1"`) — the
+fixtures' states are strings; int/bool states through the mesh
+reads unpinned. The store's typed states through Bedrock read
+stay ref_bedrock_write's ground. Multi-layer payloads (D15),
+block tints (D36), and the renderer's consumption stand where
+they were.
+
+Reverses if: the variant grammar changes (first-match in file
+order, subset match, the un-stated key last), the walks' verbatim
+spelling changes on either format, `chunk set` stops storing
+states or `chunk get` stops spelling them back (D16), the world
+reads stop emitting the SNBT spelling the prelude parses, or the
+pack's texture table grows a texture — atlas_turn deliberately
+adds none.

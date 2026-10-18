@@ -7,6 +7,58 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-18 — The states: one name, three models, through every read
+
+### Built
+
+- The crafted pack gains one blockstate: `atlas_turn` with three
+  variant keys — `axis=x` → three_up, `axis=y` → cube_red, the
+  un-stated default → ring_cube — three models the pack already
+  holds, so its texture table and every page stay exactly D34's
+  and no bounds pin moves.
+- Four probes per format now carry states through the whole
+  path: two variants, the un-stated default, and a probe whose
+  stateful NEIGHBOUR's variant decides its own transparency —
+  `atlas_cull`'s east faces stand against three_up's partial,
+  and a dropped state there would read the default ring_cube,
+  opaque, and lose six rows to the cull. Written with `chunk
+  set` (261 cells now, 108 more), read back verbatim by both
+  walks, compared through `chunk mesh`'s document and the
+  builder's table — and the probes' own sub-chunk (0, 6, 0)
+  through `chunk submesh` on both formats, the batched read
+  carrying the same specs. The sub-chunk helpers take the sub
+  as a parameter now, D40's defaults unchanged, the split
+  assertion kept where the wall stands.
+- 27 checks (was 17): ten probes and three sub-chunks per
+  format, plus the usage refusals.
+
+### Notes
+
+- No mcme change — the finding, not a shortcut. `chunk set`
+  stores name+states (D16), `chunk get` spells them back, the
+  world reads produce the same text (the SNBT writer and the
+  walk agree on spacing), and the mesh verbs already parse that
+  spec through D30's selection. What was missing was exactly
+  what the recorded exclusion said: no probe carried one. The
+  first D41 pin run passed rc=0.
+- The probes carry SINGLE-key states by design: one key spells
+  identically on every path — the walks sort keys
+  case-insensitively, SNBT emits stored order, and with one key
+  there is nothing to disagree about. Two-key spelling parity
+  and non-string states (the walk quotes every value, SNBT
+  types them) stay unpinned, recorded below and in D41.
+- Gates: `ref_chunkmesh` 27 checks rc=0; `./mcme selftest`
+  PASS 6 suites under ASan+UBSan; `./rebuild.sh test` PASS;
+  battery rc=0. Nothing under `tests/` staged.
+
+### Next
+
+- The states are observed end to end; the recorded gaps they
+  leave are the multi-key order and the typed (int/bool) state
+  spellings through the reads. Multi-layer payloads (D15),
+  block tints (D36), and the renderer's consumption stand where
+  they were.
+
 ## 2026-10-18 — The whole sub-chunk: the table at sub-chunk scale
 
 ### Built

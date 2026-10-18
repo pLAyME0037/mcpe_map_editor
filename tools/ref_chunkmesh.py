@@ -44,6 +44,18 @@ cell is compared in the BUILDER's loop order (x, then y, then z),
 each cell's rows against the stream its transparency feeds, the
 stream totals whole across the split.
 
+The states come with them (D41): the crafted pack gains one
+blockstate whose three variant keys — axis=x, axis=y, and the
+un-stated default — select three models it already holds, so the
+texture table and its page stay D34's, and four probes carry
+states through `chunk set`, through both walks' verbatim
+spelling, and into the table: two variants, the default, and a
+probe whose stateful NEIGHBOUR's variant decides its own
+transparency — the clause firing against it standing or dropping
+on that state being read. The states' sub-chunk — (0, 6, 0),
+D38's probe pair among its cells — goes through `chunk submesh`
+on both formats too, the batched read carrying the same specs.
+
   MIXED        — one opaque cull cube with a different neighbour on
                  each side: opaque below, east and south cull those
                  faces away; a partial above, a translucent north
@@ -122,6 +134,18 @@ PROBES = [
         "down": "ring_opaque", "up": "ring_opaque",
         "north": "ring_opaque", "west": "ring_opaque",
         "south": "ring_opaque"}),
+    # The states ride the table: the blockstate's variants select
+    # three different models from the same name (D30's first-match
+    # over D41's write and read), and one probe's stateful
+    # NEIGHBOUR decides its own transparency — the clause firing
+    # against it stands or drops on the neighbour's state being
+    # read. Single-key states: one key spells the same on every
+    # path, walk and SNBT alike.
+    ((8, 103, 8), 'atlas_turn{axis: "x"}', {}),
+    ((8, 106, 8), 'atlas_turn{axis: "y"}', {}),
+    ((8, 109, 8), "atlas_turn", {}),
+    ((8, 111, 8), "atlas_cull",
+     {"east": 'atlas_turn{axis: "x"}'}),
 ]
 
 # The cell the world-edge probe rests on: x = 32 is chunk (2, 0),
@@ -150,7 +174,10 @@ OFFSET_DIRS = {off: d for d, off in DIR_OFFSETS.items()}
 # to 143 — past every probe, in the sections and subchunks none of
 # them touch.
 SUB = (0, 8, 0)
-SUB_ORIGIN = (SUB[0] * 16, SUB[1] * 16, SUB[2] * 16)
+# The sub-chunk the state probes stand in (D41): y 96 to 111 —
+# D38's probe pair at y 96 and 100 among its cells, the four
+# state probes at y 103, 106, 109 and 111 below them.
+STATE_SUB = (0, 6, 0)
 
 # The pattern: six boxes through `chunk fill`, in write order —
 # the field first, then the boxes that cut it. Every block is the
@@ -582,21 +609,22 @@ def write_subchunk(mcme: str, world: str) -> int:
     return filled
 
 
-def subgrid_specs(walk) -> dict[tuple, str]:
+def subgrid_specs(walk, sub=SUB) -> dict[tuple, str]:
     """Every cell the sub-chunk's grid holds, by world position —
     the walk's reads once, the builder and the comparison both
     drawing from them."""
+    origin = tuple(c * 16 for c in sub)
     specs = {}
     for i in range(18):
         for j in range(18):
             for k in range(18):
-                p = (SUB_ORIGIN[0] + i - 1, SUB_ORIGIN[1] + j - 1,
-                     SUB_ORIGIN[2] + k - 1)
+                p = (origin[0] + i - 1, origin[1] + j - 1,
+                     origin[2] + k - 1)
                 specs[p] = walk.block_at(*p)
     return specs
 
 
-def ref_subchunk(opack, specs: dict[tuple, str]):
+def ref_subchunk(opack, specs: dict[tuple, str], sub=SUB):
     """The builder's own answer for the whole sub-chunk: the
     18x18x18 grid — the cells with one layer of every neighbour
     around them — handed to `create_lod0_chunk` at the sub-chunk's
@@ -605,15 +633,16 @@ def ref_subchunk(opack, specs: dict[tuple, str]):
     returns them, so the split lives in the totals."""
     import numpy
 
+    origin = tuple(c * 16 for c in sub)
     grid = numpy.zeros((18, 18, 18), numpy.uint32)
     palette = [A.make_block("air", {})]
     index = {"minecraft:air": 0}
     for i in range(18):
         for j in range(18):
             for k in range(18):
-                spec = specs[(SUB_ORIGIN[0] + i - 1,
-                              SUB_ORIGIN[1] + j - 1,
-                              SUB_ORIGIN[2] + k - 1)]
+                spec = specs[(origin[0] + i - 1,
+                              origin[1] + j - 1,
+                              origin[2] + k - 1)]
                 slot = index.get(spec)
                 if slot is None:
                     palette.append(
@@ -622,7 +651,7 @@ def ref_subchunk(opack, specs: dict[tuple, str]):
                 grid[i, j, k] = slot
     opack.block_model_manager = {}
     opaque, trans = A._REF.cb.create_lod0_chunk(
-        opack, numpy.array(list(SUB_ORIGIN), numpy.int64),
+        opack, numpy.array(list(origin), numpy.int64),
         [(grid, 0)], palette, 12)
     rows_o = numpy.frombuffer(opaque[0], numpy.float32).reshape(-1, 12)
     rows_t = numpy.frombuffer(trans[0], numpy.float32).reshape(-1, 12)
@@ -630,30 +659,32 @@ def ref_subchunk(opack, specs: dict[tuple, str]):
 
 
 def check_subchunk(mcme, packdir, mgr, opack, page: int, world: str,
-                   walk, checks: int, why: str) -> int:
+                   walk, checks: int, why: str, sub=SUB) -> int:
     """The whole sub-chunk, both sides: the reference's streams
     over the walk's grid, mcme's cells walked in the BUILDER'S own
     loop order — x, then y, then z — every surviving row of every
     cell against the stream its transparency feeds, the cell's
     world position under the row on all three axes, and the
-    split's totals whole."""
-    specs = subgrid_specs(walk)
-    rows_o, rows_t = ref_subchunk(opack, specs)
-    if len(rows_o) < SPLIT_MIN:
+    split's totals whole. The split's assertion belongs to the
+    sub-chunk that carries the wall; a quieter one just compares."""
+    origin = tuple(c * 16 for c in sub)
+    specs = subgrid_specs(walk, sub)
+    rows_o, rows_t = ref_subchunk(opack, specs, sub)
+    if sub == SUB and len(rows_o) < SPLIT_MIN:
         raise AssertionError(
             f"{why}: the opaque stream holds {len(rows_o)} rows, "
             f"short of the {SPLIT_MIN} that split it — the flush "
             "never fired and the seam stays unpinned")
 
     got = A.mcme_submesh(mcme, packdir, world,
-                         *(str(v + 4) for v in SUB_ORIGIN))
+                         *(str(v + 4) for v in origin))
     if got["size"] != page:
         raise AssertionError(
             f"{why}: page {got['size']}, reference {page}")
-    if got["subchunk"] != {"x": SUB[0], "y": SUB[1], "z": SUB[2]}:
+    if got["subchunk"] != {"x": sub[0], "y": sub[1], "z": sub[2]}:
         raise AssertionError(
             f"{why}: the answer names sub-chunk {got['subchunk']}, "
-            f"want {SUB}")
+            f"want {sub}")
     if (got["opaque"], got["translucent"]) != (
             len(rows_o), len(rows_t)):
         raise AssertionError(
@@ -678,9 +709,9 @@ def check_subchunk(mcme, packdir, mgr, opack, page: int, world: str,
     for cx in range(16):
         for cy in range(16):
             for cz in range(16):
-                wx = SUB_ORIGIN[0] + cx
-                wy = SUB_ORIGIN[1] + cy
-                wz = SUB_ORIGIN[2] + cz
+                wx = origin[0] + cx
+                wy = origin[1] + cy
+                wz = origin[2] + cz
                 spec = specs[(wx, wy, wz)]
                 doc = doc_for(spec)
                 self_t = doc["transparent"]
@@ -886,13 +917,16 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], world, walk,
                 x, y, z, checks, f"java probe ({x}, {y}, {z})")
-        _log("ok — java probes: 6 positions answered alike — six "
+        _log("ok — java probes: 10 positions answered alike — six "
              "different neighbours on six sides at once (the band's "
              "period), the chained pair on one side (the band's "
              "peak), a neighbour across the chunk boundary, one "
              "across the section edge, the none bucket ringed by "
-             "opaque all round, and the world's edge open on the "
-             "sixth side")
+             "opaque all round, the world's edge open on the sixth "
+             "side, and the states' own four: two variants "
+             "selecting different models, the un-stated default, "
+             "and a stateful neighbour whose transparency the "
+             "variant decides")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], world, walk,
             checks, "java subchunk")
@@ -902,6 +936,13 @@ def main() -> int:
              "chained core's and the cavern's open faces among "
              "them, the wall's 36,864 rows carrying the opaque "
              "stream past the container split")
+        checks = check_subchunk(
+            mcme, pack, mgr, opack, img.size[0], world, walk,
+            checks, "java state subchunk", STATE_SUB)
+        _log("ok — java state subchunk: the states ridden through "
+             "the batched read — the variants' models, the "
+             "default's, and the stateful neighbour's clause "
+             "answered alike over the whole sub-chunk")
 
         bworld = os.path.join(tmp, "bedrock")
         shutil.copytree(FIXTURE_STORE, bworld)
@@ -919,12 +960,13 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
                 x, y, z, checks, f"bedrock probe ({x}, {y}, {z})")
-        _log("ok — bedrock probes: the same 6 positions answered "
+        _log("ok — bedrock probes: the same 10 positions answered "
              "alike over the other format's own data — the "
              "subchunk payloads read by amulet-core's loader, the "
              "section-edge probe crossing two of them, the chunk "
-             "edge crossing two chunks, and the store's own edge "
-             "open on the sixth side")
+             "edge crossing two chunks, the store's own edge open "
+             "on the sixth side, and the states' four spelling "
+             "back verbatim through the store's own palette")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
             checks, "bedrock subchunk")
@@ -933,6 +975,13 @@ def main() -> int:
              "six boxes filled through its own write path, its "
              "subchunk payloads standing where the walk reads, "
              "the totals whole over the split")
+        checks = check_subchunk(
+            mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
+            checks, "bedrock state subchunk", STATE_SUB)
+        _log("ok — bedrock state subchunk: the states ridden "
+             "through the other format's layered read — the "
+             "variants' models and the default's answered alike "
+             "over the whole sub-chunk")
 
         checks = check_usage(mcme, world, bworld, pack, tmp, checks)
         _log("ok — usage refusals: 1 / 1 / 1 / 2 / 2 / 2 / 2 / 1 / 2 "
