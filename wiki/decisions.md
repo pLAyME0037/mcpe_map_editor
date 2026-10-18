@@ -3026,3 +3026,62 @@ states or `chunk get` stops spelling them back (D16), the world
 reads stop emitting the SNBT spelling the prelude parses, or the
 pack's texture table grows a texture — atlas_turn deliberately
 adds none.
+
+## D42 — the second layer: the store holds water no mesh reads
+
+What the reference does. A Bedrock sub-chunk payload may carry
+several layers — version 8's layer count byte, version 9's count
+and y index — and the loader (amulet-core's own
+`base_leveldb_interface`) decodes every one, merging each cell's
+layers into a main block plus extra blocks (the universal
+format's `Block.extra_blocks`) and dropping an extra that is
+air. The renderer's builder then reads none of them:
+`chunk_builder_cy.pyx` carries no reference to extra blocks
+anywhere; the editor hands it cell arrays and the chunk's
+palette, whose entry is the main block. Waterlogging is
+invisible to the reference's mesh — not by omission but by
+construction.
+
+What mcme does. The same, by the rule D15 recorded: the layers
+take the first. `chunk get`, `chunk mesh` and `chunk submesh`
+answer over layer zero; the codec parses the layer count — the
+store's edge rule holds at multi-layer payloads too — and reads
+the first. What was missing was the fixture: no write path of
+mcme's reaches a second layer, so the rule rode every line
+unobserved — the same shape of gap D41 closed for states.
+
+How parity was measured. A two-layer sub-chunk written straight
+into the scratch store's own bytes — version 8, the layer count
+the reference's own loader reads — the payload's packed array
+and palette NBT in `_encode_packed_array` and
+`_load_palette_blocks`' shapes, the round-trip proven against
+the loader itself before the pin ran. One cell waterlogged
+(ring_opaque under ring_translucent), a plain atlas_cull
+neighbour beside it, sub-chunk (0, 13, 0) where no probe, fill
+or usage case stands (the key asserted absent before the write,
+the golden store's own content safe). The walk reports the main
+block by name and the layers beneath verbatim (`extras_at`);
+the reference's streams over the sub-chunk's grid hold the main
+block's rows alone — the translucent stream whole empty,
+asserted; mcme answers the same over the whole sub-chunk
+through `chunk submesh` and at the cell itself through `chunk
+mesh`, where the cull against the waterlogged neighbour fires
+on the main block's own transparency: a read that surfaced the
+water anywhere would change the totals or the standing faces.
+29 checks rc=0; battery rc=0; no mcme change.
+
+Out of domain, recorded. The multi-key state order and the
+non-string state spellings (D41's leftovers) stand. Java
+waterlogging is a `waterlogged` property — states ground, not
+layers. The store's typed states through the Bedrock read stay
+ref_bedrock_write's. Block tints (D36) stand where they were.
+The renderer's consumption stands deeper now: the builder's
+palette never even sees the extra, so no pin can reach the
+renderer's treatment of waterlogging through this ground.
+
+Reverses if: the loader's layer rules change (v8/v9 counts, the
+air-extra filter), the builder starts reading extra blocks, the
+editor's `_sub_chunks` feeds layers rather than cell arrays,
+mcme's read stops taking the first layer (the codec's layer
+count changes or `chunk get` answers a deeper one), or the
+store's edge rule moves the fixture's key.

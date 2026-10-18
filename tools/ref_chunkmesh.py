@@ -56,6 +56,22 @@ on that state being read. The states' sub-chunk — (0, 6, 0),
 D38's probe pair among its cells — goes through `chunk submesh`
 on both formats too, the batched read carrying the same specs.
 
+The waterlogging the store holds and no mesh reads (D42): a
+two-layer sub-chunk written straight into the scratch store's
+own bytes — version 8's layer count, one waterlogged cell and a
+plain neighbour beside it — is the fixture no write path of
+mcme's reaches. The walk reports the MAIN block by name (the
+loader turns the layers above into extra blocks and the builder
+reads none of them), `extras_at` spells the layers beneath
+verbatim, and the reference's streams over the sub-chunk hold
+the main block's rows alone — the water's stream empty. mcme
+answers the same over the whole sub-chunk through `chunk
+submesh` and at the cell itself through `chunk mesh`, the cull
+against the waterlogged neighbour firing on the main block's own
+transparency: a read that surfaced the water anywhere would
+change the totals or the standing faces, and both sides would
+have to agree to be wrong together — neither is.
+
   MIXED        — one opaque cull cube with a different neighbour on
                  each side: opaque below, east and south cull those
                  faces away; a partial above, a translucent north
@@ -178,6 +194,14 @@ SUB = (0, 8, 0)
 # D38's probe pair at y 96 and 100 among its cells, the four
 # state probes at y 103, 106, 109 and 111 below them.
 STATE_SUB = (0, 6, 0)
+# The sub-chunk the multi-layer fixture stands in (D42): cy 13,
+# y 208 to 223 — past every probe, fill and pattern, and a key
+# the golden store never held (cy 12 stays absent: it is one of
+# usage's own refusal cases). The waterlogged cell and the plain
+# neighbour it culls against, in world coordinates.
+MULTI_SUB = (0, 13, 0)
+WATER_CELL = (8, 216, 8)
+CULL_CELL = (9, 216, 8)
 
 # The pattern: six boxes through `chunk fill`, in write order —
 # the field first, then the boxes that cut it. Every block is the
@@ -276,10 +300,13 @@ class WorldWalk:
 
 class BedrockWalk:
     """The world's blocks through amulet-core's own leveldb loader:
-    the subchunk payload under its key, the palette through the
+    the subchunk payload under its key, every layer through the
     reference's reader (ref_bedrock_write's own glue), absent
-    payloads air. First layer only — the fixtures' payloads are
-    single-layer; waterlogging is D15's ground."""
+    payloads air. The MAIN block — layer zero — is what the walk
+    reports by name: the loader turns the layers above it into
+    extra blocks and the builder reads none of them (D42), so the
+    main block is the world the mesh sees. `extras_at` reports
+    the layers beneath, verbatim."""
 
     def __init__(self, db_path: str):
         from amulet.libs.leveldb import LevelDB
@@ -308,14 +335,37 @@ class BedrockWalk:
         return self.layers[key]
 
     def block_at(self, x: int, y: int, z: int) -> str:
+        """The MAIN block — layer zero, the one the builder
+        meshes. The store's own spelling, verbatim — the palette
+        carries the namespace and the reader prints it, exactly
+        what `chunk get` shows back."""
+        main, _extras = self._cell(x, y, z)
+        if main is None:
+            return J.AIR
+        return self.spec_of(main)
+
+    def extras_at(self, x: int, y: int, z: int) -> list[str]:
+        """The layers under the main block's, verbatim — the
+        store's own waterlogging, spelled the same way. The
+        universal format drops an air extra (the loader's own
+        filter); the walk reports the store as it stands."""
+        main, extras = self._cell(x, y, z)
+        if main is None:
+            return []
+        return [self.spec_of(e) for e in extras]
+
+    def _cell(self, x: int, y: int, z: int):
         layers = self._layer(x >> 4, z >> 4, y >> 4)
         if not layers:
-            return J.AIR
-        blocks, palette = layers[0]
-        entry = palette[B.block_at(blocks, x & 15, y & 15, z & 15)]
-        # The store's own spelling, verbatim — the palette carries
-        # the namespace and the reader prints it, exactly what
-        # `chunk get` shows back.
+            return None, []
+        lx, ly, lz = x & 15, y & 15, z & 15
+        entries = [
+            palette[B.block_at(blocks, lx, ly, lz)]
+            for blocks, palette in layers]
+        return entries[0], entries[1:]
+
+    @staticmethod
+    def spec_of(entry) -> str:
         name = entry["name"].py_data
         states = entry.get("states")
         props = {} if states is None else {
@@ -822,6 +872,129 @@ def check_subchunk(mcme, packdir, mgr, opack, page: int, world: str,
     return checks + 1
 
 
+def _pal_entry(name: str, version: int):
+    from amulet_nbt import CompoundTag, IntTag, NamedTag, StringTag
+    return NamedTag(CompoundTag({
+        "name": StringTag(name),
+        "states": CompoundTag(),
+        "version": IntTag(version)}), "")
+
+
+def _encode_layer(filled: dict[tuple[int, int, int], int],
+                  names: list[str]) -> bytes:
+    """One storage layer, in the shape `_load_palette_blocks`
+    reads: the reference's own packed-array encoder over the
+    cells, the palette length, and the entries' NBT — air at
+    index zero with the loader's own default air version."""
+    import numpy
+    import struct
+    from amulet.level.formats.leveldb_world.interface.chunk.leveldb_8 import (  # noqa: E501
+        LevelDB8Interface,
+    )
+    arr = numpy.zeros((16, 16, 16), numpy.uint32)
+    for (x, y, z), slot in filled.items():
+        arr[x, y, z] = slot
+    out = LevelDB8Interface._encode_packed_array(arr)
+    out += struct.pack("<I", len(names))
+    for name in names:
+        version = 17694723 if name == J.AIR else B.BLOCK_VERSION
+        out += _pal_entry(
+            name, version).save_to(compressed=False, little_endian=True)
+    return out
+
+
+def write_two_layers(bworld: str) -> int:
+    """The fixture no writer of mcme's reaches: a two-layer
+    sub-chunk written straight into the scratch store's own bytes
+    — version 8, the layer count the reference's loader reads as
+    a main block and one extra. The sub-chunk is one the golden
+    store never held (asserted before the write, its own content
+    safe), and the fixture stands where no probe, fill or pattern
+    reaches. Returns the cells the second layer waterlogs."""
+    import struct
+    from amulet.libs.leveldb import LevelDB
+    key = B.chunk_key(MULTI_SUB[0], MULTI_SUB[2], MULTI_SUB[1])
+    main = _encode_layer(
+        {(8, 8, 8): 1, (9, 8, 8): 2},
+        [J.AIR, "minecraft:ring_opaque", "minecraft:atlas_cull"])
+    extra = _encode_layer(
+        {(8, 8, 8): 1}, [J.AIR, "minecraft:ring_translucent"])
+    payload = b"\x08" + struct.pack("B", 2) + main + extra
+    db = LevelDB(os.path.join(bworld, "db"))
+    try:
+        try:
+            db.get(key)
+        except KeyError:
+            pass
+        else:
+            raise AssertionError(
+                "the multi-layer fixture: the store already holds "
+                f"sub-chunk {MULTI_SUB} — the golden world's own "
+                "content would stand over")
+        db.put(key, payload)
+    finally:
+        db.close()
+    return 1
+
+
+def check_multi_layer(mcme, packdir, mgr, opack, page: int, world: str,
+                      bwalk, checks: int, why: str) -> int:
+    """The waterlogging the store holds and no mesh reads: the
+    fixture's cell carries a second layer the walk spells
+    verbatim, the reference meshes the main block alone — the
+    translucent stream whole empty — and mcme answers the same
+    over the sub-chunk and at the cell itself, the cull against
+    the waterlogged neighbour firing on the main block's own
+    transparency."""
+    wx, wy, wz = WATER_CELL
+    main = bwalk.block_at(wx, wy, wz)
+    if main != "minecraft:ring_opaque":
+        raise AssertionError(
+            f"{why}: the fixture's cell answers {main!r}, want "
+            "'minecraft:ring_opaque' — layer zero's own block")
+    extras = bwalk.extras_at(wx, wy, wz)
+    if extras != ["minecraft:ring_translucent"]:
+        raise AssertionError(
+            f"{why}: the cell's second layer spells {extras!r}, "
+            "want ['minecraft:ring_translucent'] — the store's "
+            "water, verbatim")
+    cx, cy, cz = CULL_CELL
+    if bwalk.block_at(cx, cy, cz) != "minecraft:atlas_cull":
+        raise AssertionError(
+            f"{why}: the plain neighbour lost its block")
+    cextras = bwalk.extras_at(cx, cy, cz)
+    if cextras != [J.AIR]:
+        raise AssertionError(
+            f"{why}: the neighbour's second layer spells "
+            f"{cextras!r}, want air — the store pads the layer "
+            "whole, and the loader drops an air extra")
+
+    # The reference over the walk's grid: the main block's table,
+    # the second layer nowhere in it.
+    specs = subgrid_specs(bwalk, MULTI_SUB)
+    rows_o, rows_t = ref_subchunk(opack, specs, MULTI_SUB)
+    if len(rows_t) != 0:
+        raise AssertionError(
+            f"{why}: the translucent stream holds {len(rows_t)} "
+            "rows — the second layer reached the builder, which "
+            "never reads an extra block")
+    if len(rows_o) == 0:
+        raise AssertionError(
+            f"{why}: the opaque stream is empty — the fixture's "
+            "own rows vanished")
+
+    # mcme, whole sub-chunk and at the cell itself: the same
+    # answer over the main block alone — a read that surfaced the
+    # water anywhere would change the totals or the cull.
+    checks = check_subchunk(
+        mcme, packdir, mgr, opack, page, world, bwalk, checks,
+        f"{why} subchunk", MULTI_SUB)
+    checks = check_world_probe(
+        mcme, packdir, mgr, opack, page, world, bwalk,
+        wx, wy, wz, checks, f"{why} cell")
+    return checks
+
+
 def check_usage(mcme: str, world: str, bworld: str, pack: str,
                 tmp: str, checks: int) -> int:
     """The verb's own refusals: the target's chunk or subchunk
@@ -948,11 +1121,14 @@ def main() -> int:
         shutil.copytree(FIXTURE_STORE, bworld)
         wrote = write_pattern(mcme, bworld)
         sub_wrote = write_subchunk(mcme, bworld)
+        write_two_layers(bworld)
         _log(f"ok — bedrock fixture: {wrote} blocks written into "
              "the golden store's scratch copy by chunk set — the "
-             "subchunks it needs created by the write — and "
+             "subchunks it needs created by the write — "
              f"{sub_wrote} cells filled into sub-chunk (0, 8, 0) "
-             "by chunk fill")
+             "by chunk fill, and one waterlogged cell written "
+             f"into the store's own bytes as a two-layer "
+             "sub-chunk at {MULTI_SUB}")
 
         bwalk = BedrockWalk(os.path.join(bworld, "db"))
         checks = check_edge(bwalk, "bedrock", checks)
@@ -982,6 +1158,15 @@ def main() -> int:
              "through the other format's layered read — the "
              "variants' models and the default's answered alike "
              "over the whole sub-chunk")
+        checks = check_multi_layer(
+            mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
+            checks, "bedrock multi-layer")
+        _log("ok — bedrock multi-layer: the store's second layer "
+             "spelled verbatim and read by no mesh — the builder "
+             "and mcme both answering over the main block, the "
+             "water's stream empty, the cull against the "
+             "waterlogged neighbour firing on the main block's "
+             "own transparency")
 
         checks = check_usage(mcme, world, bworld, pack, tmp, checks)
         _log("ok — usage refusals: 1 / 1 / 1 / 2 / 2 / 2 / 2 / 1 / 2 "

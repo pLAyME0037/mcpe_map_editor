@@ -7,6 +7,73 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-18 — The second layer: the store holds water no mesh reads
+
+### Built
+
+- The walk reports the MAIN block — layer zero — by name and
+  gains `extras_at`: the layers beneath, verbatim. The decode
+  had always walked every layer (`decode_payload` loops them
+  all); only the reading was single-layer, and now it is a
+  recorded rule with a name instead of a comment.
+- The fixture no write path of mcme's reaches: a two-layer
+  sub-chunk written straight into the scratch store's own bytes
+  — version 8, the layer count the reference's loader reads as
+  a main block plus one extra — one waterlogged cell
+  (ring_opaque under ring_translucent) and a plain atlas_cull
+  neighbour beside it, in sub-chunk (0, 13, 0) where no probe,
+  fill or usage case stands. The payload's packed array and
+  palette ride the reference's own encoder and decoder shapes,
+  the round-trip proven against the loader itself before the
+  pin ran.
+- The check: the store's truth (both layers spelled verbatim,
+  the air extra the loader would drop named as such), the
+  reference's streams over the main block alone — the
+  translucent stream WHOLE EMPTY, asserted — and mcme answering
+  the same over the whole sub-chunk through `chunk submesh` and
+  at the cell itself through `chunk mesh`, the cull against the
+  waterlogged neighbour firing on the main block's own
+  transparency. A read that surfaced the water anywhere would
+  change the totals or the standing faces, and neither side
+  did.
+- 29 checks (was 27): the multi-layer sub-chunk and the
+  waterlogged cell's probe on top of D41's.
+
+### Notes
+
+- No C change, and the reason is the drop's finding: the
+  reference's builder never reads an extra block.
+  `chunk_builder_cy.pyx` has zero references to them; the
+  editor hands it cell arrays and the palette's main block,
+  while the loader (`base_leveldb_interface`) surfaces every
+  layer and merges a cell's into main-plus-extras, dropping an
+  air extra. "The layers take the first" (D15's rule) is parity
+  by the reference's own blindness — now proven by a fixture
+  rather than argued from code.
+- Java has no layers: waterlogging there is a `waterlogged`
+  property, which D41's states ground already carries through
+  selection.
+- The pin caught three pin-side bugs en route: `chunk_key(*SUB)`
+  unpacking a sub-chunk (x, y, z) triple into chunk_key's
+  (x, z, cy) order — the fixture first landed at chunk (0, 12),
+  sub-chunk 0; the fixture's first home being exactly one of
+  D40's usage refusal cases (the absent sub-chunk's exit 2,
+  which would stop answering absent once the fixture stood
+  there) — moved up to cy 13; and y 208 being cy 13's local y
+  0, not 8 (world y 216).
+- Gates: `ref_chunkmesh` 29 checks rc=0; `./rebuild.sh test`
+  PASS; `./mcme selftest` PASS 6 suites under ASan+UBSan;
+  battery rc=0. Nothing under `tests/` staged.
+
+### Next
+
+- The out-of-domain list stands shorter: the multi-key state
+  order and the non-string state spellings (D41's leftovers),
+  block tints (D36), the atlas page's doubling overflow, and
+  the renderer's consumption — unobservable by construction,
+  D42 having shown how deep that goes: the builder's palette
+  never even sees the extra.
+
 ## 2026-10-18 — The states: one name, three models, through every read
 
 ### Built
