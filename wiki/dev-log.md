@@ -7,6 +7,69 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-18 — The Bedrock grid: the other format's own data under the table
+
+### Built
+
+- `tools/ref_chunkmesh.py` walks BOTH formats now: the same six
+  probes written into the golden Java world and into the golden
+  Bedrock chunk store, each read back by its own walk — the
+  region file walked by hand (Java), the subchunk payloads
+  through amulet-core's own leveldb loader (Bedrock: the payload
+  under its key, the wrapper stripped, the palette through the
+  reference's own reader, ref_bedrock_write's own glue) — and
+  each 3x3x3 handed to `create_lod0_chunk` at the probe's world
+  position. 15 checks: the fixture's flags, six probes per
+  format, the two walks' edge cells answering air, and the
+  usage refusals — now nine, the ninth an unstored Bedrock
+  subchunk refusing with exit 2, what `chunk get` answers
+  there.
+- The pattern writes every cell of each probe's 3x3x3 — the
+  probe at the centre, the named sides on their axes, air
+  everywhere else — in the full `minecraft:name` spelling the
+  stores hold, so the grid the reference meshes is the pattern
+  on both formats and the fixture's own blocks never enter a
+  palette the crafted pack cannot resolve. The world-edge
+  probe's column at x = 32 stays unwritten: chunk (2, 0) is the
+  store's to answer, absent.
+
+### Notes
+
+- The walks report the store VERBATIM — the palette's own name,
+  the namespace included — and so does mcme's read on both
+  formats: what `chunk set` stores as given (D16) is what
+  `chunk get` and the mesh document's block key spell back. The
+  pin's first Bedrock run disagreed over the namespace alone,
+  and it was the pin's own doing — a walk that re-added what the
+  store already carries. The store's spelling is the honest
+  answer; the probes now write full names, as real worlds hold.
+- On Bedrock `chunk set` CREATES the subchunks it needs — the
+  store's own ground, ref_bedrock_write's — so the
+  section-edge probe crosses two payloads, the chunk-edge probe
+  two chunks, and the store's own edge at x = 32 (chunk (2, 0),
+  keys never held) reads air through the same absent-read rule
+  as Java's empty region slot, on both sides of the
+  comparison.
+- No C change this drop: the verb and the table were D38's,
+  reading Bedrock worlds through the same prelude from the
+  start. The pin adjudicates them over the other format — the
+  gap D38 recorded, closed.
+- Gates: battery 19/19 rc=0, `ref_chunkmesh` at 15 checks;
+  `./mcme selftest` PASS 6 suites, 0 failures under
+  ASan+UBSan; `./rebuild.sh test` PASS. Nothing under `tests/`
+  staged; the golden stores show no tracked changes.
+
+### Next
+
+- The table answers both formats' data. What it still does not
+  answer is the whole of it: a sub-chunk's full table rides
+  the stream-split machinery the one-cell interior never
+  exercised — D38's recorded exclusion, the per-position
+  surface this drop's still. Block states through the Bedrock
+  read stay ref_bedrock_write's ground until a probe carries
+  one. The renderer's consumption stays where it was:
+  unobservable from any pin.
+
 ## 2026-10-18 — The six neighbours: the table answers the world's own sides
 
 ### Built

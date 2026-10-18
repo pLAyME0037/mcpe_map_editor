@@ -2790,3 +2790,83 @@ prelude's air answer stops being partial, the edge rule changes
 (an absent neighbour chunk refusing instead of reading air, or
 the target's absent chunk reading air instead of refusing), or
 D37's clauses change.
+
+## D39 — the Bedrock grid: the other format's own data under the table
+
+**What the reference does.** The reference's READER answers
+Bedrock worlds from the store itself: the subchunk payload under
+its key (x, z as two little-endian ints, then the sub-chunk's y
+byte), the wrapper stripped (versions 1, 8, 9), each layer's
+palette unpacked by amulet-core's own `_load_palette_blocks` —
+name, states, version, in that order. The palette's name carries
+the namespace (`minecraft:stone`), and an absent payload is the
+store having nothing to say for that sub-chunk. The reference's
+BUILDER takes the grid it is handed — the 3x3x3 around a probe,
+the sub-chunk's own y zero — and its table is a function of that
+grid alone: which format fed the grid never reaches it. So the
+same six probes over the same pattern, one store per format,
+must answer the same table, and do.
+
+**What mcme does.** `chunk mesh` reads Bedrock worlds through the
+same prelude and the same table it read Java worlds with — its
+world read is `chunk get`'s pinned ground: the sub-chunk key,
+the store's read, the layer's palette, the cell's index, the
+spec. It reports the palette's name VERBATIM, namespace
+included — what `chunk set` stored as given (D16), what
+`chunk get` shows back. The store's edge keeps D38's rule on
+both formats: the target's own sub-chunk unstored is exit 2,
+what `chunk get` answers there; a NEIGHBOUR's unstored
+sub-chunk is air, partial, firing neither clause. No C change:
+the verb and the table were D38's, Bedrock-capable from the
+start; this drop hands them the other format's data.
+
+**How parity was measured.** `tools/ref_chunkmesh.py` writes the
+same six probes into both stores' scratch copies with
+`chunk set` — which on Bedrock CREATES the sub-chunks it needs
+(ref_bedrock_write's ground) — and writes EVERY cell of each
+probe's 3x3x3: the probe at the centre, the named sides on their
+axes, air everywhere else, all in the full `minecraft:name`
+spelling the stores hold, so the grid the reference meshes is
+the pattern itself and the fixture's own blocks never enter a
+palette the crafted pack cannot resolve. The world-edge probe's
+column at x = 32 stays unwritten: chunk (2, 0) is the store's to
+answer, absent. Each grid is read back by its own walk —
+ref_java_blocks' region walk for Java, the sub-chunk payloads
+through amulet-core's loader for Bedrock (ref_bedrock_write's
+own glue: the key, the wrapper strip, the palette reader), both
+reporting the store verbatim — and handed to
+`create_lod0_chunk` at the probe's world position; mcme answers
+`chunk mesh` on the same world; the comparison is D38's own,
+unchanged. 15 checks: the crafted pack's flags, six probes per
+format, the two walks' edge cells answering air, and the usage
+refusals — the ninth an unstored Bedrock sub-chunk, exit 2.
+The pin's first Bedrock run disagreed over the namespace alone,
+and it was the pin's own doing: a walk that re-added what the
+store already carries. The store's spelling is the answer, both
+walks and mcme now spell it, and the probes write full names as
+real worlds hold.
+
+**Out of domain, recorded.** BLOCK STATES ON BEDROCK: the probes
+carry no states, so the store's state spelling through the mesh
+path stays ref_bedrock_write's ground until a probe carries one.
+LAYERS: the fixtures' payloads are single-layer; the grid takes
+the first, waterlogging D15's ground. THE VERTEX CAPACITY stays
+D38's exclusion — the one-cell interior never overflows the
+builder's array, the stream's split machinery a whole
+sub-chunk's table's. THE WORLD'S EDGE as reference data:
+absent-payload (Bedrock) and absent-chunk (Java) reading air is
+mcme's own semantics — the reference's builder only ever sees
+the grid it is handed — now pinned on BOTH formats as the
+walk's and mcme's shared answer, not adjudicated against a
+reference world loader. BLOCK TINTS stay D36's exclusion. The
+GUI's consumption of the table remains unobservable from any
+pin.
+
+**Reverses if:** either read stops reporting the palette's name
+verbatim (the namespace stripped or re-added on either side),
+`chunk set` stops storing names as given (D16) or stops
+creating the sub-chunks it needs on Bedrock, the edge rule
+changes on either format (a neighbour's unstored sub-chunk
+refusing instead of reading air, or the target's reading air
+instead of refusing), the loader's wrapper handling changes (the
+1 / 8 / 9 strips), or D38's table changes.

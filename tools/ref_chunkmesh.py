@@ -22,6 +22,14 @@ reference's builder meshes is the world's own data. The grid is the
 the probe ALONE and every cull read lands on the world's cell
 beside it — no leak, no field, the streams the probe's own.
 
+The Bedrock half rides the same probes over the golden chunk
+store: the pattern written with `chunk set`, which creates the
+subchunks it needs, and every cell read back through amulet-core's
+own leveldb loader — the payload under its key, the palette
+through the reference's own reader — so the grid is the OTHER
+format's own data, the cross-subchunk and cross-chunk cells
+included.
+
   MIXED        — one opaque cull cube with a different neighbour on
                  each side: opaque below, east and south cull those
                  faces away; a partial above, a translucent north
@@ -39,9 +47,15 @@ beside it — no leak, no field, the streams the probe's own.
                  across the chunk boundary on both sides.
   SECTION EDGE — the probe at y = 15 with opaque above: the up
                  face's neighbour stands in the next SECTION (y
-                 16), created by the write.
+                 16), created by the write — the next SUBCHUNK on
+                 Bedrock, its own payload.
   NONE RINGED  — the cullface-less cube ringed by opaque on all
                  six sides: the none bucket never culls, per side.
+  WORLD EDGE   — the probe on x = 31 with opaque on five sides
+                 and the sixth facing the chunk neither store has
+                 ever seen: east reads AIR — outside the stored
+                 world — and that one face stands while five drop,
+                 on both formats.
 """
 
 from __future__ import annotations
@@ -56,8 +70,10 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ref_atlasmesh as A          # the table pin's own machinery
 import ref_java_blocks as J        # the region walk: no mcme code
+import ref_bedrock_write as B      # the store's key and loader glue
 
 FIXTURE_WORLD = J.FIXTURE_WORLD
+FIXTURE_STORE = B.FIXTURE_WORLD
 
 # The builder's per-side neighbour lookup — CULL_MAP,
 # chunk_builder_cy.pyx 49-55: cull_id 1..6 answers up, down,
@@ -85,7 +101,32 @@ PROBES = [
     ((8, 15, 8), "atlas_cull", {"up": "ring_opaque"}),
     ((8, 100, 8), "atlas_cube",
      {d: "ring_opaque" for d in DIR_OFFSETS}),
+    # The world's edge: opaque on five sides, the sixth facing the
+    # chunk neither store has — east reads AIR, and that one face
+    # stands while five drop.
+    ((31, 74, 8), "atlas_cull", {
+        "down": "ring_opaque", "up": "ring_opaque",
+        "north": "ring_opaque", "west": "ring_opaque",
+        "south": "ring_opaque"}),
 ]
+
+# The cell the world-edge probe rests on: x = 32 is chunk (2, 0),
+# which the golden world's region file never stored and the golden
+# store's keys never held. Both walks must answer it air.
+EDGE_CELL = (32, 74, 8)
+
+# The chunks the pattern intends to own: the golden world's stored
+# pair, and the store's own on Bedrock. Every cell of every probe's
+# 3x3x3 is written — the probe at the centre, the named sides on
+# their axes, air everywhere else — so the grid the reference
+# meshes is the pattern on both formats and the fixture's own
+# blocks never leak into a palette the crafted pack cannot
+# resolve. The world-edge probe's whole column at x = 32 is left
+# alone: the chunk is the store's to answer, absent.
+PATTERN_CHUNKS = {(0, 0), (1, 0)}
+
+# The axis offsets' inverse: a cell's offset, to its side's name.
+OFFSET_DIRS = {off: d for d, off in DIR_OFFSETS.items()}
 
 # What the fixture rests on: the crafted pack's own classifications,
 # the reference's answers (D32's rule through its manager).
@@ -134,16 +175,71 @@ class WorldWalk:
             return J.AIR
         return J.block_at(tag, x, y, z)
 
-    def around(self, x: int, y: int, z: int) -> dict[tuple, str]:
-        """The 3x3x3 specs around a position, keyed by their offset
-        from its centre — the grid the builder is handed."""
-        cells = {}
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    cells[(dx, dy, dz)] = self.block_at(
-                        x + dx, y + dy, z + dz)
-        return cells
+
+class BedrockWalk:
+    """The world's blocks through amulet-core's own leveldb loader:
+    the subchunk payload under its key, the palette through the
+    reference's reader (ref_bedrock_write's own glue), absent
+    payloads air. First layer only — the fixtures' payloads are
+    single-layer; waterlogging is D15's ground."""
+
+    def __init__(self, db_path: str):
+        from amulet.libs.leveldb import LevelDB
+        from amulet.level.formats.leveldb_world.interface.chunk.leveldb_8 import (  # noqa: E501
+            LevelDB8Interface,
+        )
+        self.db_path = db_path
+        self.LevelDB = LevelDB
+        self.iface = LevelDB8Interface()
+        self.layers: dict[tuple[int, int, int], object] = {}
+
+    def _layer(self, cx: int, cz: int, cy: int):
+        key = (cx, cz, cy)
+        if key not in self.layers:
+            db = self.LevelDB(self.db_path)
+            try:
+                try:
+                    payload = db.get(B.chunk_key(cx, cz, cy))
+                except KeyError:
+                    payload = None
+            finally:
+                db.close()
+            self.layers[key] = (
+                None if payload is None
+                else B.decode_payload(self.iface, payload)[1])
+        return self.layers[key]
+
+    def block_at(self, x: int, y: int, z: int) -> str:
+        layers = self._layer(x >> 4, z >> 4, y >> 4)
+        if not layers:
+            return J.AIR
+        blocks, palette = layers[0]
+        entry = palette[B.block_at(blocks, x & 15, y & 15, z & 15)]
+        # The store's own spelling, verbatim — the palette carries
+        # the namespace and the reader prints it, exactly what
+        # `chunk get` shows back.
+        name = entry["name"].py_data
+        states = entry.get("states")
+        props = {} if states is None else {
+            k: v.py_data for k, v in states.items()}
+        if not props:
+            return name
+        items = ", ".join(
+            f'{k}: "{v}"'
+            for k, v in sorted(props.items(), key=lambda kv: kv[0].lower()))
+        return f"{name}{{{items}}}"
+
+
+def around(walk, x: int, y: int, z: int) -> dict[tuple, str]:
+    """The 3x3x3 specs around a position, keyed by their offset
+    from its centre — the grid the builder is handed."""
+    cells = {}
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                cells[(dx, dy, dz)] = walk.block_at(
+                    x + dx, y + dy, z + dz)
+    return cells
 
 
 def ref_world_table(opack, walk: WorldWalk, x: int, y: int, z: int):
@@ -158,7 +254,7 @@ def ref_world_table(opack, walk: WorldWalk, x: int, y: int, z: int):
     probes would answer with stale geometry."""
     import numpy
 
-    cells = walk.around(x, y, z)
+    cells = around(walk, x, y, z)
     palette = []
     index: dict[str, int] = {}
     grid = numpy.zeros((3, 3, 3), numpy.uint32)
@@ -191,6 +287,55 @@ def mcme_chunk_mesh(mcme: str, world: str, packdir: str,
     except json.JSONDecodeError:
         raise AssertionError(
             f"chunk mesh ({x}, {y}, {z}): unparseable JSON {out!r}")
+
+
+def write_pattern(mcme: str, world: str) -> int:
+    """The probes' own 3x3x3, written with the world's own verb:
+    the probe at the centre, the named sides on their axes, air
+    everywhere else — the full `minecraft:name` spelling the stores
+    hold, so both formats read the pattern back verbatim. Cells
+    outside the pattern's chunks are left alone: the world's edge
+    is the store's to answer. On Bedrock the write creates the
+    subchunks it needs."""
+    wrote = 0
+    for (x, y, z), block, sides in PROBES:
+        cells = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    cx, cy, cz = x + dx, y + dy, z + dz
+                    if (cx >> 4, cz >> 4) not in PATTERN_CHUNKS:
+                        continue
+                    if (dx, dy, dz) == (0, 0, 0):
+                        spec = block
+                    else:
+                        spec = sides.get(
+                            OFFSET_DIRS.get((dx, dy, dz)), "air")
+                    cells.append((cx, cy, cz, spec))
+        for cx, cy, cz, spec in cells:
+            full = A.mcme_spec(spec, {})
+            rc, out, err = A.run(mcme, "chunk", "set", world,
+                                 str(cx), str(cy), str(cz), full)
+            if rc != 0 or out != "":
+                raise AssertionError(
+                    f"set {full} at ({cx}, {cy}, {cz}): exit {rc} "
+                    f"stdout {out!r} ({err.strip()})")
+            wrote += 1
+    return wrote
+
+
+def check_edge(walk, flavor: str, checks: int) -> int:
+    """The world-edge cell the sixth probe rests on: x = 32 is
+    chunk (2, 0), which the golden world's region file never
+    stored and the golden store's keys never held — both walks
+    answer air, mcme reads the same, and the edge rule stands."""
+    ex, ey, ez = EDGE_CELL
+    got = walk.block_at(ex, ey, ez)
+    if got != J.AIR:
+        raise AssertionError(
+            f"{flavor}: the edge cell ({ex}, {ey}, {ez}) answers "
+            f"{got!r}, want air — the chunk neither store has")
+    return checks + 1
 
 
 def check_world_probe(mcme, packdir, mgr, opack, page: int,
@@ -349,12 +494,13 @@ def check_world_probe(mcme, packdir, mgr, opack, page: int,
     return checks + 1
 
 
-def check_usage(mcme: str, world: str, pack: str, tmp: str,
-                checks: int) -> int:
-    """The verb's own refusals: the target's chunk absent is exit 2
-    (what `chunk get` answers), a NEIGHBOUR's is the world's edge —
-    air, checked in the table probes above; the pack, the world and
-    the coordinates keep the block and world verbs' own answers."""
+def check_usage(mcme: str, world: str, bworld: str, pack: str,
+                tmp: str, checks: int) -> int:
+    """The verb's own refusals: the target's chunk or subchunk
+    absent is exit 2 on both formats (what `chunk get` answers), a
+    NEIGHBOUR's is the world's edge — air, checked in the table
+    probes above; the pack, the world and the coordinates keep the
+    block and world verbs' own answers."""
     for argv, want in (
         (("chunk", "mesh"), 1),
         (("chunk", "mesh", world, pack, "8", "64"), 1),
@@ -368,6 +514,8 @@ def check_usage(mcme: str, world: str, pack: str, tmp: str,
           "--dimension", "nether"), 2),
         (("chunk", "mesh", world, pack, "8", "64", "8",
           "--dimension", "7"), 1),
+        # a subchunk the store has never held: not stored, exit 2
+        (("chunk", "mesh", bworld, pack, "8", "200", "8"), 2),
     ):
         rc, out, err = A.run(mcme, *argv)
         if rc != want or out != "":
@@ -409,44 +557,46 @@ def main() -> int:
 
         world = os.path.join(tmp, "java")
         shutil.copytree(FIXTURE_WORLD, world)
-        region_root = os.path.join(world, "region")
+        wrote = write_pattern(mcme, world)
+        _log(f"ok — java fixture: {wrote} blocks written into the "
+             "golden world's scratch copy, by chunk set")
 
-        # The pattern, written with the world's own verb: the probe
-        # and the named sides; an unnamed side is air, the golden
-        # sections' own answer.
-        wrote = 0
-        for (x, y, z), block, sides in PROBES:
-            cells = [(x, y, z, block)]
-            cells += [
-                (x + DIR_OFFSETS[d][0], y + DIR_OFFSETS[d][1],
-                 z + DIR_OFFSETS[d][2], spec)
-                for d, spec in sides.items() if spec != "air"
-            ]
-            for cx, cy, cz, spec in cells:
-                rc, out, err = A.run(mcme, "chunk", "set", world,
-                                     str(cx), str(cy), str(cz), spec)
-                if rc != 0 or out != "":
-                    raise AssertionError(
-                        f"set {spec} at ({cx}, {cy}, {cz}): exit {rc} "
-                        f"stdout {out!r} ({err.strip()})")
-                wrote += 1
-        _log(f"ok — fixture: {wrote} blocks written into the golden "
-             "world's scratch copy, by chunk set")
-
-        walk = WorldWalk(region_root)
-        for (x, y, z), block, sides in PROBES:
+        walk = WorldWalk(os.path.join(world, "region"))
+        checks = check_edge(walk, "java", checks)
+        for (x, y, z), _block, _sides in PROBES:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], world, walk,
-                x, y, z, checks, f"world probe ({x}, {y}, {z})")
-        _log("ok — world probes: 5 positions answered alike — six "
+                x, y, z, checks, f"java probe ({x}, {y}, {z})")
+        _log("ok — java probes: 6 positions answered alike — six "
              "different neighbours on six sides at once (the band's "
              "period), the chained pair on one side (the band's "
              "peak), a neighbour across the chunk boundary, one "
-             "across the section edge, and the none bucket ringed "
-             "by opaque all round")
+             "across the section edge, the none bucket ringed by "
+             "opaque all round, and the world's edge open on the "
+             "sixth side")
 
-        checks = check_usage(mcme, world, pack, tmp, checks)
-        _log("ok — usage refusals: 1 / 1 / 1 / 2 / 2 / 2 / 2 / 1")
+        bworld = os.path.join(tmp, "bedrock")
+        shutil.copytree(FIXTURE_STORE, bworld)
+        wrote = write_pattern(mcme, bworld)
+        _log(f"ok — bedrock fixture: {wrote} blocks written into "
+             "the golden store's scratch copy, by chunk set — the "
+             "subchunks it needs created by the write")
+
+        bwalk = BedrockWalk(os.path.join(bworld, "db"))
+        checks = check_edge(bwalk, "bedrock", checks)
+        for (x, y, z), _block, _sides in PROBES:
+            checks = check_world_probe(
+                mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
+                x, y, z, checks, f"bedrock probe ({x}, {y}, {z})")
+        _log("ok — bedrock probes: the same 6 positions answered "
+             "alike over the other format's own data — the "
+             "subchunk payloads read by amulet-core's loader, the "
+             "section-edge probe crossing two of them, the chunk "
+             "edge crossing two chunks, and the store's own edge "
+             "open on the sixth side")
+
+        checks = check_usage(mcme, world, bworld, pack, tmp, checks)
+        _log("ok — usage refusals: 1 / 1 / 1 / 2 / 2 / 2 / 2 / 1 / 2")
 
         _log(f"ok — {checks} checks")
         return 0
