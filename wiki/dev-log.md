@@ -7,6 +7,80 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-18 — The whole sub-chunk: the table at sub-chunk scale
+
+### Built
+
+- `chunk submesh <world> <pack> <x> <y> <z> [--dimension]
+  [--json]`: the builder's table for the WHOLE sub-chunk
+  containing the position — every cell's six real neighbours read
+  out of the world (the sub-chunk plus one layer of every side,
+  an 18x18x18 grid), each distinct state meshed once through the
+  prelude, and the cells answered in the builder's own loop
+  order (x, then y, then z). Each cell's rows ride the stream
+  its transparency feeds — translucent alone, opaque with the
+  partials — and a cell the cull leaves without a face is not
+  listed. JSON carries the page's size, the sub-chunk's
+  coordinates, both streams' row totals and the cells'
+  bounds/auvs/tints; human prints the totals and the per-bucket
+  counts.
+- `mcme_java_section_grid` (java_chunk.h/.c): the Java
+  section's palette and all 4096 indices in one call, in the
+  section's own order, arena-owned — the batched read a
+  sub-chunk's seven layers need where the per-position accessor
+  re-read the chunk per cell.
+- The stream split, D38's recorded exclusion, is exercised and
+  pinned: the cullface-less wall keeps every face of its 1,024
+  cells, 36,864 opaque rows crossing the builder's
+  10,008-row container split, the totals whole across it — the
+  reference's flattened single-container answer compared row
+  for row against mcme's merged streams.
+
+### Notes
+
+- The pin caught four bugs, and only two of them showed in the
+  totals. The table loop scanned six buckets, never the none one
+  (index 6), so every all-none cell — no-cullface and partial
+  blocks alike — dropped out of the answer entirely. The east
+  padding was composed into the interior's own x = 15 column,
+  overwriting those cells' specs with the side's and leaving the
+  true padding as air: 64 wall cells and a ring_opaque column
+  missing, per-block totals the only witness. The texture paths
+  were collected per state, but every state's index is one
+  opening of the PACK's whole table (D35's page), so the page
+  packed every texture five times and shifted every rectangle
+  the reference's page had already settled. And the Java
+  section's own order (x + z*16 + y*256) was read through
+  Bedrock's layer formula (x*256 + z*16 + y) — x and y
+  transposed — which per-block totals survive (the transposition
+  bijects the cells and the cull counts permute with the
+  directions) and only the per-cell block-vs-world check caught.
+  The reference's page is the pack's table with the missing
+  image seeded first, perimeter-sorted and split-packed; mcme's
+  packer is that algorithm, and one table index is the whole
+  answer.
+- The sub-chunk is (0, 8, 0) — y 128 to 143, past every probe —
+  filled by six `chunk fill` boxes per format: the field, the
+  wall, the partial shell, the translucent core, the air cavern
+  and the second run, 7,708 cells each. The walk the reference
+  reads with caches chunk tags, so the pattern lands before the
+  walks are built, and a neighbour chunk in a region file that
+  does not exist is the world's own edge — air, the rule mcme
+  reads it by.
+- Gates: `ref_chunkmesh` 17 checks rc=0 (both formats' whole
+  sub-chunks, per-row in loop order); `./mcme selftest` PASS 6
+  suites under ASan+UBSan; `./rebuild.sh test` PASS; battery
+  rc=0. Nothing under `tests/` staged; golden stores untouched.
+
+### Next
+
+- The table now answers a whole sub-chunk on both formats, the
+  split included. Still out of domain: block states through the
+  Bedrock read (ref_bedrock_write's ground), multi-layer
+  payloads (D15's), block tints (D36's), and the renderer's
+  consumption of the answer — unobservable from any pin, as
+  before.
+
 ## 2026-10-18 — The Bedrock grid: the other format's own data under the table
 
 ### Built

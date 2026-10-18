@@ -334,6 +334,77 @@ bool mcme_java_block_spec(const McmeTag *root, int x, int y, int z,
     return entry_spec(mcme_nbt_at(v.palette, idx), out);
 }
 
+bool mcme_java_section_grid(McmeJavaSectionGrid *out, McmeArena *arena,
+                            const McmeTag *root, int y_sec)
+{
+    if (out == NULL || arena == NULL || root == NULL) {
+        mcme_set_error("java chunk: null argument");
+        return false;
+    }
+    out->stored = false;
+    out->spec_count = 0;
+    out->specs = NULL;
+    out->indices = NULL;
+    if (root->type != MCME_TAG_Compound) {
+        mcme_set_error("java chunk: the chunk is a %s, not a "
+                       "compound", mcme_tag_type_name(root->type));
+        return false;
+    }
+
+    const McmeTag *section = NULL;
+    int found = find_section(root, y_sec, &section);
+    if (found < 0) return false;
+    if (found == 0) return true;         /* not listed: the air answer */
+
+    SectionPalette v;
+    if (!section_palette(section, &v)) return false;
+    if (v.palette == NULL) return true;  /* stored without block_states */
+
+    size_t n = v.palette->list.len;
+    const char **specs = mcme_arena_alloc(arena, n * sizeof *specs);
+    uint16_t *indices = mcme_arena_alloc(
+        arena, MCME_JAVA_SECTION_BLOCKS * sizeof *indices);
+    if (specs == NULL || indices == NULL) {
+        mcme_set_error("java chunk: out of memory");
+        return false;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        McmeBuffer buf;
+        mcme_buffer_init(&buf);
+        bool ok = entry_spec(mcme_nbt_at(v.palette, i), &buf);
+        char *copy = NULL;
+        if (ok) {
+            copy = mcme_arena_alloc(arena, buf.len + 1);
+            if (copy == NULL) {
+                mcme_set_error("java chunk: out of memory");
+                ok = false;
+            } else {
+                memcpy(copy, buf.data, buf.len);
+                copy[buf.len] = '\0';
+            }
+        }
+        mcme_buffer_free(&buf);
+        if (!ok) return false;
+        specs[i] = copy;
+    }
+    for (size_t pos = 0; pos < MCME_JAVA_SECTION_BLOCKS; ++pos) {
+        size_t idx;
+        if (!palette_index(&v, pos, &idx)) return false;
+        if (idx >= n) {
+            mcme_set_error("java chunk: the index at position %zu is "
+                           "%zu, outside its palette of %zu entries",
+                           pos, idx, n);
+            return false;
+        }
+        indices[pos] = (uint16_t)idx;
+    }
+    out->stored = true;
+    out->spec_count = n;
+    out->specs = specs;
+    out->indices = indices;
+    return true;
+}
+
 /*
  * The section for an edit: the one the chunk lists, or one made and
  * spliced into the list at its Y — the order the reference writes —

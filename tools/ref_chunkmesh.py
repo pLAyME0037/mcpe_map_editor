@@ -30,6 +30,20 @@ through the reference's own reader — so the grid is the OTHER
 format's own data, the cross-subchunk and cross-chunk cells
 included.
 
+The whole sub-chunk rides that ground too (D40): one section per
+format drives `chunk submesh` over sub-chunk (0, 8, 0) — y 128 to
+143, past every probe — filled by six `chunk fill` boxes: the
+field of cull cubes, a quarter of it the cullface-less wall whose
+1,024 cells keep every face (the opaque stream crossing the
+builder's 10,008-row container split), the partial shell around
+the translucent core, the air cavern, the second run. The grid is
+18x18x18 — the cells with one layer of every neighbour around
+them, the walk's own reads again — handed to `create_lod0_chunk`
+at the sub-chunk's world origin, and every surviving row of every
+cell is compared in the BUILDER's loop order (x, then y, then z),
+each cell's rows against the stream its transparency feeds, the
+stream totals whole across the split.
+
   MIXED        — one opaque cull cube with a different neighbour on
                  each side: opaque below, east and south cull those
                  faces away; a partial above, a translucent north
@@ -128,6 +142,57 @@ PATTERN_CHUNKS = {(0, 0), (1, 0)}
 # The axis offsets' inverse: a cell's offset, to its side's name.
 OFFSET_DIRS = {off: d for d, off in DIR_OFFSETS.items()}
 
+# ---------------------------------------------------------------------------
+# The whole sub-chunk's table (D40)
+# ---------------------------------------------------------------------------
+
+# The sub-chunk the whole-table probe fills: chunk (0, 0), y 128
+# to 143 — past every probe, in the sections and subchunks none of
+# them touch.
+SUB = (0, 8, 0)
+SUB_ORIGIN = (SUB[0] * 16, SUB[1] * 16, SUB[2] * 16)
+
+# The pattern: six boxes through `chunk fill`, in write order —
+# the field first, then the boxes that cut it. Every block is the
+# crafted pack's:
+#
+#   the field        cull cubes everywhere, so every interior face
+#                    culls against its own kind and only the
+#                    boundaries can leak;
+#   the wall         a quarter of the sub-chunk in the
+#                    cullface-less cube — the none bucket never
+#                    culls, so all 1,024 of its cells keep every
+#                    face: the opaque stream's 36,864 rows, the
+#                    flush's container split crossed three times
+#                    over;
+#   the shell        the partial block around the core, so the
+#                    core's faces against it fire neither clause;
+#   the core         translucent inside the shell — the chained
+#                    pair among its own cells, its faces standing
+#                    against the partial shell and the padding's
+#                    air;
+#   the cavern       a wall of air down one side: the field's
+#                    faces against it stand, partial, neither
+#                    clause;
+#   the second run   translucent beside the shell and the field:
+#                    the chained pair where its own cells meet,
+#                    clause one where the field stands.
+SUB_FILLS = [
+    ((0, 128, 0), (15, 143, 15), "ring_opaque"),
+    ((0, 128, 0), (15, 143, 3), "atlas_cube"),
+    ((3, 131, 4), (12, 140, 15), "atlas_three"),
+    ((4, 132, 5), (11, 139, 15), "ring_translucent"),
+    ((0, 128, 4), (2, 143, 15), "air"),
+    ((13, 128, 4), (15, 130, 15), "ring_translucent"),
+]
+
+# The split's ground: the builder's array holds ARRAY_VERT_COUNT
+# = 10,008 rows and flushes to a new container past it. The wall
+# alone guarantees the opaque stream crosses that line — a seam
+# that lost or doubled a row would shift every row behind it, and
+# the per-row walk over the flat stream would say so.
+SPLIT_MIN = 10_008
+
 # What the fixture rests on: the crafted pack's own classifications,
 # the reference's answers (D32's rule through its manager).
 FIXTURE_FLAGS = {
@@ -167,9 +232,15 @@ class WorldWalk:
         tag = self.tags.get((cx, cz))
         if tag is None:
             rx, rz = cx >> 5, cz >> 5
-            tag = J.walk_chunk(
-                os.path.join(self.region_root, f"r.{rx}.{rz}.mca"),
-                cx, cz)
+            path = os.path.join(self.region_root, f"r.{rx}.{rz}.mca")
+            if not os.path.exists(path):
+                # No region file for the column at all: the world's
+                # own edge, air — the rule mcme reads a neighbour
+                # chunk by (a sub-chunk's grid reaches the chunks
+                # beside it, and the fixture world starts at 0,0).
+                self.tags[(cx, cz)] = False
+                return J.AIR
+            tag = J.walk_chunk(path, cx, cz)
             self.tags[(cx, cz)] = tag if tag is not None else False
         if not tag:
             return J.AIR
@@ -494,6 +565,232 @@ def check_world_probe(mcme, packdir, mgr, opack, page: int,
     return checks + 1
 
 
+def write_subchunk(mcme: str, world: str) -> int:
+    """The sub-chunk's pattern, six boxes through the world's own
+    fill verb."""
+    filled = 0
+    for (x1, y1, z1), (x2, y2, z2), block in SUB_FILLS:
+        full = A.mcme_spec(block, {})
+        rc, out, err = A.run(mcme, "chunk", "fill", world,
+                             str(x1), str(y1), str(z1),
+                             str(x2), str(y2), str(z2), full)
+        if rc != 0 or out != "":
+            raise AssertionError(
+                f"fill {full} ({x1}, {y1}, {z1})..({x2}, {y2}, "
+                f"{z2}): exit {rc} stdout {out!r} ({err.strip()})")
+        filled += (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1)
+    return filled
+
+
+def subgrid_specs(walk) -> dict[tuple, str]:
+    """Every cell the sub-chunk's grid holds, by world position —
+    the walk's reads once, the builder and the comparison both
+    drawing from them."""
+    specs = {}
+    for i in range(18):
+        for j in range(18):
+            for k in range(18):
+                p = (SUB_ORIGIN[0] + i - 1, SUB_ORIGIN[1] + j - 1,
+                     SUB_ORIGIN[2] + k - 1)
+                specs[p] = walk.block_at(*p)
+    return specs
+
+
+def ref_subchunk(opack, specs: dict[tuple, str]):
+    """The builder's own answer for the whole sub-chunk: the
+    18x18x18 grid — the cells with one layer of every neighbour
+    around them — handed to `create_lod0_chunk` at the sub-chunk's
+    world origin, and the two streams it answers, flat: the
+    flush's containers are concatenated before the reference ever
+    returns them, so the split lives in the totals."""
+    import numpy
+
+    grid = numpy.zeros((18, 18, 18), numpy.uint32)
+    palette = [A.make_block("air", {})]
+    index = {"minecraft:air": 0}
+    for i in range(18):
+        for j in range(18):
+            for k in range(18):
+                spec = specs[(SUB_ORIGIN[0] + i - 1,
+                              SUB_ORIGIN[1] + j - 1,
+                              SUB_ORIGIN[2] + k - 1)]
+                slot = index.get(spec)
+                if slot is None:
+                    palette.append(
+                        A.make_block(*parse_spec(spec)))
+                    slot = index[spec] = len(palette) - 1
+                grid[i, j, k] = slot
+    opack.block_model_manager = {}
+    opaque, trans = A._REF.cb.create_lod0_chunk(
+        opack, numpy.array(list(SUB_ORIGIN), numpy.int64),
+        [(grid, 0)], palette, 12)
+    rows_o = numpy.frombuffer(opaque[0], numpy.float32).reshape(-1, 12)
+    rows_t = numpy.frombuffer(trans[0], numpy.float32).reshape(-1, 12)
+    return rows_o, rows_t
+
+
+def check_subchunk(mcme, packdir, mgr, opack, page: int, world: str,
+                   walk, checks: int, why: str) -> int:
+    """The whole sub-chunk, both sides: the reference's streams
+    over the walk's grid, mcme's cells walked in the BUILDER'S own
+    loop order — x, then y, then z — every surviving row of every
+    cell against the stream its transparency feeds, the cell's
+    world position under the row on all three axes, and the
+    split's totals whole."""
+    specs = subgrid_specs(walk)
+    rows_o, rows_t = ref_subchunk(opack, specs)
+    if len(rows_o) < SPLIT_MIN:
+        raise AssertionError(
+            f"{why}: the opaque stream holds {len(rows_o)} rows, "
+            f"short of the {SPLIT_MIN} that split it — the flush "
+            "never fired and the seam stays unpinned")
+
+    got = A.mcme_submesh(mcme, packdir, world,
+                         *(str(v + 4) for v in SUB_ORIGIN))
+    if got["size"] != page:
+        raise AssertionError(
+            f"{why}: page {got['size']}, reference {page}")
+    if got["subchunk"] != {"x": SUB[0], "y": SUB[1], "z": SUB[2]}:
+        raise AssertionError(
+            f"{why}: the answer names sub-chunk {got['subchunk']}, "
+            f"want {SUB}")
+    if (got["opaque"], got["translucent"]) != (
+            len(rows_o), len(rows_t)):
+        raise AssertionError(
+            f"{why}: mcme's stream totals are {got['opaque']} and "
+            f"{got['translucent']}, the builder answered "
+            f"{len(rows_o)} and {len(rows_t)}")
+
+    cells = {(c["x"], c["y"], c["z"]): c for c in got["cells"]}
+    if len(cells) != len(got["cells"]):
+        raise AssertionError(f"{why}: two cells at one position")
+
+    docs: dict[str, dict] = {}
+
+    def doc_for(spec: str) -> dict:
+        d = docs.get(spec)
+        if d is None:
+            d = docs[spec] = A.ref_get_model(mgr, *parse_spec(spec))
+        return d
+
+    cursor = {"opaque": 0, "translucent": 0}
+    answered = []
+    for cx in range(16):
+        for cy in range(16):
+            for cz in range(16):
+                wx = SUB_ORIGIN[0] + cx
+                wy = SUB_ORIGIN[1] + cy
+                wz = SUB_ORIGIN[2] + cz
+                spec = specs[(wx, wy, wz)]
+                doc = doc_for(spec)
+                self_t = doc["transparent"]
+                stream = ("translucent" if self_t == 1 else "opaque")
+                rows = rows_t if self_t == 1 else rows_o
+                cell = cells.get((wx, wy, wz))
+                if cell is not None and cell["block"] != spec:
+                    raise AssertionError(
+                        f"{why}: cell ({wx}, {wy}, {wz}): block "
+                        f"{cell['block']!r}, the world holds "
+                        f"{spec!r}")
+                walked = 0
+                for dname in A.CULL_ORDER:
+                    if dname == "none":
+                        culled = False     # the test's own gate:
+                        # no cull_id, no clause (pyx 282)
+                    else:
+                        dx, dy, dz = DIR_OFFSETS[dname]
+                        n_t = doc_for(specs[
+                            (wx + dx, wy + dy, wz + dz)]
+                            )["transparent"]
+                        # the skip clauses over the grid's own
+                        # neighbour (pyx 287-289)
+                        culled = (n_t == 0
+                                  or (n_t == 1 and self_t == 1))
+                    faces = doc["dirs"].get(dname, {}).get(
+                        "faces", [])
+                    n = 0 if culled else len(faces)
+                    g = cell["dirs"].get(dname) if cell else None
+                    if n == 0:
+                        if g is not None:
+                            raise AssertionError(
+                                f"{why}: cell ({wx}, {wy}, {wz}) "
+                                f"{dname}: the cull left no rows, "
+                                "mcme still answered the bucket")
+                        continue
+                    if g is None:
+                        raise AssertionError(
+                            f"{why}: cell ({wx}, {wy}, {wz}) "
+                            f"{dname}: mcme has no bucket for {n} "
+                            "rows")
+                    if (len(g["bounds"]), len(g["auvs"]),
+                            len(g["tints"])) != (
+                            4 * n, 2 * n, 3 * n):
+                        raise AssertionError(
+                            f"{why}: cell ({wx}, {wy}, {wz}) "
+                            f"{dname}: {len(g['bounds'])}/"
+                            f"{len(g['auvs'])}/{len(g['tints'])} "
+                            f"values for {n} rows")
+                    base = cursor[stream] + walked
+                    ddoc = doc["dirs"][dname]
+                    verts, tverts = ddoc["verts"], ddoc["tverts"]
+                    for r in range(n):
+                        row = rows[base + r]
+                        fi = faces[r]
+                        pos, tv, rect = row[0:3], row[3:5], row[5:9]
+                        for seq, want_seq, what in (
+                            # The builder's rows ride the cell's
+                            # world position on all three axes.
+                            (pos, (verts[3 * fi] + wx,
+                                   verts[3 * fi + 1] + wy,
+                                   verts[3 * fi + 2] + wz),
+                             "position"),
+                            (tv, tverts[2 * fi:2 * fi + 2], "tvert"),
+                            (rect, g["bounds"][4 * r:4 * r + 4],
+                             "bounds"),
+                        ):
+                            d = A.f32_diff(
+                                seq, want_seq,
+                                f"cell ({wx}, {wy}, {wz}) {dname} "
+                                f"row {r} {what}")
+                            if d:
+                                raise AssertionError(f"{why}: {d}")
+                        d = A.f32_diff(
+                            g["auvs"][2 * r:2 * r + 2],
+                            A.shader_auv(tv, rect),
+                            f"cell ({wx}, {wy}, {wz}) {dname} "
+                            f"row {r} auv")
+                        if d:
+                            raise AssertionError(f"{why}: {d}")
+                        d = A.f32_diff(
+                            g["tints"][3 * r:3 * r + 3], row[9:12],
+                            f"cell ({wx}, {wy}, {wz}) {dname} "
+                            f"row {r} tint")
+                        if d:
+                            raise AssertionError(f"{why}: {d}")
+                    walked += n
+                cursor[stream] += walked
+                if walked:
+                    answered.append((wx, wy, wz))
+
+    # mcme's cells come in the builder's own emission order — x,
+    # then y, then z — the cells with rows among them.
+    order = [(c["x"], c["y"], c["z"]) for c in got["cells"]]
+    if order != answered:
+        at = next((i for i, (a, b) in enumerate(zip(order, answered))
+                   if a != b), min(len(order), len(answered)))
+        raise AssertionError(
+            f"{why}: mcme's {len(order)} cells are not the "
+            f"builder's loop order over {len(answered)}: first "
+            f"difference at {at}")
+    if (cursor["opaque"], cursor["translucent"]) != (
+            len(rows_o), len(rows_t)):
+        raise AssertionError(
+            f"{why}: the streams hold {len(rows_o)} and "
+            f"{len(rows_t)} rows, the cells walked "
+            f"{cursor['opaque']} and {cursor['translucent']}")
+    return checks + 1
+
+
 def check_usage(mcme: str, world: str, bworld: str, pack: str,
                 tmp: str, checks: int) -> int:
     """The verb's own refusals: the target's chunk or subchunk
@@ -516,6 +813,22 @@ def check_usage(mcme: str, world: str, bworld: str, pack: str,
           "--dimension", "7"), 1),
         # a subchunk the store has never held: not stored, exit 2
         (("chunk", "mesh", bworld, pack, "8", "200", "8"), 2),
+        # `chunk submesh` keeps every one of those answers: the
+        # whole sub-chunk refused exactly where the one block
+        # inside it would be.
+        (("chunk", "submesh"), 1),
+        (("chunk", "submesh", world, pack, "8", "64"), 1),
+        (("chunk", "submesh", world, pack, "x", "64", "8"), 1),
+        (("chunk", "submesh", os.path.join(tmp, "nope"), pack,
+          "8", "64", "8"), 2),
+        (("chunk", "submesh", world, os.path.join(tmp, "no-such-pack"),
+          "8", "64", "8"), 2),
+        (("chunk", "submesh", world, pack, "200", "64", "200"), 2),
+        (("chunk", "submesh", world, pack, "8", "64", "8",
+          "--dimension", "nether"), 2),
+        (("chunk", "submesh", world, pack, "8", "64", "8",
+          "--dimension", "7"), 1),
+        (("chunk", "submesh", bworld, pack, "8", "200", "8"), 2),
     ):
         rc, out, err = A.run(mcme, *argv)
         if rc != want or out != "":
@@ -558,8 +871,14 @@ def main() -> int:
         world = os.path.join(tmp, "java")
         shutil.copytree(FIXTURE_WORLD, world)
         wrote = write_pattern(mcme, world)
+        # The sub-chunk's pattern lands before the walk is built:
+        # the walk caches each chunk's tag it reads, and a fill it
+        # has already cached would be invisible to it.
+        sub_wrote = write_subchunk(mcme, world)
         _log(f"ok — java fixture: {wrote} blocks written into the "
-             "golden world's scratch copy, by chunk set")
+             "golden world's scratch copy by chunk set, and "
+             f"{sub_wrote} cells filled into sub-chunk (0, 8, 0) "
+             "by chunk fill")
 
         walk = WorldWalk(os.path.join(world, "region"))
         checks = check_edge(walk, "java", checks)
@@ -574,13 +893,25 @@ def main() -> int:
              "across the section edge, the none bucket ringed by "
              "opaque all round, and the world's edge open on the "
              "sixth side")
+        checks = check_subchunk(
+            mcme, pack, mgr, opack, img.size[0], world, walk,
+            checks, "java subchunk")
+        _log("ok — java subchunk: the whole sub-chunk answered "
+             "alike — every surviving row of every cell in the "
+             "builder's own loop order, the field's culls and the "
+             "chained core's and the cavern's open faces among "
+             "them, the wall's 36,864 rows carrying the opaque "
+             "stream past the container split")
 
         bworld = os.path.join(tmp, "bedrock")
         shutil.copytree(FIXTURE_STORE, bworld)
         wrote = write_pattern(mcme, bworld)
+        sub_wrote = write_subchunk(mcme, bworld)
         _log(f"ok — bedrock fixture: {wrote} blocks written into "
-             "the golden store's scratch copy, by chunk set — the "
-             "subchunks it needs created by the write")
+             "the golden store's scratch copy by chunk set — the "
+             "subchunks it needs created by the write — and "
+             f"{sub_wrote} cells filled into sub-chunk (0, 8, 0) "
+             "by chunk fill")
 
         bwalk = BedrockWalk(os.path.join(bworld, "db"))
         checks = check_edge(bwalk, "bedrock", checks)
@@ -594,9 +925,18 @@ def main() -> int:
              "section-edge probe crossing two of them, the chunk "
              "edge crossing two chunks, and the store's own edge "
              "open on the sixth side")
+        checks = check_subchunk(
+            mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
+            checks, "bedrock subchunk")
+        _log("ok — bedrock subchunk: the same sub-chunk answered "
+             "alike over the other format's own data — the same "
+             "six boxes filled through its own write path, its "
+             "subchunk payloads standing where the walk reads, "
+             "the totals whole over the split")
 
         checks = check_usage(mcme, world, bworld, pack, tmp, checks)
-        _log("ok — usage refusals: 1 / 1 / 1 / 2 / 2 / 2 / 2 / 1 / 2")
+        _log("ok — usage refusals: 1 / 1 / 1 / 2 / 2 / 2 / 2 / 1 / 2 "
+             "for `chunk mesh`, the same nine for `chunk submesh`")
 
         _log(f"ok — {checks} checks")
         return 0

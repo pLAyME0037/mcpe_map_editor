@@ -153,6 +153,13 @@ static void print_usage(FILE *out)
         "                    A neighbour's chunk outside the stored\n"
         "                    world is air. Human or --json; takes\n"
         "                    --dimension too.\n"
+        "  chunk submesh <world> <pack> <x> <y> <z>\n"
+        "                    The same table for the WHOLE sub-chunk\n"
+        "                    the block stands in: every cell the\n"
+        "                    cull leaves rows, each with its six\n"
+        "                    real neighbours, the sub-chunks beside\n"
+        "                    it included. Human or --json; takes\n"
+        "                    --dimension too.\n"
         "  chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>\n"
         "                    Set a box of blocks (corners in any\n"
         "                    order), Bedrock or Java. Bedrock:\n"
@@ -3236,6 +3243,654 @@ static int cmd_chunk_mesh(int argc, char **argv)
     return MCME_OK;
 }
 
+/* ========================================================================
+ * The whole sub-chunk's table (D40)
+ *
+ * The grid the builder is handed for one sub-chunk: the 16x16x16 of
+ * its own cells with one cell of every neighbour standing around
+ * them — the padding the cull reads off the edges — composed from
+ * the world once, and the table answered for every cell the cull
+ * leaves rows. The loop is the builder's own: x, then y, then z
+ * (chunk_builder_cy.pyx 273-275), each cell's six neighbours its
+ * real ones — D38's clauses per side, D36's shade at the cell's
+ * own world height.
+ *
+ * A NEIGHBOUR's sub-chunk outside the stored world is air — the
+ * world's edge stands open, partial, firing neither clause, the
+ * rule `chunk mesh` reads a neighbour chunk by. The target's own
+ * read failing is exit 2 where `chunk get` refuses: Bedrock a
+ * sub-chunk the store has never held, Java a chunk the region
+ * file does not have. A Java section the chunk does not list is
+ * the format's own all-air answer, not a refusal — an empty
+ * sub-chunk's cells are air, and the pack's air meshes like any
+ * other state.
+ */
+
+#define SUB_EDGE  16
+#define SUB_WIDTH 18   /* the sub-chunk with one cell of neighbours
+                          on every side: the builder's padded grid */
+
+/* One sub-chunk's block layer as the grid composer wants it: the
+   palette's specs and the 4096 indices pointing at them, X-then-
+   Z-then-Y. A layer the world has none for is air in every
+   cell. */
+typedef struct {
+    const char   **specs;     /* spec_count specs                  */
+    size_t         spec_count;
+    const uint16_t *indices;  /* 4096, XZY — NULL when all air     */
+} SubchunkLayer;
+
+/* The seven sub-chunks the grid reads: the target's, then the one
+   beside it on each face — DOWN through WEST, the builder's
+   CULL_MAP order the sides' offsets come in. */
+enum { SUB_TARGET = 0, SUB_LAYERS = 7 };
+
+static const char kSubAir[] = "minecraft:air";
+
+/* The spec standing at a layer's local position, air where the
+   layer answers none. The layer's order is Bedrock's own sub-chunk
+   order — y fastest, then z, then x — which both loaders answer:
+   the store's layers arrive in it, and the Java section's grid is
+   transcribed into it as it is adopted. */
+static const char *sub_layer_spec(const SubchunkLayer *l,
+                                  int lx, int ly, int lz)
+{
+    if (l->indices == NULL) return kSubAir;
+    size_t idx = l->indices[(size_t)lx * 256 + (size_t)lz * 16
+                            + (size_t)ly];
+    return idx < l->spec_count ? l->specs[idx] : kSubAir;
+}
+
+/* The seven layers from the Bedrock store: one open, one key and
+   one decode each, the decodes in the caller's arena. A key the
+   store does not hold is the air layer — the world's edge, except
+   under the target, which is what `chunk get` refuses with. */
+static int sub_bedrock_layers(const McmeWorldInfo *info,
+                              int32_t dimension,
+                              int sx, int sy, int sz,
+                              SubchunkLayer out[SUB_LAYERS],
+                              McmeArena *arena)
+{
+    static const int k_dx[6] = { 0, 0,  0, 1, 0, -1 };
+    static const int k_dy[6] = { -1, 1, 0, 0, 0,  0 };
+    static const int k_dz[6] = { 0, 0, -1, 0, 1,  0 };
+
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, info->db_path)) {
+        return MCME_EXIT_IO;        /* the store's own error stands */
+    }
+    int rc = MCME_OK;
+    for (int s = 0; s < SUB_LAYERS && rc == MCME_OK; ++s) {
+        int cx = sx + (s ? k_dx[s - 1] : 0);
+        int cy = sy + (s ? k_dy[s - 1] : 0);
+        int cz = sz + (s ? k_dz[s - 1] : 0);
+        out[s].specs = NULL;
+        out[s].spec_count = 0;
+        out[s].indices = NULL;
+
+        uint8_t key[14];
+        size_t key_len = 0;
+        if (!mcme_bedrock_subchunk_key(cx * 16, cy * 16, cz * 16,
+                                       dimension, key, sizeof key,
+                                       &key_len)) {
+            mcme_set_error("chunk submesh: the sub-chunk (%d, %d, "
+                           "%d) is past the Y keys can name",
+                           cx, cy, cz);
+            rc = MCME_EXIT_USAGE;
+            break;
+        }
+        if (!mcme_leveldb_has(db, key, key_len)) {
+            if (s == SUB_TARGET) {
+                mcme_leveldb_close(db);
+                mcme_set_error("chunk submesh: the sub-chunk of "
+                               "block (%ld, %ld, %ld) is not stored "
+                               "in this world", sx * 16L, sy * 16L,
+                               sz * 16L);
+                return MCME_EXIT_NOT_FOUND;
+            }
+            continue;               /* the world's edge: air */
+        }
+        McmeBuffer payload;
+        mcme_buffer_init(&payload);
+        bool deleted = false;
+        bool got = mcme_leveldb_get(db, key, key_len, &payload,
+                                    &deleted);
+        if (!got) {
+            mcme_buffer_free(&payload);
+            rc = MCME_EXIT_IO;      /* the store's own error stands */
+            break;
+        }
+        if (deleted) {
+            mcme_buffer_free(&payload);
+            if (s == SUB_TARGET) {
+                mcme_leveldb_close(db);
+                mcme_set_error("chunk submesh: the sub-chunk of "
+                               "block (%ld, %ld, %ld) is deleted in "
+                               "this world", sx * 16L, sy * 16L,
+                               sz * 16L);
+                return MCME_EXIT_NOT_FOUND;
+            }
+            continue;               /* the world's edge: air */
+        }
+        McmeBedrockSubchunk sc;
+        if (!mcme_bedrock_subchunk_decode(&sc, arena, payload.data,
+                                          payload.len)) {
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk submesh: the sub-chunk (%d, %d, "
+                           "%d) does not decode: %s", cx, cy, cz,
+                           why);
+            rc = MCME_EXIT_BAD_FORMAT;
+        } else if (sc.layer_count > 0) {
+            const McmeBedrockLayer *layer = &sc.layers[0];
+            const char **specs = mcme_arena_alloc(
+                arena, layer->palette_len * sizeof *specs);
+            uint16_t *indices = mcme_arena_alloc(
+                arena, MCME_JAVA_SECTION_BLOCKS * sizeof *indices);
+            if (specs == NULL || indices == NULL) {
+                mcme_set_error("chunk submesh: out of memory");
+                rc = MCME_EXIT_INTERNAL;
+            } else {
+                for (size_t i = 0; i < layer->palette_len
+                         && rc == MCME_OK; ++i) {
+                    McmeBuffer buf;
+                    mcme_buffer_init(&buf);
+                    if (!mcme_bedrock_block_spec(
+                            layer->palette[i].root, &buf)) {
+                        rc = MCME_EXIT_BAD_FORMAT;
+                    } else {
+                        char *copy =
+                            mcme_arena_alloc(arena, buf.len + 1);
+                        if (copy == NULL) {
+                            mcme_set_error("chunk submesh: out of "
+                                           "memory");
+                            rc = MCME_EXIT_INTERNAL;
+                        } else {
+                            memcpy(copy, buf.data, buf.len);
+                            copy[buf.len] = '\0';
+                            specs[i] = copy;
+                        }
+                    }
+                    mcme_buffer_free(&buf);
+                }
+                if (rc == MCME_OK) {
+                    memcpy(indices, layer->indices,
+                           MCME_JAVA_SECTION_BLOCKS
+                           * sizeof *indices);
+                    out[s].specs = specs;
+                    out[s].spec_count = layer->palette_len;
+                    out[s].indices = indices;
+                }
+            }
+        }
+        mcme_buffer_free(&payload);
+    }
+    mcme_leveldb_close(db);
+    return rc;
+}
+
+/* The seven layers from the region files: each chunk's tag read
+   once — the target's chunk carries three of the grid's sections,
+   the ones beside it one each — and each section through the
+   batched read. A chunk the region file does not have is the air
+   layer, the world's edge, except under the target; a chunk that
+   does not DECODE is the read's own refusal. The arenas the docs
+   parse into are the caller's to free with the layers. */
+static int sub_java_layers(const McmeWorldInfo *info,
+                           int32_t dimension,
+                           int sx, int sy, int sz,
+                           SubchunkLayer out[SUB_LAYERS],
+                           McmeArena **arenas, int *arena_count)
+{
+    static const int k_dx[6] = { 0, 0,  0, 1, 0, -1 };
+    static const int k_dy[6] = { -1, 1, 0, 0, 0,  0 };
+    static const int k_dz[6] = { 0, 0, -1, 0, 1,  0 };
+
+    /* The chunks loaded so far: the sides share them three ways
+       down the middle column, and each is parsed once. */
+    McmeNbtDoc docs[SUB_LAYERS];
+    McmeArena *doc_arenas[SUB_LAYERS];
+    int doc_x[SUB_LAYERS], doc_z[SUB_LAYERS];
+    int loaded = 0;
+
+    int rc = MCME_OK;
+    for (int s = 0; s < SUB_LAYERS && rc == MCME_OK; ++s) {
+        int cx = sx + (s ? k_dx[s - 1] : 0);
+        int cy = sy + (s ? k_dy[s - 1] : 0);
+        int cz = sz + (s ? k_dz[s - 1] : 0);
+        out[s].specs = NULL;
+        out[s].spec_count = 0;
+        out[s].indices = NULL;
+
+        int found = -1;
+        for (int i = 0; i < loaded; ++i)
+            if (doc_x[i] == cx && doc_z[i] == cz) { found = i; break; }
+        if (found < 0) {
+            McmeArena *arena = NULL;
+            McmeNbtDoc doc;
+            char file[MCME_REGION_PATH_MAX];
+            int crc = java_chunk_doc(info, dimension, cx * 16L,
+                                     cy * 16L, cz * 16L, &arena, &doc,
+                                     file, sizeof file);
+            if (crc == MCME_EXIT_NOT_FOUND) {
+                if (s == SUB_TARGET) return crc;
+                continue;           /* the world's edge: air */
+            }
+            if (crc != MCME_OK) return crc;
+            found = loaded;
+            docs[found] = doc;
+            doc_arenas[found] = arena;
+            doc_x[found] = cx;
+            doc_z[found] = cz;
+            arenas[(*arena_count)++] = arena;
+            loaded++;
+        }
+
+        McmeJavaSectionGrid grid;
+        if (!mcme_java_section_grid(&grid, doc_arenas[found],
+                                    docs[found].root, cy)) {
+            char why[256];
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("chunk submesh: the section (%d, %d, "
+                           "%d) does not decode: %s", cx, cy, cz,
+                           why);
+            return MCME_EXIT_BAD_FORMAT;
+        }
+        if (grid.stored) {
+            /* The grid is the section's own order — x fastest,
+               then z, then y — and the layer is Bedrock's sub-chunk
+               order, y fastest, then z, then x. The transcription
+               happens once, here, so every meshing read keeps one
+               formula whichever format the layer came from. */
+            uint16_t *xzy = mcme_arena_alloc(
+                doc_arenas[found],
+                MCME_JAVA_SECTION_BLOCKS * sizeof *xzy);
+            if (!xzy) {
+                mcme_set_error("chunk submesh: out of memory");
+                return MCME_EXIT_INTERNAL;
+            }
+            for (int ly = 0; ly < 16; ++ly)
+                for (int lz = 0; lz < 16; ++lz)
+                    for (int lx = 0; lx < 16; ++lx)
+                        xzy[(size_t)lx * 256 + (size_t)lz * 16
+                            + (size_t)ly]
+                            = grid.indices[(size_t)lx
+                                 + (size_t)lz * 16
+                                   + (size_t)ly * 256];
+            out[s].specs = grid.specs;
+            out[s].spec_count = grid.spec_count;
+            out[s].indices = xzy;
+        }
+    }
+    return rc;
+}
+
+/* A distinct state the grid holds: its spec through the block
+   prelude once — mesh, transparency, textures for the page — the
+   sub-chunk's handful of states instead of one run per cell. */
+typedef struct {
+    const char       *spec;
+    McmeMesh          mesh;
+    McmeTextureIndex *tex;
+    McmeTransparency  transparency;
+} SubMeshState;
+
+static int sub_mesh_state(const char *pack_dir, const char *spec,
+                          SubMeshState *out)
+{
+    out->spec = spec;
+    out->tex = NULL;
+    int rc = build_block_mesh("chunk submesh", pack_dir, spec,
+                              &out->mesh, &out->tex);
+    if (rc != MCME_OK) return rc;
+    out->transparency = out->mesh.transparency;
+    return MCME_OK;
+}
+
+/*
+ * `mcme chunk submesh <world> <pack> <x> <y> <z>` answers the
+ * builder's table for the WHOLE sub-chunk the block stands in
+ * (D40): every cell the cull leaves rows, in the builder's own
+ * loop order, each cell's six neighbours read out of the world
+ * itself — the sub-chunks beside this one included, their edge
+ * layers standing as the padding the cull reads.
+ *
+ * JSON carries the page's size, the sub-chunk's coordinates, the
+ * two streams' row totals, and the cells that answer rows — each
+ * with its position, its block and its dirs' bounds/auvs/tints,
+ * the per-position table's own columns. A cell the cull leaves
+ * without a single face is not listed: there are no rows for it
+ * to name. Human prints the totals, the per-bucket counts among
+ * them.
+ */
+static int cmd_chunk_submesh(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 5) {
+        mcme_set_error("chunk: usage: chunk submesh <world> <pack> "
+                       "<x> <y> <z> [--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    const char *pack_dir = argv[1];
+    long x, y, z;
+    if (!parse_coord("chunk", argv[2], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[4], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK && info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("chunk: '%s' is not a Bedrock or Java world",
+                       path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    int sx = (int)(x >> 4), sy = (int)(y >> 4), sz = (int)(z >> 4);
+
+    /* The seven layers, each format's own read. */
+    SubchunkLayer layers[SUB_LAYERS];
+    McmeArena *layer_arenas[SUB_LAYERS];
+    int layer_arena_count = 0;
+    int rc;
+    if (info.kind == MCME_WORLD_JAVA) {
+        rc = sub_java_layers(&info, dimension, sx, sy, sz, layers,
+                             layer_arenas, &layer_arena_count);
+    } else {
+        McmeArena *arena = mcme_arena_new();
+        if (arena == NULL) {
+            mcme_set_error("chunk submesh: out of memory");
+            mcme_world_info_free(&info);
+            return MCME_EXIT_INTERNAL;
+        }
+        layer_arenas[layer_arena_count++] = arena;
+        rc = sub_bedrock_layers(&info, dimension, sx, sy, sz, layers,
+                                arena);
+    }
+    if (rc != MCME_OK) {
+        for (int i = 0; i < layer_arena_count; ++i)
+            mcme_arena_free(layer_arenas[i]);
+        mcme_world_info_free(&info);
+        return rc;
+    }
+
+    /* The composed grid: the sub-chunk's cells at [1..16], the
+       neighbours' edge layers as the padding every cull read off
+       an edge lands on. The corner padding is never read — only
+       the six faces' cells are — and stays air. */
+    enum { SUB_CELLS = SUB_WIDTH * SUB_WIDTH * SUB_WIDTH };
+    const char *g[SUB_CELLS];
+    for (int i = 0; i < SUB_CELLS; ++i) g[i] = kSubAir;
+    for (int lx = 0; lx < SUB_EDGE; ++lx) {
+        for (int ly = 0; ly < SUB_EDGE; ++ly) {
+            for (int lz = 0; lz < SUB_EDGE; ++lz) {
+                g[(lx + 1) * SUB_WIDTH * SUB_WIDTH
+                  + (ly + 1) * SUB_WIDTH + (lz + 1)]
+                    = sub_layer_spec(&layers[SUB_TARGET], lx, ly, lz);
+                g[(lx + 1) * SUB_WIDTH * SUB_WIDTH + lz + 1]
+                    = sub_layer_spec(&layers[1], lx, SUB_EDGE - 1, lz);
+                g[(lx + 1) * SUB_WIDTH * SUB_WIDTH
+                  + (SUB_EDGE + 1) * SUB_WIDTH + lz + 1]
+                    = sub_layer_spec(&layers[2], lx, 0, lz);
+                g[(lx + 1) * SUB_WIDTH * SUB_WIDTH + (ly + 1) * SUB_WIDTH]
+                    = sub_layer_spec(&layers[3], lx, ly, SUB_EDGE - 1);
+                g[(lx + 1) * SUB_WIDTH * SUB_WIDTH + (ly + 1) * SUB_WIDTH
+                  + SUB_EDGE + 1]
+                    = sub_layer_spec(&layers[5], lx, ly, 0);
+                g[(SUB_EDGE + 1) * SUB_WIDTH * SUB_WIDTH
+                  + (ly + 1) * SUB_WIDTH + lz + 1]
+                    = sub_layer_spec(&layers[4], SUB_EDGE - 1, ly, lz);
+                g[(ly + 1) * SUB_WIDTH + lz + 1]
+                    = sub_layer_spec(&layers[6], 0, ly, lz);
+            }
+        }
+    }
+
+    /* Every distinct state the grid holds, through the block
+       prelude once each. */
+    SubMeshState *states = NULL;
+    size_t st_count = 0, st_cap = 0;
+    uint16_t *st_cell = malloc(SUB_CELLS * sizeof *st_cell);
+    int rc2 = MCME_OK;
+    for (int i = 0; i < SUB_CELLS && rc2 == MCME_OK; ++i) {
+        size_t s;
+        for (s = 0; s < st_count; ++s)
+            if (strcmp(states[s].spec, g[i]) == 0) break;
+        if (s == st_count) {
+            if (st_count == st_cap) {
+                size_t cap = st_cap ? st_cap * 2 : 8;
+                SubMeshState *grow = realloc(
+                    states, cap * sizeof *states);
+                if (grow == NULL) {
+                    mcme_set_error("chunk submesh: out of memory");
+                    rc2 = MCME_EXIT_INTERNAL;
+                    break;
+                }
+                states = grow;
+                st_cap = cap;
+            }
+            rc2 = sub_mesh_state(pack_dir, g[i], &states[st_count]);
+            if (rc2 != MCME_OK) break;
+            st_count++;
+        }
+        st_cell[i] = (uint16_t)s;
+    }
+    if (rc2 != MCME_OK) {
+        for (size_t s = 0; s < st_count; ++s) {
+            mcme_texture_index_close(states[s].tex);
+            mcme_mesh_free(&states[s].mesh);
+        }
+        free(states);
+        free(st_cell);
+        for (int i = 0; i < layer_arena_count; ++i)
+            mcme_arena_free(layer_arenas[i]);
+        mcme_world_info_free(&info);
+        return rc2;
+    }
+
+    /* The page the coordinates are in — the pack's textures plus
+       the missing image, exactly what `chunk mesh` builds for one
+       block and what `mcme atlas` packs. Every state's texture
+       index is one opening of that same pack table, so the page is
+       the pack's whole table whichever state asks for it: one
+       index answers, and concatenating them would pack the same
+       textures over and over and shift every rectangle the
+       reference's page has already settled. */
+    size_t path_count = mcme_texture_count(states[0].tex);
+    const char **paths = path_count
+        ? malloc(path_count * sizeof *paths) : NULL;
+    if (path_count && !paths) {
+        rc2 = MCME_EXIT_INTERNAL;
+        mcme_set_error("chunk submesh: out of memory");
+    }
+    if (rc2 == MCME_OK) {
+        for (size_t i = 0; i < path_count; ++i)
+            paths[i] = mcme_texture_at(states[0].tex, i);
+        if (path_count > 1)
+            qsort(paths, path_count, sizeof *paths, cmp_path_ptr);
+    }
+
+    McmeAtlas atlas;
+    bool atlas_ok = false;
+    if (rc2 == MCME_OK)
+        atlas_ok = mcme_atlas_build(paths, path_count, &atlas);
+    free(paths);
+    if (rc2 == MCME_OK && !atlas_ok) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk submesh: %s", why);
+        rc2 = MCME_EXIT_INTERNAL;
+    }
+
+    /* The builder's own loop over the cells: x, then y, then z.
+       Each cell's six neighbours are the grid's own cells — the
+       padding included — and the shade reads the cell's world
+       height. */
+    struct cJSON *root = NULL;
+    struct cJSON *cells = NULL;
+    size_t cell_count = 0, opaque_rows = 0, translucent_rows = 0;
+    /* The table's seven buckets, the none one among them — the
+       faces no cullface ever drops, whose rows the cull can never
+       take away. */
+    size_t dir_rows[MCME_CULL_NONE + 1];
+    for (int i = 0; i <= MCME_CULL_NONE; ++i) dir_rows[i] = 0;
+    if (rc2 == MCME_OK && g_opts.json) {
+        root = cJSON_CreateObject();
+        if (root) {
+            cJSON_AddNumberToObject(root, "size", atlas.size);
+            struct cJSON *sub = cJSON_AddObjectToObject(root,
+                                                        "subchunk");
+            if (sub) {
+                cJSON_AddNumberToObject(sub, "x", sx);
+                cJSON_AddNumberToObject(sub, "y", sy);
+                cJSON_AddNumberToObject(sub, "z", sz);
+            }
+            cells = cJSON_AddArrayToObject(root, "cells");
+        }
+    }
+    for (int cx = 0; cx < SUB_EDGE && rc2 == MCME_OK; ++cx) {
+        for (int cy = 0; cy < SUB_EDGE && rc2 == MCME_OK; ++cy) {
+            for (int cz = 0; cz < SUB_EDGE; ++cz) {
+                size_t gi = (size_t)(cx + 1) * SUB_WIDTH * SUB_WIDTH
+                    + (size_t)(cy + 1) * SUB_WIDTH + (size_t)(cz + 1);
+                /* The cell's six neighbours, DOWN through WEST:
+                   the grid's own cells, the padding among them. */
+                McmeTransparency beside[MCME_CULL_NONE] = {
+                    states[st_cell[gi - SUB_WIDTH]].transparency,
+                    states[st_cell[gi + SUB_WIDTH]].transparency,
+                    states[st_cell[gi - 1]].transparency,
+                    states[st_cell[gi + SUB_WIDTH * SUB_WIDTH]]
+                        .transparency,
+                    states[st_cell[gi + 1]].transparency,
+                    states[st_cell[gi - SUB_WIDTH * SUB_WIDTH]]
+                        .transparency,
+                };
+                const SubMeshState *st = &states[st_cell[gi]];
+                McmeAtlasMesh table;
+                if (!mcme_atlas_mesh_dirs(&atlas, &st->mesh,
+                                          (long)sy * 16 + cy, beside,
+                                          &table)) {
+                    char why[256];
+                    snprintf(why, sizeof why, "%s",
+                             mcme_last_error());
+                    mcme_set_error("chunk submesh: %s", why);
+                    rc2 = MCME_EXIT_INTERNAL;
+                    break;
+                }
+                size_t rows = 0;
+                int any = 0;
+                for (int i = 0; i <= MCME_CULL_NONE; ++i) {
+                    if (!table.present[i]) continue;
+                    any = 1;
+                    rows += table.buckets[i].row_count;
+                    dir_rows[i] += table.buckets[i].row_count;
+                }
+                if (any) {
+                    cell_count++;
+                    if (st->transparency
+                            == MCME_TRANSPARENCY_TRANSLUCENT)
+                        translucent_rows += rows;
+                    else
+                        opaque_rows += rows;
+                    if (cells) {
+                        struct cJSON *cell = cJSON_CreateObject();
+                        if (cell) {
+                            cJSON_AddNumberToObject(
+                                cell, "x",
+                                (double)((long)sx * 16 + cx));
+                            cJSON_AddNumberToObject(
+                                cell, "y",
+                                (double)((long)sy * 16 + cy));
+                            cJSON_AddNumberToObject(
+                                cell, "z",
+                                (double)((long)sz * 16 + cz));
+                            cJSON_AddStringToObject(cell, "block",
+                                                    st->spec);
+                            struct cJSON *dirs =
+                                cJSON_AddObjectToObject(cell, "dirs");
+                            if (dirs) {
+                                for (int i = 0;
+                                     i <= MCME_CULL_NONE; ++i) {
+                                    if (!table.present[i]) continue;
+                                    struct cJSON *d =
+                                        cJSON_AddObjectToObject(
+                                            dirs, k_dir_names[i]);
+                                    if (!d) continue;
+                                    json_add_floats(
+                                        d, "bounds",
+                                        table.buckets[i].bounds,
+                                        table.buckets[i].row_count
+                                        * 4);
+                                    json_add_floats(
+                                        d, "auvs",
+                                        table.buckets[i].auvs,
+                                        table.buckets[i].row_count
+                                        * 2);
+                                    json_add_floats(
+                                        d, "tints",
+                                        table.buckets[i].tints,
+                                        table.buckets[i].row_count
+                                        * 3);
+                                }
+                            }
+                            cJSON_AddItemToArray(cells, cell);
+                        }
+                    }
+                }
+                mcme_atlas_mesh_free(&table);
+            }
+        }
+    }
+
+    bool shown = true;
+    if (rc2 == MCME_OK && g_opts.json) {
+        if (root) {
+            cJSON_AddNumberToObject(root, "opaque",
+                                    (double)opaque_rows);
+            cJSON_AddNumberToObject(root, "translucent",
+                                    (double)translucent_rows);
+            char *text_doc = cJSON_PrintUnformatted(root);
+            printf("%s\n", text_doc ? text_doc : "{}");
+            if (text_doc) cJSON_free(text_doc);
+        } else {
+            shown = false;
+        }
+        cJSON_Delete(root);
+    } else if (rc2 == MCME_OK) {
+        printf("sub-chunk (%d, %d, %d): page %u\n", sx, sy, sz,
+               atlas.size);
+        printf("  %zu cells answered: %zu opaque rows, %zu "
+               "translucent rows\n", cell_count, opaque_rows,
+               translucent_rows);
+        printf("    per bucket:");
+        for (int i = 0; i <= MCME_CULL_NONE; ++i)
+            printf(" %s %zu", k_dir_names[i], dir_rows[i]);
+        printf("\n");
+    }
+
+    for (size_t s = 0; s < st_count; ++s) {
+        mcme_texture_index_close(states[s].tex);
+        mcme_mesh_free(&states[s].mesh);
+    }
+    free(states);
+    free(st_cell);
+    if (atlas_ok) mcme_atlas_free(&atlas);
+    for (int i = 0; i < layer_arena_count; ++i)
+        mcme_arena_free(layer_arenas[i]);
+    mcme_world_info_free(&info);
+    if (!shown) {
+        mcme_set_error("chunk submesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    return rc2;
+}
+
 /*
  * `mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>`
  * sets a box of blocks to one block — corners in any order, both
@@ -4398,8 +5053,8 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "
-                           "(expected set, get, mesh, fill, prune, "
-                           "stats, height or entity)");
+                           "(expected set, get, mesh, submesh, fill, "
+                           "prune, stats, height or entity)");
             return MCME_EXIT_USAGE;
         }
         if (strcmp(args[0], "set") == 0) {
@@ -4410,6 +5065,9 @@ static int dispatch(int argc, char **argv)
         }
         if (strcmp(args[0], "mesh") == 0) {
             return cmd_chunk_mesh(rest - 1, args + 1);
+        }
+        if (strcmp(args[0], "submesh") == 0) {
+            return cmd_chunk_submesh(rest - 1, args + 1);
         }
         if (strcmp(args[0], "fill") == 0) {
             return cmd_chunk_fill(rest - 1, args + 1);

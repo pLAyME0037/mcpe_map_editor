@@ -410,6 +410,25 @@ def mcme_atlasmesh(mcme: str, packdir: str, name: str,
             f"unparseable JSON {out!r}")
 
 
+def mcme_submesh(mcme: str, packdir: str, world: str,
+                 x: str, y: str, z: str) -> dict:
+    """`chunk submesh`'s whole answer — the sub-chunk's cells, the
+    streams' totals, the page."""
+    argv = [mcme, "chunk", "submesh", world, packdir, x, y, z,
+            "--json"]
+    rc, out, err = run(*argv)
+    if rc != 0:
+        raise AssertionError(
+            f"chunk submesh {world} {x} {y} {z}: exit {rc}, "
+            f"stderr {err.strip()!r}")
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"chunk submesh {world} {x} {y} {z}: unparseable JSON "
+            f"{out[:200]!r}")
+
+
 def mesh_diff(got, want, path: str = "mesh") -> str | None:
     """Where two mesh documents part company, or None for equal.
     Same rule as the mesh pin: exact for two ints, a 1e-9 tolerance

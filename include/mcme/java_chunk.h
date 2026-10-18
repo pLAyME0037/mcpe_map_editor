@@ -50,6 +50,40 @@
 bool mcme_java_block_spec(const McmeTag *root, int x, int y, int z,
                           McmeBuffer *out);
 
+/* ========================================================================
+ * A whole section at once (D40)
+ *
+ * One section's block layer read for EVERY position it covers — what
+ * a sub-chunk's table wants: one pass over the long array instead of
+ * one per position. The palette's specs in slot order (the same text
+ * mcme_java_block_spec answers) and the 4096 indices pointing at
+ * them in X-then-Z-then-Y, each checked against its palette.
+ *
+ * `stored` says the section stands in the chunk with block_states at
+ * all. A section the chunk lists without block_states, and one it
+ * lists no entry for, are the format's own all-air answer: stored
+ * false, no specs, no indices — every position holds air, what
+ * mcme_java_block_spec answers for them, and a caller that keeps an
+ * air palette of its own beside the grid has read the world right.
+ *
+ * Everything returned lives in the arena: the specs' text and the
+ * index array both. A malformed section fails the call naming what
+ * was found — the per-position read's strictness, at section
+ * scale.
+ */
+#define MCME_JAVA_SECTION_BLOCKS 4096u
+
+typedef struct {
+    bool         stored;      /* the section stands with block_states */
+    size_t       spec_count;  /* the palette's entries; 0 when !stored */
+    const char **specs;       /* spec_count specs, slot order, arena   */
+    uint16_t    *indices;     /* 4096, X-then-Z-then-Y, arena — NULL
+                                 when the section is the air answer     */
+} McmeJavaSectionGrid;
+
+bool mcme_java_section_grid(McmeJavaSectionGrid *out, McmeArena *arena,
+                            const McmeTag *root, int y_sec);
+
 /*
  * Replaces the block at (x, y, z) in `root`, in place — the tree the
  * caller parsed, edited to say something else. The position's entry

@@ -2870,3 +2870,99 @@ changes on either format (a neighbour's unstored sub-chunk
 refusing instead of reading air, or the target's reading air
 instead of refusing), the loader's wrapper handling changes (the
 1 / 8 / 9 strips), or D38's table changes.
+
+## D40 — The whole sub-chunk: the table at sub-chunk scale
+
+**What the reference does.** The builder's loop over a grid is
+x, then y, then z (chunk_builder_cy.pyx 273-275), every interior
+cell meshed through its own six-direction cull (D38's per-side
+clauses, unchanged), each cell's rows landing in the stream its
+transparency feeds — and the streams FLUSH: past 10,008 rows
+(ARRAY_VERT_COUNT, twelve floats a row) the builder starts a new
+container and returns every container flattened into one array
+per stream. So a sub-chunk whose cells keep their faces at scale
+— the cullface-less wall, partial shells against each other —
+crosses the split, and the table's answer is the whole of it:
+every surviving row of every cell, in loop order, the totals
+whole across the containers. The reference's page is the pack's
+texture table with the missing image seeded first,
+perimeter-sorted (ties keeping input order), split-packed into
+the smallest power-of-two page that holds it — and every stream
+row carries the rectangle its face draws from, laid by that
+page.
+
+**What mcme does.** `chunk submesh <world> <pack> <x> <y> <z>`
+answers the table for the WHOLE sub-chunk holding the position:
+the seven layers loaded once (the target chunk carrying its
+neighbour sections, at most five chunk loads, absent neighbours
+the world's-edge air and the target's absence exit 2, D38's
+edge rule at sub-chunk scale), composed into an 18x18x18 grid —
+the cells with one layer of every side — the distinct states
+meshed once through the prelude, the page built from the pack's
+one texture table (every state's index is that same table; one
+answers, and concatenating them would pack every texture over
+and over), and the builder's own loop over the interior calling
+the per-side table with each cell's six real neighbours. The
+Java section's grid is read in one call
+(`mcme_java_section_grid`, the section's own x + z*16 + y*256
+order) and transcribed into the layers' Bedrock order
+(x*256 + z*16 + y) once at adoption, so one formula serves
+every meshing read on both formats. JSON carries the page's
+size, the sub-chunk's coordinates, both streams' totals and the
+cells that survive the cull — position, block, and the dirs'
+bounds/auvs/tints; a faceless cell is not listed. Human prints
+the totals and the seven buckets' row counts.
+
+**How parity was measured.** `tools/ref_chunkmesh.py` fills
+sub-chunk (0, 8, 0) — y 128 to 143, past every probe — with six
+`chunk fill` boxes per format, 7,708 cells each: the ring_opaque
+field; the z 0-3 wall of atlas_cube, whose none bucket keeps all
+36 rows of its 1,024 cells (the opaque stream crossing the
+10,008-row split); the atlas_three shell; the ring_translucent
+core; the air cavern; the second run. The walk the reference
+reads with caches what it reads, so the pattern lands before the
+walks are built; its grid is the 18x18x18 of the walk's own
+reads — a neighbour column in a region file that does not exist
+is the world's edge, air, the rule mcme reads it by — handed to
+`create_lod0_chunk` at the sub-chunk's world origin; the pin
+walks the builder's loop order itself, cursors per stream, and
+compares every surviving row (position, tvert, bounds, shader
+auv, tint), the per-cell block against the walk's own answer,
+the stream totals, the cell order, and the split — the wall's
+rows counted past the container boundary. The same six boxes go
+through each format's own write path. 17 checks rc=0. The pin
+caught four mcme bugs, two of them invisible to the totals: the
+none bucket (index 6) never scanned, so every all-none cell
+dropped out; the east padding composed into the interior's own
+x = 15 column, overwriting those cells with the side's spec; the
+per-state texture concatenation multiplying the pack's table
+fivefold and shifting every rectangle; and Java's section order
+read through Bedrock's layer formula — x and y transposed,
+which per-block totals survive (the transposition bijects the
+cells and the cull counts permute with the directions) and only
+the per-cell block check caught.
+
+**Out of domain, recorded.** BLOCK STATES ON BEDROCK stay
+ref_bedrock_write's ground (D39's exclusion) — the fills carry
+none. MULTI-LAYER PAYLOADS stay D15's: the layers take the
+first, waterlogging unexercised. BLOCK TINTS stay D36's. THE
+VERTEX CAPACITY's overflow handling is now pinned through the
+split (10,008-row containers, flattened) — what remains
+unobservable is the renderer's own cap beyond the builder's
+flush. THE PAGE LAYOUT beyond the pack's own table: the pin
+adjudicates rectangles on the crafted pack's table; a pack
+whose textures overflow the doubling page-growth loop stays
+unpinned. THE GUI's consumption of the sub-chunk answer remains
+unobservable from any pin.
+
+**Reverses if:** the builder's loop order changes (x, then y,
+then z), the stream split's threshold or flattening changes
+(10,008 rows a container, containers concatenated), any of the
+table's clauses change on any of the seven buckets (the none
+bucket's exemption included), the pack's texture table stops
+being the page's whole input (one index per build, the missing
+image seeded first, the perimeter sort and split pack), the
+edge rule changes at sub-chunk scale (a neighbour's unstored
+chunk or section reading anything but air, the target's
+refusing), the Java section's transcription into the layers'
+order changes, or D33-D39's ground changes beneath them.
