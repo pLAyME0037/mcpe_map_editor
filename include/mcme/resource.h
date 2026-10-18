@@ -712,12 +712,42 @@ typedef struct {
    standing on all six sides — the neighbour's own, so a bucket
    with a cullface answers no rows when that neighbour is opaque
    or when both are translucent, and the none bucket answers its
-   rows under any neighbour. Answers `*out` (released with
-   mcme_atlas_mesh_free); false only on a null argument or an
-   exhausted heap. */
+   rows under any neighbour. The uniform neighbour is the
+   block-level verb's one question asked of all six sides; six
+   real ones are mcme_atlas_mesh_dirs (D38). Answers `*out`
+   (released with mcme_atlas_mesh_free); false only on a null
+   argument or an exhausted heap. */
 bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
                      long block_y, McmeTransparency beside,
                      McmeAtlasMesh *out);
+
+/* ========================================================================
+ * The six neighbours (D38)
+ *
+ * The builder's cull has always been PER-FACE: each face reads
+ * the neighbour standing in ITS own direction — CULL_MAP
+ * (chunk_builder_cy.pyx 49-55) answers up, down, north, east,
+ * south, west, one lookup per face — so six faces can six
+ * answers. The uniform `beside` (D37) asks the one question of
+ * all six sides; the world the table is drawn from has six real
+ * neighbours standing, and `chunk mesh` reads them out of the
+ * chunk itself, one transparency each, the clauses unchanged:
+ * a bucket with a cullface answers no rows when ITS side's
+ * neighbour is opaque, or when that neighbour and the mesh are
+ * both translucent; the none bucket answers its rows under any
+ * neighbour. A side outside the stored world is air — partial,
+ * firing neither clause.
+ */
+
+/* Answers like mcme_atlas_mesh, but with one neighbour per
+   direction: `beside` is indexed by McmeCullDir, DOWN through
+   WEST, six entries (MCME_CULL_NONE of them), each the
+   transparency that side's own neighbour answers. Same
+   allocation, same free, same refusals. */
+bool mcme_atlas_mesh_dirs(const McmeAtlas *atlas, const McmeMesh *mesh,
+                          long block_y,
+                          const McmeTransparency beside[MCME_CULL_NONE],
+                          McmeAtlasMesh *out);
 
 /* Releases an atlas-space mesh and everything it owns. NULL is a
    no-op. */

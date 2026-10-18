@@ -7,6 +7,91 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-18 — The six neighbours: the table answers the world's own sides
+
+### Built
+
+- The cull is now per SIDE: `mcme_atlas_mesh_dirs` takes six
+  transparencies — one per direction, DOWN through WEST — and
+  each cullface bucket reads its own side's answer, the two
+  clauses (D37) unchanged and the none bucket's exemption with
+  them. `mcme_atlas_mesh` stays the uniform neighbour, one block
+  state on all six sides, now a wrapper over the per-direction
+  worker.
+- `chunk mesh <world> <pack> <x> <y> <z>`: the builder's table
+  for one block position of a real chunk — the target's mesh
+  through the block prelude, the six neighbours READ OUT OF THE
+  WORLD ITSELF, and the world's own height under the band shade.
+  Bedrock or Java. A neighbour's chunk outside the stored world
+  is air — the world's edge stands open, partial, firing neither
+  clause — while the target's own chunk absent stays exit 2,
+  what `chunk get` answers. JSON carries the mesh document, the
+  page's size, the block and the coordinates beside the table's
+  columns; human adds the position to the heading and the six
+  side answers below it.
+- The resource suite gained the six-neighbour section: cube6
+  with opaque below and partial elsewhere — one bucket drops,
+  five stand; cubea with the translucent above — the chained
+  pair on that one side, and cube6 opaque no partner for it;
+  wrap ringed hostile on all six sides; the uniform and the
+  per-direction answers agreeing bucket for bucket; and the
+  per-direction null refusals.
+- `tools/ref_chunkmesh.py` drives the reference's builder on the
+  WORLD'S OWN grid: the golden Java world copied, the pattern
+  written with `chunk set`, the 3x3x3 around the probe read back
+  by ref_java_blocks' own region walk — the sector table walked
+  by hand, none of mcme's code — and handed to
+  `create_lod0_chunk` at the probe's world position. The
+  interior is ONE cell, so the builder meshes the probe alone:
+  no leak, no field, the streams the probe's own, and the cull
+  transcription runs over the walk's six neighbours per probe —
+  6 checks.
+
+### Notes
+
+- The builder's cull has always been per face: each face reads
+  the neighbour standing in its own direction — CULL_MAP, up,
+  down, north, east, south, west — so six faces can six
+  answers. The block-level `--beside` (D37) asked the one
+  question of all six sides; the world supplies six, and both
+  of D37's recorded exclusions — per-direction neighbours,
+  cross-sub-chunk reads — reopen and close here.
+- The offset rides ALL THREE position components (dx + x, dy +
+  y, dz + z); the block-level pin ever only drove it in y, so
+  the world probes at nonzero x and z are the first to pin the
+  x and z columns of a row's position. The band shade reads the
+  row's y alone, so `block_y` stays the one height the table
+  wants.
+- The probes ride the crafted pack's flags through the
+  reference's own classification: ring_opaque and atlas_cull
+  opaque, ring_translucent translucent, atlas_cube opaque with
+  no cullface, atlas_three and air partial. Five positions:
+  six different neighbours on six sides at once (the band's
+  period height), the chained pair on one side (the band's
+  peak), a neighbour across the chunk boundary into the golden
+  world's chunk (1, 0), one across the section edge into the
+  section the write created, and the none bucket ringed by
+  opaque all round.
+- A world block the pack does not have is the missing BLOCK,
+  opaque on both sides — D37's ground, unchanged — and the
+  world's air is the pack's air, partial, firing neither
+  clause.
+- Gates: battery 19/19 rc=0, `ref_chunkmesh` the nineteenth pin
+  at 6 checks; `./mcme selftest` PASS 6 suites, 0 failures
+  under ASan+UBSan; `./rebuild.sh test` PASS. Nothing under
+  `tests/` staged; the golden stores show no tracked changes.
+
+### Next
+
+- The table answers the world's own sides. The world's data has
+  more to feed it: the Bedrock subchunk codec as the pin's grid
+  source (the verb reads Bedrock worlds now, the pin's walk is
+  the region file's), and the whole sub-chunk's answer rather
+  than one position — the stream-split machinery's totals are
+  the field pin's ground, the per-position surface this drop's.
+  The renderer's consumption stays where it was: unobservable
+  from any pin.
+
 ## 2026-10-18 — The cull clauses: the rows that survive a neighbour
 
 ### Built

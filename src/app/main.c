@@ -145,6 +145,14 @@ static void print_usage(FILE *out)
         "                    accepts — Bedrock or Java. Exit 2 if\n"
         "                    the subchunk or chunk is not stored.\n"
         "                    Takes --dimension too.\n"
+        "  chunk mesh <world> <pack> <x> <y> <z>\n"
+        "                    The builder's table for one block of a\n"
+        "                    real chunk: its faces in atlas space,\n"
+        "                    the six neighbours read from the world\n"
+        "                    itself, the cull answered per side.\n"
+        "                    A neighbour's chunk outside the stored\n"
+        "                    world is air. Human or --json; takes\n"
+        "                    --dimension too.\n"
         "  chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>\n"
         "                    Set a box of blocks (corners in any\n"
         "                    order), Bedrock or Java. Bedrock:\n"
@@ -2992,6 +3000,242 @@ static int cmd_chunk_get(int argc, char **argv)
     return rc;
 }
 
+/* The seven block states `chunk mesh` reads: the target plus its
+   six neighbours, each a NUL-terminated copy of the world's own
+   answer for the prelude. */
+static void free_block_specs(McmeBuffer *specs, char **text, int n)
+{
+    for (int i = 0; i < n; ++i) {
+        free(text[i]);
+        mcme_buffer_free(&specs[i]);
+    }
+}
+
+/*
+ * `mcme chunk mesh <world> <pack> <x> <y> <z>` answers the
+ * builder's table (D35-D38) for the block standing at one
+ * position of a real chunk: its mesh through the block prelude,
+ * and the six neighbours READ OUT OF THE WORLD ITSELF — each
+ * side's own transparency, so the cull clauses answer per side
+ * (D38), at the world's own height for the band shade (D36).
+ *
+ * The target's chunk absent is exit 2, what `chunk get` answers.
+ * A NEIGHBOUR's chunk outside the stored world is air — the
+ * world's edge stands open, partial, firing neither clause; any
+ * other read failure is the read's own refusal. JSON carries the
+ * mesh document, the page's size, the block and the coordinates
+ * beside the table's bounds/auvs/tints; human adds the position
+ * to the heading and the six answers below the table.
+ */
+static int cmd_chunk_mesh(int argc, char **argv)
+{
+    int32_t dimension = 0;
+    if (!extract_dimension("chunk", &argc, argv, &dimension)) {
+        return MCME_EXIT_USAGE;
+    }
+    if (argc != 5) {
+        mcme_set_error("chunk: usage: chunk mesh <world> <pack> <x> "
+                       "<y> <z> [--dimension <name|number>]");
+        return MCME_EXIT_USAGE;
+    }
+    const char *path = argv[0];
+    const char *pack_dir = argv[1];
+    long x, y, z;
+    if (!parse_coord("chunk", argv[2], &x)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[3], &y)) return MCME_EXIT_USAGE;
+    if (!parse_coord("chunk", argv[4], &z)) return MCME_EXIT_USAGE;
+
+    McmeWorldInfo info;
+    if (!mcme_world_probe(&info, path)) {
+        return mcme_fs_exists(path) ? MCME_EXIT_IO : MCME_EXIT_NOT_FOUND;
+    }
+    if (info.kind != MCME_WORLD_BEDROCK && info.kind != MCME_WORLD_JAVA) {
+        mcme_set_error("chunk: '%s' is not a Bedrock or Java world", path);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_NOT_FOUND;
+    }
+
+    /* The neighbour each side reads, DOWN through WEST — the
+       builder's CULL_MAP (chunk_builder_cy.pyx 49-55) one face at
+       a time, the same offsets the cull test walks. */
+    static const int k_dx[MCME_CULL_NONE] = { 0, 0,  0, 1, 0, -1 };
+    static const int k_dy[MCME_CULL_NONE] = { -1, 1, 0, 0, 0,  0 };
+    static const int k_dz[MCME_CULL_NONE] = { 0, 0, -1, 0, 1,  0 };
+
+    McmeBuffer specs[7];
+    char *text[7] = { 0 };
+    for (int s = 0; s < 7; ++s) {
+        mcme_buffer_init(&specs[s]);
+        long sx = s ? x + k_dx[s - 1] : x;
+        long sy = s ? y + k_dy[s - 1] : y;
+        long sz = s ? z + k_dz[s - 1] : z;
+        int rc = info.kind == MCME_WORLD_JAVA
+            ? java_get_block(&info, dimension, sx, sy, sz, &specs[s])
+            : bedrock_get_block(&info, dimension, sx, sy, sz, &specs[s]);
+        if (rc == MCME_OK) {
+            /* The buffer is bytes, not a C string; the prelude
+               wants one. */
+            text[s] = malloc((size_t)specs[s].len + 1);
+            if (text[s] == NULL) {
+                mcme_set_error("chunk mesh: out of memory");
+                rc = MCME_EXIT_INTERNAL;
+            } else {
+                memcpy(text[s], specs[s].data, specs[s].len);
+                text[s][specs[s].len] = '\0';
+            }
+        } else if (s > 0 && rc == MCME_EXIT_NOT_FOUND) {
+            /* Outside the stored world stands air — the world's
+               edge, partial, firing neither clause. */
+            mcme_clear_error();
+            if (!mcme_buffer_append_cstr(&specs[s], "minecraft:air")) {
+                mcme_set_error("chunk mesh: out of memory");
+                rc = MCME_EXIT_INTERNAL;
+            } else {
+                text[s] = malloc((size_t)specs[s].len + 1);
+                if (text[s] == NULL) {
+                    mcme_set_error("chunk mesh: out of memory");
+                    rc = MCME_EXIT_INTERNAL;
+                } else {
+                    memcpy(text[s], specs[s].data, specs[s].len);
+                    text[s][specs[s].len] = '\0';
+                    rc = MCME_OK;
+                }
+            }
+        }
+        if (rc != MCME_OK) {
+            free_block_specs(specs, text, 7);
+            mcme_world_info_free(&info);
+            return rc;
+        }
+    }
+
+    /* The target's own mesh, and the six neighbours' transparencies
+       through the same prelude — what each side's cull test reads. */
+    McmeMesh mesh;
+    McmeTextureIndex *tex = NULL;
+    int rc = build_block_mesh("chunk mesh", pack_dir, text[0], &mesh,
+                              &tex);
+    if (rc != MCME_OK) {
+        free_block_specs(specs, text, 7);
+        mcme_world_info_free(&info);
+        return rc;
+    }
+    McmeTransparency beside[MCME_CULL_NONE];
+    for (int i = 0; i < MCME_CULL_NONE; ++i)
+        beside[i] = MCME_TRANSPARENCY_PARTIAL;
+    for (int s = 1; s < 7; ++s) {
+        McmeMesh nm;
+        McmeTextureIndex *ntex = NULL;
+        int brc = build_block_mesh("chunk mesh", pack_dir, text[s],
+                                   &nm, &ntex);
+        if (brc != MCME_OK) {
+            mcme_mesh_free(&mesh);
+            mcme_texture_index_close(tex);
+            free_block_specs(specs, text, 7);
+            mcme_world_info_free(&info);
+            return brc;
+        }
+        beside[s - 1] = nm.transparency;
+        mcme_mesh_free(&nm);
+        mcme_texture_index_close(ntex);
+    }
+
+    /* The page the coordinates are in — the pack's textures plus
+       the missing image, exactly what `mcme atlas` packs. */
+    size_t count = mcme_texture_count(tex);
+    const char **paths = count ? malloc(count * sizeof *paths) : NULL;
+    if (count && !paths) {
+        mcme_texture_index_close(tex);
+        mcme_mesh_free(&mesh);
+        free_block_specs(specs, text, 7);
+        mcme_world_info_free(&info);
+        mcme_set_error("chunk mesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    for (size_t i = 0; i < count; ++i)
+        paths[i] = mcme_texture_at(tex, i);
+    if (count > 1) qsort(paths, count, sizeof *paths, cmp_path_ptr);
+
+    McmeAtlas atlas;
+    bool ok = mcme_atlas_build(paths, count, &atlas);
+    free(paths);
+    mcme_texture_index_close(tex);
+    if (!ok) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk mesh: %s", why);
+        mcme_mesh_free(&mesh);
+        free_block_specs(specs, text, 7);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    McmeAtlasMesh table;
+    if (!mcme_atlas_mesh_dirs(&atlas, &mesh, y, beside, &table)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk mesh: %s", why);
+        mcme_atlas_free(&atlas);
+        mcme_mesh_free(&mesh);
+        free_block_specs(specs, text, 7);
+        mcme_world_info_free(&info);
+        return MCME_EXIT_INTERNAL;
+    }
+
+    bool shown;
+    if (g_opts.json) {
+        struct cJSON *doc = json_mesh(&mesh);
+        if (doc) {
+            cJSON_AddNumberToObject(doc, "size", atlas.size);
+            cJSON_AddStringToObject(doc, "block", text[0]);
+            cJSON_AddNumberToObject(doc, "x", (double)x);
+            cJSON_AddNumberToObject(doc, "y", (double)y);
+            cJSON_AddNumberToObject(doc, "z", (double)z);
+            struct cJSON *dirs = cJSON_GetObjectItem(doc, "dirs");
+            for (int i = 0; i < 7; ++i) {
+                if (!table.present[i]) continue;
+                struct cJSON *d =
+                    cJSON_GetObjectItem(dirs, k_dir_names[i]);
+                if (!d) continue;
+                json_add_floats(d, "bounds", table.buckets[i].bounds,
+                                table.buckets[i].row_count * 4);
+                json_add_floats(d, "auvs", table.buckets[i].auvs,
+                                table.buckets[i].row_count * 2);
+                json_add_floats(d, "tints", table.buckets[i].tints,
+                                table.buckets[i].row_count * 3);
+            }
+            char *text_doc = cJSON_PrintUnformatted(doc);
+            printf("%s\n", text_doc ? text_doc : "{}");
+            if (text_doc) cJSON_free(text_doc);
+            cJSON_Delete(doc);
+        }
+        shown = doc != NULL;
+    } else {
+        static const char *const trans_words[3] = {
+            "opaque", "translucent", "partial" };
+        char heading[512];
+        snprintf(heading, sizeof heading, "%s at (%ld, %ld, %ld)",
+                 text[0], x, y, z);
+        shown = print_mesh(&mesh, heading, &atlas);
+        if (shown) {
+            printf("  beside\n");
+            for (int i = 0; i < MCME_CULL_NONE; ++i)
+                printf("    %-10s %s (%s)\n", k_dir_names[i],
+                       text[i + 1], trans_words[beside[i]]);
+        }
+    }
+    mcme_atlas_mesh_free(&table);
+    mcme_atlas_free(&atlas);
+    mcme_mesh_free(&mesh);
+    free_block_specs(specs, text, 7);
+    mcme_world_info_free(&info);
+    if (!shown) {
+        mcme_set_error("chunk mesh: out of memory");
+        return MCME_EXIT_INTERNAL;
+    }
+    return MCME_OK;
+}
+
 /*
  * `mcme chunk fill <world> <x1> <y1> <z1> <x2> <y2> <z2> <block>`
  * sets a box of blocks to one block — corners in any order, both
@@ -4154,8 +4398,8 @@ static int dispatch(int argc, char **argv)
     if (strcmp(cmd, "chunk") == 0) {
         if (rest == 0) {
             mcme_set_error("chunk: missing subcommand "
-                           "(expected set, get, fill, prune, stats, "
-                           "height or entity)");
+                           "(expected set, get, mesh, fill, prune, "
+                           "stats, height or entity)");
             return MCME_EXIT_USAGE;
         }
         if (strcmp(args[0], "set") == 0) {
@@ -4163,6 +4407,9 @@ static int dispatch(int argc, char **argv)
         }
         if (strcmp(args[0], "get") == 0) {
             return cmd_chunk_get(rest - 1, args + 1);
+        }
+        if (strcmp(args[0], "mesh") == 0) {
+            return cmd_chunk_mesh(rest - 1, args + 1);
         }
         if (strcmp(args[0], "fill") == 0) {
             return cmd_chunk_fill(rest - 1, args + 1);

@@ -2296,6 +2296,95 @@ static void test_atlas_uv(void)
         mcme_mesh_free(&mw);
     }
 
+    /* --- the six neighbours (D38): each bucket reads the side's
+           own neighbour, so the clauses can answer differently on
+           the six sides at once. cube6's down face drops beside
+           the opaque standing down there while its other five
+           stand beside partial; cubea's up face alone drops
+           beside the translucent above it — the chained pair,
+           one side. The none bucket still answers under any
+           neighbour on any side. --- */
+    {
+        McmeTransparency nd[MCME_CULL_NONE];
+        for (int i = 0; i < MCME_CULL_NONE; ++i)
+            nd[i] = MCME_TRANSPARENCY_PARTIAL;
+        McmeMesh m6, ma, mw;
+        CHECK(build_mesh(models, tex, "mc", "block/cube6", &m6));
+        CHECK(build_mesh(models, tex, "mc", "block/cubea", &ma));
+        CHECK(build_mesh(models, tex, "mc", "block/wrap", &mw));
+
+        nd[MCME_CULL_DOWN] = MCME_TRANSPARENCY_OPAQUE;
+        McmeAtlasMesh t;
+        CHECK_MSG(mcme_atlas_mesh_dirs(&atlas, &m6, 0, nd, &t),
+                  "cube6 with opaque below: %s", mcme_last_error());
+        for (int i = 0; i < 7; ++i) {
+            size_t want = (i == MCME_CULL_DOWN ||
+                           !m6.present[i]) ? 0 : 6;
+            CHECK_MSG(t.buckets[i].row_count == want,
+                      "cube6 with opaque below: bucket %d rows %zu, "
+                      "want %zu", i, t.buckets[i].row_count, want);
+        }
+        mcme_atlas_mesh_free(&t);
+
+        nd[MCME_CULL_UP] = MCME_TRANSPARENCY_TRANSLUCENT;
+        CHECK_MSG(mcme_atlas_mesh_dirs(&atlas, &m6, 0, nd, &t),
+                  "cube6 with translucent above: %s",
+                  mcme_last_error());
+        CHECK_MSG(t.buckets[MCME_CULL_UP].row_count == 6,
+                  "cube6 opaque is no partner for the chained pair: "
+                  "up rows %zu", t.buckets[MCME_CULL_UP].row_count);
+        mcme_atlas_mesh_free(&t);
+
+        /* cubea (translucent): the translucent neighbour above is
+           the chained pair on that one side; the opaque below is
+           clause one there; partial elsewhere stands. */
+        CHECK_MSG(mcme_atlas_mesh_dirs(&atlas, &ma, 0, nd, &t),
+                  "cubea, opaque below and translucent above: %s",
+                  mcme_last_error());
+        for (int i = 0; i < 7; ++i) {
+            size_t want = (i == MCME_CULL_DOWN ||
+                           i == MCME_CULL_UP || !ma.present[i])
+                ? 0 : 6;
+            CHECK_MSG(t.buckets[i].row_count == want,
+                      "cubea mixed sides: bucket %d rows %zu, want %zu",
+                      i, t.buckets[i].row_count, want);
+        }
+        mcme_atlas_mesh_free(&t);
+
+        /* The none bucket under a hostile ring on every side. */
+        for (int i = 0; i < MCME_CULL_NONE; ++i)
+            nd[i] = MCME_TRANSPARENCY_OPAQUE;
+        CHECK_MSG(mcme_atlas_mesh_dirs(&atlas, &mw, 0, nd, &t),
+                  "wrap ringed by opaque: %s", mcme_last_error());
+        CHECK_MSG(t.buckets[MCME_CULL_NONE].row_count == 6,
+                  "wrap ringed by opaque: none rows %zu",
+                  t.buckets[MCME_CULL_NONE].row_count);
+        mcme_atlas_mesh_free(&t);
+
+        /* The uniform answer is the per-direction one with every
+           side alike — same survivors on the same sides. */
+        McmeAtlasMesh u;
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &ma, 0,
+                                  MCME_TRANSPARENCY_TRANSLUCENT, &u),
+                  "cubea uniform: %s", mcme_last_error());
+        for (int i = 0; i < MCME_CULL_NONE; ++i)
+            nd[i] = MCME_TRANSPARENCY_TRANSLUCENT;
+        CHECK_MSG(mcme_atlas_mesh_dirs(&atlas, &ma, 0, nd, &t),
+                  "cubea per-side: %s", mcme_last_error());
+        for (int i = 0; i < 7; ++i) {
+            CHECK_MSG(u.present[i] == t.present[i] &&
+                      u.buckets[i].row_count ==
+                      t.buckets[i].row_count,
+                      "uniform and per-side part ways on bucket %d",
+                      i);
+        }
+        mcme_atlas_mesh_free(&u);
+        mcme_atlas_mesh_free(&t);
+        mcme_mesh_free(&m6);
+        mcme_mesh_free(&ma);
+        mcme_mesh_free(&mw);
+    }
+
     /* --- refusals --- */
     {
         McmeMesh m;
@@ -2307,6 +2396,12 @@ static void test_atlas_uv(void)
                                &t));
         CHECK(!mcme_atlas_mesh(&atlas, &m, 0, MCME_TRANSPARENCY_PARTIAL,
                                NULL));
+        McmeTransparency nd[MCME_CULL_NONE];
+        for (int i = 0; i < MCME_CULL_NONE; ++i)
+            nd[i] = MCME_TRANSPARENCY_PARTIAL;
+        CHECK(!mcme_atlas_mesh_dirs(NULL, &m, 0, nd, &t));
+        CHECK(!mcme_atlas_mesh_dirs(&atlas, NULL, 0, nd, &t));
+        CHECK(!mcme_atlas_mesh_dirs(&atlas, &m, 0, nd, NULL));
         mcme_clear_error();
         mcme_mesh_free(&m);
         mcme_atlas_mesh_free(NULL);

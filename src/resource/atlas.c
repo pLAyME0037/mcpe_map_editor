@@ -452,9 +452,14 @@ static double band_shade(double y)
     return 0.9 + 0.2 * t;
 }
 
-bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
-                     long block_y, McmeTransparency beside,
-                     McmeAtlasMesh *out)
+/* The two cull clauses per SIDE (D37's rule, D38's per-face
+   neighbours): the builder reads the neighbour standing in each
+   face's own direction, so the array answers one transparency
+   per side and the clauses run over that side's answer alone. */
+bool mcme_atlas_mesh_dirs(const McmeAtlas *atlas, const McmeMesh *mesh,
+                          long block_y,
+                          const McmeTransparency beside[MCME_CULL_NONE],
+                          McmeAtlasMesh *out)
 {
     if (!atlas || !mesh || !out) {
         mcme_set_error("atlas mesh: null argument");
@@ -467,14 +472,14 @@ bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
 
         /* The cull clauses (D37), the builder's two skip clauses
            over transparency alone: a bucket whose faces carry a
-           cullface drops whole when the neighbour standing beside
-           is opaque, or when neighbour and self are both
-           translucent. The none bucket never culls — its faces
-           have no cull direction, so the builder's test does not
-           run for them. */
+           cullface drops whole when the neighbour standing on
+           ITS side is opaque, or when that neighbour and the
+           mesh are both translucent. The none bucket never culls
+           — its faces have no cull direction, so the builder's
+           test does not run for them. */
         if (i != MCME_CULL_NONE &&
-            (beside == MCME_TRANSPARENCY_OPAQUE ||
-             (beside == MCME_TRANSPARENCY_TRANSLUCENT &&
+            (beside[i] == MCME_TRANSPARENCY_OPAQUE ||
+             (beside[i] == MCME_TRANSPARENCY_TRANSLUCENT &&
               mesh->transparency == MCME_TRANSPARENCY_TRANSLUCENT)))
             continue;
 
@@ -546,6 +551,18 @@ bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
         }
     }
     return true;
+}
+
+/* The uniform neighbour (D37): one block state on all six sides,
+   the array every direction answers alike. */
+bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
+                     long block_y, McmeTransparency beside,
+                     McmeAtlasMesh *out)
+{
+    McmeTransparency all[MCME_CULL_NONE];
+    for (int i = 0; i < MCME_CULL_NONE; ++i)
+        all[i] = beside;
+    return mcme_atlas_mesh_dirs(atlas, mesh, block_y, all, out);
 }
 
 void mcme_atlas_mesh_free(McmeAtlasMesh *m)

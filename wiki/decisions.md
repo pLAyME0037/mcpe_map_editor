@@ -2708,3 +2708,85 @@ order — the 18 rows and the head-slice both rest on them), the
 culled bucket's JSON shape changes (table keys absent beside the
 mesh document), or the prelude's missing-BLOCK answer stops being
 opaque.
+
+## D38 — the six neighbours: the table answers the world's own sides
+
+**What the reference does.** The cull has always been PER FACE:
+each face reads the neighbour standing in ITS own direction —
+CULL_MAP (chunk_builder_cy.pyx 49-55) answers up, down, north,
+east, south, west for cull_id 1..6, and D37's two skip clauses
+run per face over that one lookup — so six faces can six answers.
+The offset rides all three position components: a row's position
+is the model's vertex plus `block_array.dx + x`, `dy + y`,
+`dz + z` (310-313), the BlockArray's d being the chunk offset
+plus the sub-chunk's own y (358-366). The band shade reads the
+row's y alone.
+
+**What mcme does.** `mcme_atlas_mesh_dirs(atlas, mesh, block_y,
+beside[6], out)` takes one transparency per direction — DOWN
+through WEST, the bucket order — and each cullface bucket reads
+its own side's answer; the clauses and the none exemption
+unchanged (D37). `mcme_atlas_mesh` keeps the uniform neighbour,
+one block state on all six sides, now a wrapper that fills the
+array. The verb `chunk mesh <world> <pack> <x> <y> <z>` reads the
+seven block states out of the world itself — the target plus six
+neighbours through the world's own read, `chunk get`'s pinned
+ground — meshes each through the block prelude, and answers the
+table with the world's own y. The target's chunk absent is exit
+2; a NEIGHBOUR's chunk outside the stored world is air — the
+world's edge stands open, partial, firing neither clause; any
+other read failure is the read's own refusal. JSON carries the
+mesh document plus the page's size, the block and the
+coordinates; human adds the position to the heading and the six
+side answers below the table.
+
+**How parity was measured.** `tools/ref_chunkmesh.py` drives the
+reference's builder on the WORLD'S OWN grid: the golden Java
+world copied, the pattern written with `chunk set` (ref_java_blocks'
+SET ground), the 3x3x3 around the probe read back by that pin's
+own region walk — the sector table walked by hand, the palette
+unpacked there, no mcme code — and handed to `create_lod0_chunk`
+at the probe's world position, the sub-chunk's own y zero. The
+interior is ONE cell: the builder meshes the probe alone, the
+streams hold only its rows, and every cull read lands on the
+world's own cell beside it — no leak arithmetic at all. The skip
+clauses are transcribed per side over the walk's six neighbours;
+five positions pin it: six different neighbours on six sides at
+once (three clause outcomes, at the band's period height), the
+chained pair on one side (the band's peak), a neighbour across
+the chunk boundary into the golden world's chunk (1, 0), one
+across the section edge into the section the write created, and
+the cullface-less cube ringed by opaque all round. The row
+comparison is D37's own; the position compare now rides the
+offset on all three axes — the first pin to exercise nonzero x
+and z. The crafted pack's flags assert the fixture's ground per
+block; the usage refusals cover argc, a junk coordinate, the
+missing world, the missing pack, the absent target chunk, a
+dimension without a region directory, and a dimension number the
+extractor refuses.
+
+**Out of domain, recorded.** THE BEDROCK GRID: `chunk mesh` reads
+Bedrock worlds through the same prelude and table — its world
+read is `chunk get`'s pinned ground — but the pin's grid walk is
+the region file's; the subchunk codec as a mesh source stays out
+until a pin walks it. THE VERTEX CAPACITY: the one-cell interior
+never overflows the builder's array, so the stream's split
+machinery is the field pin's totals (D37), not this one's — a
+whole sub-chunk's table rides those. THE WORLD'S EDGE as data:
+the air answer for a neighbour outside the stored world is
+mcme's own semantics — the reference's builder only ever sees
+the grid it is handed — checked as the prelude's air (partial,
+firing neither clause), not adjudicated against a reference
+world loader. BLOCK TINTS stay D36's exclusion, the reference's
+own tint function the gate; the probes stand in the tint domain.
+The GUI's consumption of the table remains unobservable from any
+pin.
+
+**Reverses if:** the per-face read changes (a neighbour looked up
+per BLOCK instead of per face, or CULL_MAP's offsets no longer
+naming the cell each face reads), the offset stops riding all
+three position components (dx + x parting ways with dy + y), the
+prelude's air answer stops being partial, the edge rule changes
+(an absent neighbour chunk refusing instead of reading air, or
+the target's absent chunk reading air instead of refusing), or
+D37's clauses change.
