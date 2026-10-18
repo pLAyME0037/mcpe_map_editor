@@ -1986,6 +1986,21 @@ static void test_atlas_uv(void)
         "{\"textures\":{\"a\":\"block/absent\"},"
         "\"elements\":[{\"from\":[2,2,2],\"to\":[14,14,14],"
         "\"faces\":{\"up\":{\"texture\":\"#a\",\"uv\":[0,0,8,8]}}}]}");
+    /* A full cube on an alpha texture: the mesh's transparency is
+       translucent — what the cull clauses read when something
+       stands beside the block (D37). */
+    put_solid_png(UFIXDIR "/assets/minecraft/textures/block/alphat.png",
+                  4, 4, 4, 0, 255, 255, 128);           /* cyan, alpha 128 */
+    put(UFIXDIR "/assets/mc/models/block/cubea.json",
+        "{\"textures\":{\"a\":\"block/alphat\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16],"
+        "\"faces\":{"
+          "\"down\":{\"texture\":\"#a\",\"cullface\":\"down\"},"
+          "\"up\":{\"texture\":\"#a\",\"cullface\":\"up\"},"
+          "\"north\":{\"texture\":\"#a\",\"cullface\":\"north\"},"
+          "\"east\":{\"texture\":\"#a\",\"cullface\":\"east\"},"
+          "\"south\":{\"texture\":\"#a\",\"cullface\":\"south\"},"
+          "\"west\":{\"texture\":\"#a\",\"cullface\":\"west\"}}}]}");
 
     McmeModelIndex *models = NULL;
     McmeTextureIndex *tex = NULL;
@@ -2016,7 +2031,7 @@ static void test_atlas_uv(void)
                   "cube6 transparency %d, want opaque",
                   (int)m.transparency);
         McmeAtlasMesh t;
-        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, MCME_TRANSPARENCY_PARTIAL, &t),
                   "cube6 table: %s", mcme_last_error());
         for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
             CHECK_MSG(t.present[d], "cube6 bucket %d absent", d);
@@ -2056,7 +2071,7 @@ static void test_atlas_uv(void)
         McmeMesh m;
         CHECK(build_mesh(models, tex, "mc", "block/wrap", &m));
         McmeAtlasMesh t;
-        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, MCME_TRANSPARENCY_PARTIAL, &t),
                   "wrap table: %s", mcme_last_error());
         CHECK_MSG(t.present[MCME_CULL_NONE],
                   "wrap: no cullface, so the none bucket");
@@ -2092,7 +2107,7 @@ static void test_atlas_uv(void)
         static const char *const want_tex[] = { "missing_no" };
         check_textures(&m, want_tex, 1);
         McmeAtlasMesh t;
-        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, MCME_TRANSPARENCY_PARTIAL, &t),
                   "missingpart table: %s", mcme_last_error());
         CHECK(t.present[MCME_CULL_NONE]);
         const McmeAtlasBucket *b_ = &t.buckets[MCME_CULL_NONE];
@@ -2126,7 +2141,7 @@ static void test_atlas_uv(void)
         McmeMesh m;
         CHECK(build_mesh(models, tex, "mc", "block/cube6", &m));
         McmeAtlasMesh t;
-        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, &t),
+        CHECK_MSG(mcme_atlas_mesh(&atlas, &m, 0, MCME_TRANSPARENCY_PARTIAL, &t),
                   "cube6 tint table: %s", mcme_last_error());
         for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
             const McmeAtlasBucket *b_ = &t.buckets[d];
@@ -2181,7 +2196,8 @@ static void test_atlas_uv(void)
         CHECK(build_mesh(models, tex, "mc", "block/cube6", &m));
         for (size_t i = 0; i < sizeof k_wave / sizeof *k_wave; ++i) {
             McmeAtlasMesh t;
-            CHECK_MSG(mcme_atlas_mesh(&atlas, &m, k_wave[i].by, &t),
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &m, k_wave[i].by,
+                                       MCME_TRANSPARENCY_PARTIAL, &t),
                       "wave table: %s", mcme_last_error());
             const double *tint = t.buckets[k_wave[i].d].tints;
             CHECK_MSG(tint && fabs(tint[0] - k_wave[i].want) < 1e-9 &&
@@ -2195,14 +2211,102 @@ static void test_atlas_uv(void)
         mcme_mesh_free(&m);
     }
 
+    /* --- the cull clauses: the rows are the SURVIVORS. cube6's
+           faces carry cullfaces, so its buckets drop whole beside
+           an opaque neighbour; beside a translucent one they drop
+           only when the mesh itself is translucent — cubea is
+           that translucent cube, and it drops under both clauses.
+           Wrap's single up face carries no cullface: the none
+           bucket never culls, under any neighbour — the test's own
+           `if cull_id:` exemption (D37). --- */
+    {
+        static const McmeTransparency k_beside[3] = {
+            MCME_TRANSPARENCY_OPAQUE, MCME_TRANSPARENCY_TRANSLUCENT,
+            MCME_TRANSPARENCY_PARTIAL
+        };
+        McmeMesh m6, ma, mw;
+        CHECK(build_mesh(models, tex, "mc", "block/cube6", &m6));
+        CHECK(build_mesh(models, tex, "mc", "block/cubea", &ma));
+        CHECK(build_mesh(models, tex, "mc", "block/wrap", &mw));
+        CHECK_MSG(ma.transparency == MCME_TRANSPARENCY_TRANSLUCENT,
+                  "cubea transparency %d, want translucent",
+                  (int)ma.transparency);
+        for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
+            McmeAtlasMesh t;
+            /* cube6 (opaque) beside opaque: every bucket drops.
+               Beside translucent: neither clause fires — the rows
+               stand, six per face. */
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &m6, 0,
+                                       MCME_TRANSPARENCY_OPAQUE, &t),
+                      "cube6 beside opaque: %s", mcme_last_error());
+            CHECK_MSG(t.buckets[d].row_count == 0 &&
+                      !t.buckets[d].tints,
+                      "cube6 beside opaque bucket %d answered rows",
+                      d);
+            mcme_atlas_mesh_free(&t);
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &m6, 0,
+                                       MCME_TRANSPARENCY_TRANSLUCENT,
+                                       &t),
+                      "cube6 beside translucent: %s",
+                      mcme_last_error());
+            CHECK_MSG(t.buckets[d].row_count == 6,
+                      "cube6 beside translucent bucket %d rows %zu",
+                      d, t.buckets[d].row_count);
+            mcme_atlas_mesh_free(&t);
+            /* cubea (translucent) beside opaque: the first clause.
+               Beside translucent: the chained pair. Beside partial:
+               neither — the rows stand. */
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &ma, 0,
+                                       MCME_TRANSPARENCY_OPAQUE, &t),
+                      "cubea beside opaque: %s", mcme_last_error());
+            CHECK_MSG(t.buckets[d].row_count == 0,
+                      "cubea beside opaque bucket %d answered rows",
+                      d);
+            mcme_atlas_mesh_free(&t);
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &ma, 0,
+                                       MCME_TRANSPARENCY_TRANSLUCENT,
+                                       &t),
+                      "cubea beside translucent: %s",
+                      mcme_last_error());
+            CHECK_MSG(t.buckets[d].row_count == 0,
+                      "cubea beside translucent bucket %d answered "
+                      "rows", d);
+            mcme_atlas_mesh_free(&t);
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &ma, 0,
+                                       MCME_TRANSPARENCY_PARTIAL, &t),
+                      "cubea beside partial: %s", mcme_last_error());
+            CHECK_MSG(t.buckets[d].row_count == 6,
+                      "cubea beside partial bucket %d rows %zu", d,
+                      t.buckets[d].row_count);
+            mcme_atlas_mesh_free(&t);
+        }
+        for (int n = 0; n < 3; ++n) {
+            McmeAtlasMesh t;
+            CHECK_MSG(mcme_atlas_mesh(&atlas, &mw, 0, k_beside[n], &t),
+                      "wrap beside %d: %s", (int)k_beside[n],
+                      mcme_last_error());
+            CHECK_MSG(t.buckets[MCME_CULL_NONE].row_count == 6,
+                      "wrap beside %d rows %zu, the none bucket "
+                      "never culls", (int)k_beside[n],
+                      t.buckets[MCME_CULL_NONE].row_count);
+            mcme_atlas_mesh_free(&t);
+        }
+        mcme_mesh_free(&m6);
+        mcme_mesh_free(&ma);
+        mcme_mesh_free(&mw);
+    }
+
     /* --- refusals --- */
     {
         McmeMesh m;
         CHECK(build_mesh(models, tex, "mc", "block/wrap", &m));
         McmeAtlasMesh t;
-        CHECK(!mcme_atlas_mesh(NULL, &m, 0, &t));
-        CHECK(!mcme_atlas_mesh(&atlas, NULL, 0, &t));
-        CHECK(!mcme_atlas_mesh(&atlas, &m, 0, NULL));
+        CHECK(!mcme_atlas_mesh(NULL, &m, 0, MCME_TRANSPARENCY_PARTIAL,
+                               &t));
+        CHECK(!mcme_atlas_mesh(&atlas, NULL, 0, MCME_TRANSPARENCY_PARTIAL,
+                               &t));
+        CHECK(!mcme_atlas_mesh(&atlas, &m, 0, MCME_TRANSPARENCY_PARTIAL,
+                               NULL));
         mcme_clear_error();
         mcme_mesh_free(&m);
         mcme_atlas_mesh_free(NULL);

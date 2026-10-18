@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 Cross-check: `mcme atlasmesh` — one block state, its texture
-coordinates and its colour in atlas space, answered by mcme and by
-the editor's own chunk builder plus its resource pack's bounds rule
-deciding the same questions (decisions.md#D35, D36).
+coordinates and its colour in atlas space, and the rows that survive
+the builder's cull when a neighbour stands beside it, answered by
+mcme and by the editor's own chunk builder plus its resource pack's
+bounds rule deciding the same questions (decisions.md#D35, D36, D37).
 
 How the reference is observed. The table is the editor's chunk
 builder (chunk_builder_cy.pyx) run headless: one block placed in an
-18-cube grid with air filling the ring, meshed at loop zero so its
+18-cube grid — air filling the ring when nothing stands beside the
+probe, the neighbour block filling the whole grid, padding included,
+when something does — meshed at loop zero so its
 rows are the stream; each 12-float row carries position, texture
 coordinate, the texture rectangle — written per THREE rows, one
 triangle, stepping the block mesh's per-triangle texture index — and
@@ -48,11 +51,24 @@ render time. The transcription is checked against mcme's auvs row
 for row — the prototype run that derived this pin reproduced mcme's
 answers with it, including the negative wrap.
 
-Culling stays out of the way rather than out of the answer: the ring
-is air, which is not a full block, so the builder's two skip clauses
-(an opaque neighbour; two translucent blocks meeting) never fire and
-every row the model has is a row both sides answer. The cull rule
-itself is D33's ground; this pin keeps it satisfied and moves on.
+The cull clauses (chunk_builder_cy.pyx 279-289) are this pin's
+domain since D37: a face whose direction has a cullface drops when
+the neighbour's transparency is opaque, or when neighbour and self
+are both translucent — the chained `== 1 == 1`, transparency alone,
+nothing else of the neighbour read. A face with no cullface never
+culls: the test runs under `if cull_id:`, so a full cube without
+cullface keeps every face even embedded in stone. To drive it, the
+neighbour fills the WHOLE grid, the padding included so every cull
+read lands on it, except the probe's own cell. The field culls its
+own faces against itself under both clauses; the one face that can
+keep is the one turned toward the probe, and only when the probe's
+transparency is neither 0 nor a matching 1. Three of the probe's
+six neighbours are the grid's padding — read for the cull, never
+meshed — so that leak is exactly 18 rows, in the field's stream,
+behind the probe's own in loop order. When that stream is also the
+probe's own — an opaque field beside a partial probe — the leak
+rides the probe's tail: the probe is the grid's first cell, so its
+rows are the stream's head, and the totals pin the split.
 
 What is compared:
 
@@ -67,6 +83,9 @@ What is compared:
     edges (the mod wraps them up); a texture the pack lacks (the
     sentinel's rectangle through the missing machinery); and a
     multipart merge (two cubes' rows concatenated in one bucket).
+    Behind them stand two field blocks — full cubes with a cullface
+    per face, each on its own 2x2 texture, opaque and translucent —
+    the neighbours the cull probes stand beside.
 
   WORLD HEIGHTS — the cull cube re-run over eight block heights for
     the wave the shade reads out of: 16 (mid-ramp), 32 (the peak,
@@ -78,6 +97,16 @@ What is compared:
     -32, at the peak on the same parting. Every row's tint must
     agree, and so must the positions, the offset subtracted back.
 
+  CULL CLAUSES — nine probes with a neighbour standing: the cull
+    cube and the glass against the opaque and the translucent field
+    (the first clause fires, neither fires, the chained pair fires),
+    the cullface-less cube standing under both (the exemption), the
+    missing BLOCK standing opaque on both sides (a neighbour the
+    pack does not have — the loader's own answer, which mcme's
+    prelude shares), and the pack's own air answering the default.
+    A culled bucket answers the mesh document's dir and no table
+    keys: there are no rows for bounds, auvs or tints to name.
+
   VANILLA FIX — the reader's own shipped pack, completed with an
     opaque RGBA image behind every texture its models can name and
     given the air ring it does not ship, one probe per blockstate
@@ -88,6 +117,16 @@ What is compared:
     company with the reference's colour. The block tints stay out of
     this pin's domain alike.
 
+  VANILLA BESIDE — the same sweep with stone standing beside every
+    probe: an opaque neighbour culls every cullface bucket away over
+    real data while the none buckets stand, and a partial probe's
+    own rows ride ahead of the leak the field's three meshed cells
+    leave behind. One field only: the completed pack answers no
+    block translucent — the shipped alpha PNGs (water, lava, the
+    banners) are palette images, which the reference's texture rule
+    reads opaque — so the chained pair lives in the crafted probes,
+    exact, and real data walks clause one and the exemption.
+
   BROKEN IMAGE — a pack whose only texture is not a PNG: the
     reference's manager never finishes loading (Pillow refuses the
     file in its transparency-flag pass), so there is no table to
@@ -97,9 +136,10 @@ What is compared:
 
   USAGE — missing arguments exit 1, a pack directory that does not
     exist exit 2, an empty namespace or name exit 1, a non-string
-    state exit 1, `--y` without a value or with a non-integer one
-    exit 1 — the block prelude's own answers (D33) and the flag's
-    own refusal.
+    state exit 1, `--y` or `--beside` without a value exit 1, a
+    non-integer `--y` exit 1, a `--beside` spec the prelude refuses
+    exit 1, a flag given twice exit 1 — the block prelude's own
+    answers (D33) and the flags' own refusals.
 
 The comparison tolerance is float32: the builder's table is float32,
 so its values are compared with a 1e-6 slack. The rectangles and
@@ -297,20 +337,27 @@ def build_opack(mgr):
 
 
 def ref_table(opack, name: str, props: dict[str, str],
-              y: int = 0):
+              y: int = 0, beside: tuple[str, dict] | None = None):
     """The builder's own table for one block at world height y (the
     chunk offset sets it; the sub-chunk's own y is 0 — dy is their
     sum). The probe sits at grid (1, 1, 1) — meshed at loop zero,
-    its rows the stream's own — with air in every ring cell: air is
-    not a full block, so the cull test keeps every face. The palette
-    gets a fresh list (the pack caches by id()) and the cache is
-    cleared: id reuse between probes would answer with stale
-    geometry."""
+    its rows the stream's own. When something stands beside the
+    probe the WHOLE grid is that block, the padding included so
+    every cull read lands on it, except the probe's own cell: a
+    uniform field, the cull clauses' own shape. The palette gets a
+    fresh list (the pack caches by id()) and the cache is cleared:
+    id reuse between probes would answer with stale geometry."""
     import numpy
 
     grid = numpy.zeros((18, 18, 18), numpy.uint32)
-    grid[1, 1, 1] = 1
+    if beside is None:
+        grid[1, 1, 1] = 1  # air ring: not full, keeps every face
+    else:
+        grid[:, :, :] = 2
+        grid[1, 1, 1] = 1
     palette = [make_block("air", {}), make_block(name, props)]
+    if beside is not None:
+        palette.append(make_block(beside[0], beside[1]))
     opack.block_model_manager = {}
     opaque, trans = _REF.cb.create_lod0_chunk(
         opack, numpy.array([0, y, 0], numpy.int64), [(grid, 0)],
@@ -343,13 +390,18 @@ def mcme_spec(name: str, props: dict[str, str]) -> str:
 
 
 def mcme_atlasmesh(mcme: str, packdir: str, name: str,
-                   props: dict[str, str], y: int = 0) -> dict:
-    rc, out, err = run(mcme, "atlasmesh", packdir,
-                       mcme_spec(name, props), "--json", "--y", str(y))
+                   props: dict[str, str], y: int = 0,
+                   beside: str | None = None) -> dict:
+    argv = [mcme, "atlasmesh", packdir, mcme_spec(name, props),
+            "--json", "--y", str(y)]
+    if beside is not None:
+        argv += ["--beside", beside]
+    rc, out, err = run(*argv)
     if rc != 0:
         raise AssertionError(
-            f"atlasmesh {mcme_spec(name, props)} --y {y}: exit {rc}, "
-            f"stderr {err.strip()!r}")
+            f"atlasmesh {mcme_spec(name, props)} --y {y}"
+            f"{'' if beside is None else ' --beside ' + beside}: "
+            f"exit {rc}, stderr {err.strip()!r}")
     try:
         return json.loads(out)
     except json.JSONDecodeError:
@@ -409,16 +461,22 @@ def f32_diff(got, want, what: str) -> str | None:
 
 def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
                 props: dict[str, str], checks: int, why: str,
-                y: int = 0) -> int:
+                y: int = 0, beside: str | None = None,
+                ring: tuple[str, dict] | None = None,
+                beside_t: int = 2) -> int:
     """The reference answers its mesh document and its builder's
     table; mcme answers the same document plus the table's new
     columns, and every row must agree. At world height y the rows
     carry the offset in their positions and their tints; the
     document mcme prints is the block's own, so the position
-    comparison subtracts the offset back."""
+    comparison subtracts the offset back. With beside, the rows are
+    the cull clauses' survivors: `beside` names the neighbour for
+    mcme's --beside, `ring` the block filling the builder's field,
+    and beside_t the transparency both answer for it — the only
+    thing the clauses read."""
     spec = mcme_spec(name, props)
     want = ref_get_model(mgr, name, props)
-    got = mcme_atlasmesh(mcme, packdir, name, props, y)
+    got = mcme_atlasmesh(mcme, packdir, name, props, y, beside)
 
     # The mesh document: D33's ground, re-pinned on this verb so the
     # new columns are read off a mesh both sides agree on. Fresh
@@ -437,21 +495,51 @@ def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
         raise AssertionError(
             f"{why}: {spec}: page {got['size']}, reference {page}")
 
-    # The builder's table, split into its two streams — only one
-    # holds the probe's rows; the ring block answers no faces.
-    rows_o, rows_t = ref_table(opack, name, props, y)
-    rows, other = ((rows_t, rows_o) if want["transparent"] == 1
+    # The builder's table, split into its two streams — one holds
+    # the probe's rows, the other the field's leak, if any.
+    #
+    # A uniform field culls its own faces against itself under both
+    # clauses; the one face that can keep is the one turned toward
+    # the probe, and only when the probe's transparency is neither 0
+    # (the first clause) nor a matching 1 (the chained pair). The
+    # probe has six neighbours; three of them are the grid's
+    # padding — read for the cull, never meshed — so the leak is
+    # exactly the three interior cells' probe-facing faces: 18 rows,
+    # in the field's stream, behind the probe's own in loop order.
+    # When that stream is also the probe's own — an opaque field
+    # beside a partial probe — the leak rides the probe's tail: the
+    # probe is the grid's first cell, so its rows are the stream's
+    # head, and the totals below pin the split.
+    probe_t = want["transparent"]
+    rows_o, rows_t = ref_table(opack, name, props, y, ring)
+    leaky = beside_t in (0, 1) and probe_t != 0 and not (
+        beside_t == 1 and probe_t == 1)
+    leak_in_other = leaky and (beside_t == 0) == (probe_t == 1)
+    rows, other = ((rows_t, rows_o) if probe_t == 1
                    else (rows_o, rows_t))
-    if len(other):
+    other_n = 18 if leak_in_other else 0
+    if len(other) != other_n:
         raise AssertionError(
             f"{why}: {spec}: {len(other)} rows in the stream the "
-            f"{'translucent' if want['transparent'] == 1 else 'opaque'} "
-            "side does not use")
-    total = sum(len(v["faces"]) for v in want["dirs"].values())
-    if len(rows) != total:
+            f"{'translucent' if probe_t == 1 else 'opaque'} side "
+            f"does not use, want {other_n}")
+    head_n = 18 if leaky and not leak_in_other else 0
+
+    # The skip clauses, transcribed (chunk_builder_cy.pyx 282-289):
+    # a face with no cullface never culls; a face drops when the
+    # neighbour is opaque, or when neighbour and self are both
+    # translucent — transparency alone, nothing else read.
+    def culled_out(dname: str) -> bool:
+        return dname != "none" and (
+            beside_t == 0 or
+            (beside_t == 1 and probe_t == 1))
+
+    total = sum(len(v["faces"]) for dname, v in want["dirs"].items()
+                if not culled_out(dname))
+    if len(rows) != total + head_n:
         raise AssertionError(
             f"{why}: {spec}: the builder answered {len(rows)} rows, "
-            f"the mesh has {total}")
+            f"the surviving mesh has {total} plus {head_n} leaked")
 
     # Bucket by bucket in the builder's emission order: the rows are
     # one flat stream, and the mesh's face counts are the slice.
@@ -459,10 +547,21 @@ def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
     for dname in CULL_ORDER:
         if dname not in want["dirs"]:
             continue
-        n = len(want["dirs"][dname]["faces"])
+        mesh_n = len(want["dirs"][dname]["faces"])
+        n = 0 if culled_out(dname) else mesh_n
         g = got["dirs"].get(dname)
         if g is None:
             raise AssertionError(f"{why}: {spec}: mcme has no {dname}")
+        if n == 0:
+            # The bucket drops whole: the table's keys do not
+            # appear beside the mesh document — there are no rows
+            # for them to name.
+            for key in ("bounds", "auvs", "tints"):
+                if key in g:
+                    raise AssertionError(
+                        f"{why}: {spec} {dname}: the cull dropped "
+                        f"the bucket, mcme still answered {key}")
+            continue  # the stream holds no rows for it either
         if len(g["bounds"]) != 4 * n:
             raise AssertionError(
                 f"{why}: {spec} {dname}: {len(g['bounds'])} bound "
@@ -507,9 +606,10 @@ def check_probe(mcme, packdir, mgr, opack, page: int, name: str,
             if d:
                 raise AssertionError(f"{why}: {d}")
         walked += n
-    if walked != len(rows):
+    if walked + head_n != len(rows):
         raise AssertionError(
-            f"{why}: {spec}: {len(rows) - walked} rows past the mesh")
+            f"{why}: {spec}: {len(rows) - walked - head_n} rows past "
+            "the mesh and the leak")
     return checks + 1
 
 
@@ -547,6 +647,18 @@ def check_usage(mcme: str, pack: str, tmp: str, checks: int) -> int:
                          "minecraft:atlas_cube", "--y", "nope")
     if rc != 1:
         raise AssertionError(f"`--y nope`: exit {rc}, want 1")
+    checks += 1
+    rc, _out, _err = run(mcme, "atlasmesh", pack,
+                         "minecraft:atlas_cube", "--beside")
+    if rc != 1:
+        raise AssertionError(
+            f"`--beside` without a value: exit {rc}, want 1")
+    checks += 1
+    rc, _out, _err = run(mcme, "atlasmesh", pack,
+                         "minecraft:atlas_cube", "--beside", ":stone")
+    if rc != 1:
+        raise AssertionError(
+            f"`--beside :stone`: exit {rc}, want 1")
     return checks + 1
 
 
@@ -643,6 +755,11 @@ def craft_pack(root: str) -> str:
     write_png(os.path.join(texdir, "magenta.png"), "RGBA", MAGENTA, (2, 4))
     write_png(os.path.join(texdir, "wide.png"), "RGBA", YELLOW, (8, 2))
     write_png(os.path.join(texdir, "alpha.png"), "RGBA", CYAN_ALPHA, (4, 4))
+    # The field blocks' own textures: 2x2, a size no probe uses, so
+    # the leak filter recognizes their rows by the rectangle.
+    write_png(os.path.join(texdir, "ring.png"), "RGBA", RED, (2, 2))
+    write_png(os.path.join(texdir, "ringa.png"), "RGBA", CYAN_ALPHA,
+              (2, 2))
 
     models = {
         # The ring block: no elements, no textures — the empty mesh,
@@ -676,6 +793,11 @@ def craft_pack(root: str) -> str:
         "wrap_uv": up_cube("block/red", uv=[-4, 0, 20, 16]),
         # A texture the pack lacks: the sentinel's rectangle.
         "missing_part": up_cube("block/absent"),
+        # The field blocks the cull probes stand beside: full
+        # cubes with a cullface per face, opaque and translucent,
+        # each on its own texture (D37).
+        "ring_cube": cube("block/ring", True),
+        "ring_cubea": cube("block/ringa", True),
     }
     for name, doc in models.items():
         write_json(os.path.join(mdir, name + ".json"), doc)
@@ -695,6 +817,8 @@ def craft_pack(root: str) -> str:
         "atlas_merge": {"multipart": [
             {"apply": {"model": "mc:block/cube_red"}},
             {"apply": {"model": "mc:block/cube_mag"}}]},
+        "ring_opaque": variants("ring_cube"),
+        "ring_translucent": variants("ring_cubea"),
     }
     for name, doc in blockstates.items():
         write_json(os.path.join(bsdir, name + ".json"), doc)
@@ -710,6 +834,24 @@ CRAFTED_PROBES = [
     ("atlas_wrap", {}),     # uv past both edges: wrap, not clamp
     ("atlas_missing", {}),  # a texture the pack lacks: the sentinel
     ("atlas_merge", {}),    # multipart: two cubes, one bucket
+]
+
+
+# The cull probes: the block, the neighbour mcme is told (--beside),
+# the block filling the builder's field, and the transparency both
+# sides answer for that neighbour — the only thing the clauses read.
+# The missing neighbour is the missing BLOCK: the loader answers it
+# opaque and so does mcme's prelude, so the field stands in for it.
+CULL_PROBES = [
+    ("atlas_cull", "minecraft:ring_opaque", "ring_opaque", 0),
+    ("atlas_cull", "minecraft:ring_translucent", "ring_translucent", 1),
+    ("atlas_glass", "minecraft:ring_opaque", "ring_opaque", 0),
+    ("atlas_glass", "minecraft:ring_translucent", "ring_translucent", 1),
+    ("atlas_cube", "minecraft:ring_opaque", "ring_opaque", 0),
+    ("atlas_cube", "minecraft:ring_translucent", "ring_translucent", 1),
+    ("atlas_cull", "minecraft:doesnotexist", "ring_opaque", 0),
+    ("atlas_cube", "minecraft:doesnotexist", "ring_opaque", 0),
+    ("atlas_cull", "minecraft:air", "air", 2),
 ]
 
 
@@ -952,9 +1094,38 @@ def main() -> int:
              "the next peak, and two below zero where numpy's modulo "
              "parts ways with C's fmod")
 
+        # --- the cull clauses: which rows SURVIVE a neighbour ---
+        for probe, beside, ring_name, beside_t in CULL_PROBES:
+            # Both sides must answer the neighbour's transparency
+            # alike — the field block's flag, and the spec mcme is
+            # told (the loader's missing BLOCK when the pack does
+            # not hold it).
+            want_t = ref_get_model(mgr, ring_name, {})["transparent"]
+            if want_t != beside_t:
+                raise AssertionError(
+                    f"cull {probe} beside {beside}: the field block "
+                    f"{ring_name} answers transparency {want_t}, "
+                    f"want {beside_t}")
+            told_t = ref_get_model(mgr, beside.split(":", 1)[1],
+                                   {})["transparent"]
+            if told_t != beside_t:
+                raise AssertionError(
+                    f"cull {probe} beside {beside}: the reference "
+                    f"answers transparency {told_t}, want {beside_t}")
+            checks = check_probe(args.mcme, pack, mgr, opack,
+                                 img.size[0], probe, {}, checks,
+                                 f"cull beside {beside}",
+                                 beside=beside, ring=(ring_name, {}),
+                                 beside_t=beside_t)
+        _log("ok — cull clauses: 9 probes — the cull cube and the "
+             "glass against opaque and translucent neighbours, the "
+             "cullface-less cube standing under both, the missing "
+             "BLOCK opaque on both sides, and the pack's own air "
+             "answering the default")
+
         # --- the usage refusals, the block prelude's own ---
         checks = check_usage(args.mcme, pack, tmp, checks)
-        _log("ok — usage refusals: 1 / 2 / 1 / 1 / 1 / 1 / 1")
+        _log("ok — usage refusals: 1 / 2 / 1 / 1 / 1 / 1 / 1 / 1 / 1")
 
         # --- the pack whose texture is not an image: each side
         # pinned to its own refusal ---
@@ -989,6 +1160,31 @@ def main() -> int:
              f"under the fold mcme's default would part company with "
              f"the reference's colour), {wrote} opaque images behind "
              f"the pack and the air ring it does not ship")
+
+        # --- the same sweep with a neighbour standing: opaque
+        # stone culls every cullface bucket away over real data —
+        # the completed pack answers no block translucent (the
+        # shipped alpha PNGs are palette images, which the
+        # reference's texture rule reads opaque), so the chained
+        # pair lives in the crafted probes and real data walks
+        # clause one and the exemption ---
+        beside_t = ref_get_model(mgr, "stone", {})["transparent"]
+        if beside_t != 0:
+            raise AssertionError(
+                f"vanilla beside stone: transparency {beside_t}, want 0")
+        ran = 0
+        for name, props in probes:
+            if not in_tint_domain(name, props):
+                continue
+            ran += 1
+            checks = check_probe(
+                args.mcme, completed, mgr, opack, img.size[0],
+                name, props, checks, "vanilla beside stone",
+                beside="minecraft:stone", ring=("stone", {}),
+                beside_t=beside_t)
+        _log(f"ok — java_vanilla_fix beside stone (opaque): {ran} probes "
+             "answered alike — the cull clauses over real game data, "
+             "the leak riding the partial probes' tails")
 
         _log(f"ok — {checks} checks")
         return 0

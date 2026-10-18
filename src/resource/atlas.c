@@ -453,7 +453,8 @@ static double band_shade(double y)
 }
 
 bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
-                     long block_y, McmeAtlasMesh *out)
+                     long block_y, McmeTransparency beside,
+                     McmeAtlasMesh *out)
 {
     if (!atlas || !mesh || !out) {
         mcme_set_error("atlas mesh: null argument");
@@ -463,6 +464,20 @@ bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
 
     for (int i = 0; i < 7; ++i) {
         if (!mesh->present[i]) continue;
+
+        /* The cull clauses (D37), the builder's two skip clauses
+           over transparency alone: a bucket whose faces carry a
+           cullface drops whole when the neighbour standing beside
+           is opaque, or when neighbour and self are both
+           translucent. The none bucket never culls — its faces
+           have no cull direction, so the builder's test does not
+           run for them. */
+        if (i != MCME_CULL_NONE &&
+            (beside == MCME_TRANSPARENCY_OPAQUE ||
+             (beside == MCME_TRANSPARENCY_TRANSLUCENT &&
+              mesh->transparency == MCME_TRANSPARENCY_TRANSLUCENT)))
+            continue;
+
         const McmeMeshBucket *b = &mesh->buckets[i];
         out->present[i] = true;
 

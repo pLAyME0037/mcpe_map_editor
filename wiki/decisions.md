@@ -2623,3 +2623,88 @@ numpy's modulo semantics change under the builder (the two
 below-zero probes fire), or the reference tints a block mcme's tint
 filter no longer skips (the vanilla sweep's tint comparison parts
 company).
+
+## D37 — the cull clauses: the rows that survive a neighbour
+
+**What the reference does.** The builder decides which faces get
+rows at all, per cull direction, over the neighbour's transparency
+ALONE (`chunk_builder_cy.pyx` 279-289):
+
+    for cull_id in range(7):
+        if block_model.faces[cull_id]:
+            if cull_id:
+                ...
+                if blocks[get_block(arr, dx, dy, dz)].is_transparent == 0 or \
+                   blocks[...].is_transparent == blocks[get_block(arr, x_, y_, z_)].is_transparent == 1:
+                    continue
+
+Two clauses, and the test never runs for the none bucket — the
+`if cull_id:` gate means a face with no cullface survives whatever
+stands beside it, so a full cube without cullface keeps every face
+even embedded in stone. Clause one: the neighbour is opaque
+(`is_transparent == 0`) — transparency alone, no full-block or
+shape condition anywhere in the test. Clause two: the chained
+comparison, neighbour and self both translucent (== 1). Air
+answers 2 and fires neither. The neighbour is read from the padded
+grid, so a block at the sub-chunk's edge reads the padding cell.
+
+**What mcme does.** `mcme_atlas_mesh` gained `beside` — a
+McmeTransparency, the neighbour's own D32 classification — and a
+bucket whose faces carry a cullface answers no rows when
+`beside == OPAQUE`, or when `beside == TRANSLUCENT` and the mesh is
+translucent too: dropped whole, before any allocation, so
+`row_count` is 0, the arrays are NULL, and the verb prints the
+mesh document's dir with no `bounds`/`auvs`/`tints` keys — no rows
+for them to name. `present[]` stays the mesh's: the mesh still has
+the bucket; the table answers nothing for it. The none bucket
+always answers its rows. The verb grew `--beside <block>`: the
+neighbour through the same block prelude — its refusal set, its
+missing-BLOCK answer (opaque, and it culls, exactly what the
+loader does) — the trailing flag pairs accepted in either order,
+each once, a bare flag or a repeat refusing with usage, exit 1.
+Default: nothing stands beside, the air answer, which fires
+neither clause.
+
+**How parity was measured.** `ref_atlasmesh.py` grew the field:
+the neighbour fills the whole 18-cube grid — padding included, so
+every cull read lands on it — except the probe's own cell at grid
+(1,1,1). Nine crafted probes pin every branch: the cull cube and
+the glass against the opaque and the translucent field (clause one
+fires, neither fires, the chained pair fires), the cullface-less
+cube standing under both (the exemption), the missing BLOCK
+standing opaque on both sides, and the pack's own air answering the
+default — each probe also asserts the reference answers the
+neighbour's transparency alike on both sides (the field block's
+flag and the spec mcme is told). The vanilla sweep repeats with
+stone standing beside all 69 probes. The pin transcribes the two
+clauses for its bucket slicing and checks the transcription
+against the builder's own row total. 173 checks rc=0; the selftest
+gained `cubea` (a translucent full cube) and the same branches
+from the C side; battery 18/18, `./rebuild.sh test` PASS.
+
+**Out of domain, recorded.** THE TRANSPARENCY RULE behind the
+flags is D32's ground and green, but its shape is worth holding
+on to: the reference marks a texture transparent only when its
+PNG mode is exactly "RGBA" with any alpha != 255 — the fix pack's
+shipped water, lava and banner PNGs are PALETTE images, so the
+completed vanilla pack answers no block translucent at all (3
+opaque, 66 partial). Real data therefore walks clause one and the
+exemption; the chained pair is pinned on the crafted probes,
+exact. THE SHAPE-VERSUS-FLAG quirk: the reference culls on the
+flag alone, so a partial block with opaque textures culls its
+neighbours' faces exactly like a full one would; the game's own
+rule asks whether the neighbour's shape covers the face — the map
+follows the reference, and the reference does not ask. PER-DIRECTION
+neighbours stay out: the block-level verb carries one neighbour,
+the same answer in every direction; the direction mapping itself
+is D33/D35's ground. The builder's cross-sub-chunk neighbour
+reads stay out: the pin's grid is self-contained.
+
+**Reverses if:** the skip clauses change (a shape or full-block
+condition joins the transparency test, the none bucket gains a
+cull, the chained comparison parts ways), the field's leak
+geometry changes (a different padding thickness, a different loop
+order — the 18 rows and the head-slice both rest on them), the
+culled bucket's JSON shape changes (table keys absent beside the
+mesh document), or the prelude's missing-BLOCK answer stops being
+opaque.

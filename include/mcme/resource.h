@@ -655,6 +655,34 @@ bool mcme_atlas_bounds(const McmeAtlas *atlas, const char *name,
  * reference's own tint function.
  */
 
+/* ========================================================================
+ * The cull clauses (D37)
+ *
+ * The table's rows are the faces that SURVIVE the builder's cull,
+ * and the cull is two clauses over transparency alone
+ * (chunk_builder_cy.pyx 279-289): a face whose direction has a
+ * cullface drops when the NEIGHBOUR's transparency is opaque, or
+ * when neighbour and self are both translucent — the chained
+ * `== 1 == 1`. A face with no cullface (the none bucket) never
+ * culls at all: the test runs under `if cull_id:`, so a full cube
+ * without cullface keeps every face even embedded in stone. Air,
+ * partial on both counts, fires neither clause.
+ *
+ * The quirk to hold on to: the reference culls on the
+ * TRANSPARENCY FLAG alone — there is no full-block or shape
+ * condition, so a partial block with opaque textures culls its
+ * neighbours' faces exactly like a full one would. The game's own
+ * rule asks whether the neighbour's shape covers the face; the
+ * map follows the reference, and the reference does not ask.
+ *
+ * The neighbour is one block state standing on all six sides —
+ * what the block-level verb can honestly carry, the same answer
+ * in every direction. A neighbour the pack does not have is the
+ * missing BLOCK: opaque, and it culls. The mesh's own
+ * transparency is D32's classification; `beside` is the
+ * neighbour's, the same enum.
+ */
+
 /* One cull bucket's rows in atlas space — one row per vertex of
    the face stream (six per face: the two triangles the builder
    draws), in stream order, so a row's rectangle is its
@@ -672,17 +700,24 @@ typedef struct {
     bool            present[7]; /* as the mesh has them          */
 } McmeAtlasMesh;
 
-/* Answers the mesh's texture coordinates in atlas space and its
-   colour: `bounds` naming the rectangle every row's triangle draws
-   from (its texture looked up by the rule above), `auvs` the
-   mesh's own coordinates mapped through it — the fragment stage's
-   arithmetic done here — and `tints` the mesh's tint folded the
-   builder's way, brightness and band shade (D36), the shade
-   reading the block's world height as `block_y` plus the vertex's
-   own. Answers `*out` (released with mcme_atlas_mesh_free); false
-   only on a null argument or an exhausted heap. */
+/* Answers the mesh's SURVIVING texture coordinates in atlas space
+   and its colour: `bounds` naming the rectangle every row's
+   triangle draws from (its texture looked up by the rule above),
+   `auvs` the mesh's own coordinates mapped through it — the
+   fragment stage's arithmetic done here — and `tints` the mesh's
+   tint folded the builder's way, brightness and band shade (D36),
+   the shade reading the block's world height as `block_y` plus
+   the vertex's own. The rows are the faces the cull clauses keep
+   (D37): `beside` is the transparency of the one block state
+   standing on all six sides — the neighbour's own, so a bucket
+   with a cullface answers no rows when that neighbour is opaque
+   or when both are translucent, and the none bucket answers its
+   rows under any neighbour. Answers `*out` (released with
+   mcme_atlas_mesh_free); false only on a null argument or an
+   exhausted heap. */
 bool mcme_atlas_mesh(const McmeAtlas *atlas, const McmeMesh *mesh,
-                     long block_y, McmeAtlasMesh *out);
+                     long block_y, McmeTransparency beside,
+                     McmeAtlasMesh *out);
 
 /* Releases an atlas-space mesh and everything it owns. NULL is a
    no-op. */

@@ -7,6 +7,80 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-18 — The cull clauses: the rows that survive a neighbour
+
+### Built
+
+- The table's rows are now the SURVIVORS: `mcme_atlas_mesh` grew
+  `beside` — the transparency of the one block state standing on
+  all six sides — and a bucket whose faces carry a cullface
+  answers no rows when that neighbour is opaque, or when
+  neighbour and mesh are both translucent: the builder's two skip
+  clauses over the flag alone. The none bucket never culls — its
+  faces carry no cull direction, so the test does not run for
+  them — and a full cube without cullface keeps every face even
+  embedded in stone.
+- The verb grew `--beside <block>`: the neighbour through the
+  same block prelude, its classification what the clauses read;
+  the flag pairs come in either order, each once, and a bare flag
+  or a repeat refuses with usage, exit 1. Default nothing — the
+  air answer, which fires neither clause; a spec the pack does
+  not have is the missing BLOCK, opaque, and it culls: the
+  prelude's standing answer, the loader's own.
+- A culled bucket prints the mesh document's dir and no table
+  keys — there are no rows for `bounds`, `auvs` or `tints` to
+  name. `present[]` stays the mesh's: the mesh still has the
+  bucket, the table simply answers nothing for it.
+- The resource suite gained the translucent cube (`cubea`, a
+  full cube on an alpha texture) and a cull section: cube6's
+  buckets empty beside opaque and stand beside translucent;
+  cubea's empty under both clauses and stand beside partial;
+  wrap's none bucket answers its rows under every neighbour.
+- `tools/ref_atlasmesh.py` gained the field: the neighbour fills
+  the whole 18-cube grid, padding included, except the probe's
+  own cell. Nine crafted probes pin every branch — both clauses,
+  the neither case, the exemption, the missing BLOCK on both
+  sides, the air default — each asserting both sides answer the
+  neighbour's flag alike, and the vanilla sweep repeats with
+  stone standing beside all 69 probes: 173 checks.
+
+### Notes
+
+- The reference culls on the TRANSPARENCY FLAG alone: there is
+  no full-block or shape condition, so a partial block with
+  opaque textures culls its neighbours' faces exactly like a
+  full one would. The game's own rule asks whether the
+  neighbour's shape covers the face; the map follows the
+  reference, and the reference does not ask.
+- The field culls its own faces against itself; the one face
+  that can keep is the one turned toward the probe, and only
+  when the probe's flag is neither 0 nor a matching 1. Three of
+  the probe's six neighbours are padding — read for the cull,
+  never meshed — so that leak is exactly 18 rows, in the field's
+  stream, behind the probe's own in loop order; when that stream
+  is also the probe's own (opaque field, partial probe), the
+  probe being the grid's first cell makes its rows the stream's
+  head, and the totals pin the split.
+- The completed vanilla pack answers no block translucent: the
+  shipped alpha PNGs (water, lava, the banners) are palette
+  images, which the reference's texture rule reads opaque — the
+  rule is mode == "RGBA" with any alpha != 255, D32's ground and
+  green. Real data therefore walks clause one and the exemption;
+  the chained pair lives in the crafted probes, exact.
+- Gates: battery 18/18 rc=0 with `ref_atlasmesh` at 173 checks;
+  `./mcme selftest` PASS 6 suites, 0 failures under ASan+UBSan;
+  `./rebuild.sh test` PASS. Nothing under `tests/` staged; the
+  golden stores show no tracked changes.
+
+### Next
+
+- The builder's table story is complete: which faces exist
+  (D33), where their rows draw (D35), what colour they carry
+  (D36), and which rows survive a neighbour (D37). The next
+  question stands where it did: the write-side verbs returning
+  to the world's own data, or the renderer's consumption of a
+  table the pins now answer in full.
+
 ## 2026-10-17 — The tint column: brightness and the band shade
 
 ### Built

@@ -94,14 +94,17 @@ static void print_usage(FILE *out)
         "                    square page: its size and where each\n"
         "                    texture landed as bounds; --out writes\n"
         "                    the page PNG\n"
-        "  atlasmesh <pack> <block> [--y <n>]\n"
+        "  atlasmesh <pack> <block> [--y <n>] [--beside <block>]\n"
         "                    One block state, its texture coordinates\n"
         "                    in atlas space: every row carrying the\n"
         "                    rectangle its triangle draws from, the\n"
         "                    mesh's coordinates mapped into it, and\n"
         "                    the tint under the builder's two folds;\n"
         "                    --y is the block's world height, what\n"
-        "                    the band shade reads\n"
+        "                    the band shade reads; --beside is the\n"
+        "                    block standing on all six sides — its\n"
+        "                    transparency is what the cull clauses\n"
+        "                    read, so the rows are the survivors\n"
         "  info <world>    Identify a world and summarise it\n"
         "  chunks <world>  Chunk inventory\n"
         "                    --count         print only the number\n"
@@ -1317,10 +1320,14 @@ static int cmd_atlas(const char *pack_dir, const char *out_png)
  * block's world height for the band shade, an integer of any
  * sign, default 0: the builder adds the chunk offset to the
  * vertex before shading, and the block-level verb takes the one
- * number the fold reads.
+ * number the fold reads. --beside is the block state standing on
+ * all six sides, through the same prelude — its transparency is
+ * what the cull clauses read (D37); default nothing, the air
+ * answer that fires neither clause, and a spec the pack does not
+ * have is the missing BLOCK, opaque, culling.
  */
 static int cmd_atlasmesh(const char *pack_dir, const char *spec,
-                         const char *y_arg)
+                         const char *y_arg, const char *beside_arg)
 {
     /* The block's world height for the fold: any integer, the
        wave's own input. */
@@ -1341,6 +1348,25 @@ static int cmd_atlasmesh(const char *pack_dir, const char *spec,
     int rc = build_block_mesh("atlasmesh", pack_dir, spec, &mesh,
                               &tex);
     if (rc != MCME_OK) return rc;
+
+    /* What stands beside the block on all six sides: its own mesh,
+       through the same prelude, the transparency its classification
+       answers. Nothing stands beside by default — the air answer,
+       which fires neither cull clause. */
+    McmeTransparency beside = MCME_TRANSPARENCY_PARTIAL;
+    if (beside_arg) {
+        McmeMesh bm;
+        McmeTextureIndex *btex = NULL;
+        int brc = build_block_mesh("atlasmesh", pack_dir, beside_arg,
+                                   &bm, &btex);
+        if (brc != MCME_OK) {
+            mcme_mesh_free(&mesh);
+            return brc;
+        }
+        beside = bm.transparency;
+        mcme_mesh_free(&bm);
+        mcme_texture_index_close(btex);
+    }
 
     /* The page the coordinates are in — the pack's textures plus
        the missing image, exactly what `mcme atlas` packs. */
@@ -1371,7 +1397,7 @@ static int cmd_atlasmesh(const char *pack_dir, const char *spec,
     }
 
     McmeAtlasMesh table;
-    if (!mcme_atlas_mesh(&atlas, &mesh, block_y, &table)) {
+    if (!mcme_atlas_mesh(&atlas, &mesh, block_y, beside, &table)) {
         char why[256];
         snprintf(why, sizeof why, "%s", mcme_last_error());
         mcme_set_error("atlasmesh: %s", why);
@@ -4072,13 +4098,25 @@ static int dispatch(int argc, char **argv)
     }
 
     if (strcmp(cmd, "atlasmesh") == 0) {
-        if (rest != 2 && !(rest == 4 && strcmp(args[2], "--y") == 0)) {
+        /* The trailing flags come in value pairs, either order,
+           each once: --y <n>, --beside <block>. */
+        const char *y_arg = NULL, *beside_arg = NULL;
+        bool ok = rest >= 2 && (rest - 2) % 2 == 0;
+        for (int i = 2; ok && i + 1 < rest; i += 2) {
+            const char **slot = NULL;
+            if (strcmp(args[i], "--y") == 0) slot = &y_arg;
+            else if (strcmp(args[i], "--beside") == 0)
+                slot = &beside_arg;
+            if (!slot || *slot) ok = false;  /* unknown, or twice */
+            else *slot = args[i + 1];
+        }
+        if (!ok) {
             mcme_set_error("atlasmesh: usage: mcme atlasmesh "
-                           "<pack-dir> <block> [--y <n>]");
+                           "<pack-dir> <block> [--y <n>] "
+                           "[--beside <block>]");
             return MCME_EXIT_USAGE;
         }
-        return cmd_atlasmesh(args[0], args[1],
-                             rest == 4 ? args[3] : NULL);
+        return cmd_atlasmesh(args[0], args[1], y_arg, beside_arg);
     }
 
     /* Reserved surface. These parse so the shape is settled and tests can
