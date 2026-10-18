@@ -139,10 +139,36 @@ def block_at(tag, x: int, y: int, z: int) -> str:
     props = entry.get("Properties")
     if props is not None and len(props) > 0:
         items = ", ".join(
-            f'{k}: "{v.py_data}"'
+            f"{k}: {snbt_value(v)}"
             for k, v in sorted(props.items(), key=lambda kv: kv[0].lower()))
         return f"{name}{{{items}}}"
     return name
+
+
+def snbt_value(v) -> str:
+    """The tag's own value as the spec format spells it — the
+    text `chunk get` prints back, byte for byte (D43): strings
+    quoted, the scalars bare with the suffixes mcme's writer
+    carries (a byte b, a short s, a long capital L, a float f, a
+    double d, an int bare). The walk reports the store's types
+    as they stand; mcme's set stores what it parsed, typed."""
+    if isinstance(v, amulet_nbt.StringTag):
+        return f'"{v.py_data}"'
+    if isinstance(v, amulet_nbt.ByteTag):
+        return f"{v.py_data}b"
+    if isinstance(v, amulet_nbt.ShortTag):
+        return f"{v.py_data}s"
+    if isinstance(v, amulet_nbt.IntTag):
+        return str(v.py_data)
+    if isinstance(v, amulet_nbt.LongTag):
+        return f"{v.py_data}L"
+    if isinstance(v, amulet_nbt.FloatTag):
+        return f"{v.py_data}f"
+    if isinstance(v, amulet_nbt.DoubleTag):
+        return f"{v.py_data}d"
+    if isinstance(v, amulet_nbt.BoolTag):
+        return "1b" if v.py_data else "0b"
+    return f'"{v.py_data}"'
 
 
 def palette_len(tag, y: int) -> int:

@@ -7,6 +7,74 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-18 — The spellings: what the store typed, the selection answers around
+
+### Built
+
+- The walks spell the store's OWN types: `snbt_value` in
+  ref_java_blocks, shared by both walks — strings quoted, a
+  byte bare with its b, a short s, an int bare, a long capital
+  L, a float f, a double d — the text `chunk get` prints back,
+  byte for byte. Both walks keep the case-insensitive sort:
+  mcme's own canonical order, the mixed-case probe key proving
+  the rules coincide (Zz lands after tf on both sides) rather
+  than assuming it.
+- Two probes per format: one written unsorted with mixed-case
+  keys — the sorted text is a claim against the store's own
+  insertion order — and one typed (`bit: 1b, num: 5`), both
+  through `chunk set`, both walks' verbatim spelling, and the
+  table, the variant still selecting on axis so a read that
+  mangled the states would change every row.
+- The first C change since D40: the mesh path REFUSED typed
+  states outright ("state 'bit' is not a string — Java
+  blockstate properties are strings", exit 1) — so a Bedrock
+  world whose palette carried one (most of them) could not be
+  meshed at all. The reference never refuses: its matcher
+  compares py_data against the variant's text, and a typed
+  value is never equal to text, so a typed state matches
+  NOTHING and the selection falls through around it. mcme
+  carries the state with a NULL value now — present in the
+  props, never equal in the variants pair and both multipart
+  arms — while an ABSENT property still matches by the
+  reference's own default-fill quirk, D30's ground untouched.
+  The selftest pins the rule against the quirk fixture:
+  {a: "1", b: typed} answers the second key, {a: typed}
+  answers missing. The blockstate verb's echo spells a typed
+  state from the tag's own SNBT now — round-tripping what was
+  asked, where glibc's `(null)` was leaking through its `%s`.
+- 33 checks (was 29). Three usage pins that had pinned the old
+  refusal (ref_blockstate, ref_getmodel, ref_atlasmesh) now
+  pin the reference's answer: the typed state meshes the
+  stateless one — it names no variant key, so it changes
+  nothing past the echo.
+
+### Notes
+
+- The store keeps insertion order and neither side spells it:
+  both draw mcme's canonical text from it, and the mixed-case
+  key pins that the two case-insensitive sorts agree.
+- Java stores what set parsed, typed tags included — the game's
+  own files carry string properties, but mcme's write
+  round-trips whatever the spec carried, and the walk reports
+  the types as they stand.
+- The refusal's removal is the reference's adjudication, not a
+  loosening: the anti-masquerade intent behind the refusal
+  survives intact in the never-match rule — a typed state can
+  never be read as a property a key names.
+- Gates: `./rebuild.sh test` PASS; `./mcme selftest` PASS 6
+  suites with the new cases among them; `ref_chunkmesh` 33
+  checks rc=0; battery rc=0. Nothing under `tests/` staged.
+
+### Next
+
+- The recorded limit: a variant key that NAMES a typed state is
+  unpinned through the pin's own fidelity — the pin's props are
+  strings parsed from the walk's spelling, so its reference
+  side would match "bit=1b" where the real reference would not;
+  the probes keep typed states unnamed by design. The tint
+  lookup's property reads (D36) and the atlas page's doubling
+  overflow stand where they were.
+
 ## 2026-10-18 — The second layer: the store holds water no mesh reads
 
 ### Built

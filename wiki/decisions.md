@@ -3085,3 +3085,68 @@ editor's `_sub_chunks` feeds layers rather than cell arrays,
 mcme's read stops taking the first layer (the codec's layer
 count changes or `chunk get` answers a deeper one), or the
 store's edge rule moves the fixture's key.
+
+## D43 — the spellings: what the store typed, the selection answers around
+
+What the reference does. The spec format's conventions, at the
+two points both readers meet it: keys in canonical order —
+case-insensitive, the store keeping its insertion order and both
+spellings drawing the same text from it — and values as the
+store's own tags. A variant key matches by comparing the
+property's py_data against the key's text: a string compares
+equal; a typed value (Bedrock's bytes, ints, and the rest) is
+never equal to text, so a key naming a typed state never
+matches, while a property the block LACKS matches by the
+default-fill (D30's quirk, still standing). Multipart sees the
+same truth from the other side: a typed property is in no value
+list, like an absent one.
+
+What mcme does. The store side already answered: set stores what
+it parsed, typed tags included, on both formats; get spells them
+back round-trip, keys sorted, a byte bare with its suffix. What
+didn't: the mesh path refused typed states outright — "state
+'bit' is not a string — Java blockstate properties are strings",
+exit 1 — so a Bedrock world whose palette carried a typed state
+(most of them: upside_down_bit and the like) could not be
+meshed at all, while the reference meshed the default variant
+and moved on. And the walks quoted every value, so their report
+and mcme's could never meet at a typed state. One echo leaked in
+the middle: the blockstate verb rebuilt its spec line from the
+string values alone, so a typed state printed glibc's `(null)`.
+
+How parity was measured. Two probes per format carry the
+spellings through `chunk set`, both walks' verbatim spelling,
+and the table: one written unsorted with a mixed-case key — the
+sorted text is a claim against the store's own order, and the
+key's place (Zz after tf) pins that the walks' case-insensitive
+rule and mcme's coincide — and one typed (`bit: 1b, num: 5`),
+the byte and the int spelled as the writer prints them, the
+variant still selecting on axis so a read that mangled the
+states would change every row. mcme's fix follows the
+reference's matcher: the CLI carries a typed state with a NULL
+value — present in the props, and the variants pair and both
+multipart arms treat a present-but-NULL state as never equal,
+while absent still matches by the default-fill. The blockstate
+echo spells a typed state from its tag's own SNBT, so what was
+asked comes back. The selftest pins the rule against the quirk
+fixture directly: {a: "1", b: typed} answers the second key,
+{a: typed} answers missing. Three usage pins that had pinned the
+old refusal (ref_blockstate, ref_getmodel, ref_atlasmesh) now
+pin the reference's answer — the typed state meshing the
+stateless one, naming no variant key. 33 checks rc=0; battery
+rc=0.
+
+Out of domain, recorded. A variant key that NAMES a typed state
+stays unpinned through the pin's own fidelity limit: the pin's
+props are strings parsed from the walk's spelling, so its
+reference side would match "bit=1b" where the real reference
+would not — the probes keep typed states unnamed by design. The
+tint lookup's property reads (D36) and the atlas page's
+doubling overflow stand where they were.
+
+Reverses if: the spec format's canonical order or typed
+spellings change (the writer's suffixes, the case-insensitive
+sort), the reference's matcher changes its py_data-against-text
+comparison or its default-fill quirk, the CLI starts coercing
+typed states instead of carrying them, or the walks stop
+reporting the store's types.

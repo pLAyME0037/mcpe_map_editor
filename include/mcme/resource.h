@@ -97,8 +97,11 @@ void mcme_pack_free(McmePack *pack);
  */
 
 /* One property of the queried block — a Java blockstate property,
-   always a string. Non-string properties are out of the Java
-   domain and refused by the CLI before they reach a lookup. */
+   always a string. A store's own typed state (Bedrock, or a
+   Java entry that carried one) arrives with a NULL value:
+   present, and matching nothing — the reference compares a
+   property's py_data against the variant's text, and a typed
+   value is never equal to text (D43). */
 typedef struct {
     const char *name;
     const char *value;

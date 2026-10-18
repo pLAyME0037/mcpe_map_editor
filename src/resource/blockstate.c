@@ -268,7 +268,10 @@ static bool scan_variant_pairs(const char *key,
 }
 
 /* One variant pair against the block's states. A property the block
-   lacks matches — the reference defaults it to the pair's value. */
+   lacks matches — the reference defaults it to the pair's value.
+   A state the store typed (value NULL) is PRESENT and matches
+   nothing: the reference compares its py_data against the text,
+   and a typed value is never equal to text (D43). */
 struct PairCtx {
     const McmeState *states;
     size_t           n;
@@ -284,7 +287,8 @@ static bool variant_pair(const char *name, size_t nlen,
     buf[nlen] = '\0';
 
     const McmeState *st = find_state(ctx->states, ctx->n, buf);
-    if (st && (strlen(st->value) != vlen ||
+    if (st && (st->value == NULL ||
+               strlen(st->value) != vlen ||
                strncmp(st->value, value, vlen) != 0))
         ctx->all_match = false;
     return true; /* keep scanning; all() collects every pair */
@@ -345,7 +349,9 @@ static enum WhenResult one_arm(const cJSON *arm, const McmeState *states,
         bool hit = false;
 
         if (cJSON_IsString(pair)) {
-            if (st) {
+            /* a typed state (value NULL) is in no value list,
+               same as a property the block lacks (D43) */
+            if (st && st->value) {
                 const char *v = pair->valuestring;
                 for (;;) {
                     const char *bar = strchr(v, '|');
@@ -359,7 +365,7 @@ static enum WhenResult one_arm(const cJSON *arm, const McmeState *states,
             /* absent property: None is in no list */
         } else if (cJSON_IsBool(pair)) {
             const char *want = cJSON_IsTrue(pair) ? "true" : "false";
-            hit = st && strcmp(st->value, want) == 0;
+            hit = st && st->value && strcmp(st->value, want) == 0;
         } else {
             return WHEN_ABORT; /* parse_state_val raises */
         }

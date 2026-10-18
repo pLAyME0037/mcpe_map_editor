@@ -652,10 +652,18 @@ def check_usage(mcme: str, pack: str, tmp: str, checks: int) -> int:
     if rc != 1:
         raise AssertionError(f"empty name: exit {rc}, want 1")
     checks += 1
-    rc, _out, _err = run(mcme, "atlasmesh", pack,
-                         'minecraft:atlas_cube{a:1}')
-    if rc != 1:
-        raise AssertionError(f"non-string state: exit {rc}, want 1")
+    rc, out, _err = run(mcme, "atlasmesh", pack,
+                        'minecraft:atlas_cube{a:1}')
+    if rc != 0:
+        raise AssertionError(f"typed state: exit {rc}, want 0 — the "
+                             "reference meshes on, the typed state "
+                             "matching nothing (D43)")
+    checks += 1
+    rc2, out2, _err = run(mcme, "atlasmesh", pack,
+                          "minecraft:atlas_cube")
+    if rc2 != 0 or out.split("\n", 1)[1] != out2.split("\n", 1)[1]:
+        raise AssertionError("typed state changed the mesh past the "
+                             "echo")
     checks += 1
     rc, _out, _err = run(mcme, "atlasmesh", pack,
                          "minecraft:atlas_cube", "--y")
@@ -1152,7 +1160,9 @@ def main() -> int:
 
         # --- the usage refusals, the block prelude's own ---
         checks = check_usage(args.mcme, pack, tmp, checks)
-        _log("ok — usage refusals: 1 / 2 / 1 / 1 / 1 / 1 / 1 / 1 / 1")
+        _log("ok — usage refusals: 1 / 2 / 1 / 1 / 1 / 1 / 1 / 1, "
+             "and the typed state meshing the stateless answer "
+             "(D43)")
 
         # --- the pack whose texture is not an image: each side
         # pinned to its own refusal ---

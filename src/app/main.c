@@ -704,22 +704,19 @@ static int cmd_blockstate(const char *pack_dir, const char *spec)
         return MCME_EXIT_USAGE;
     }
 
-    /* Java blockstate properties are strings — the game's own
-       domain. A numeric state is a refusal, not a coercion, so it
-       can never masquerade as a property that matches nothing. */
+    /* A state the game's own properties never spell: Java
+       properties are strings, but a store's states are its own
+       tags — Bedrock types them. The reference compares a
+       property's py_data against the variant's text, and a
+       typed value is never equal to text, so a typed state
+       MATCHES NOTHING and the selection falls through around it
+       (D43). It is carried, not coerced: a coercion could
+       masquerade as a property the key names. */
     McmeState props[64];
     size_t prop_count = 0;
     if (states) {
         for (size_t i = 0; i < states->compound.len; ++i) {
             const McmeCompoundEntry *e = &states->compound.entries[i];
-            if (e->value->type != MCME_TAG_String) {
-                mcme_set_error("blockstate: state '%.*s' is not a "
-                               "string — Java blockstate properties "
-                               "are strings",
-                               (int)e->name.len, e->name.data);
-                mcme_arena_free(arena);
-                return MCME_EXIT_USAGE;
-            }
             if (prop_count >= sizeof props / sizeof props[0]) {
                 mcme_set_error("blockstate: block '%s' has more than "
                                "%zu states", spec,
@@ -728,7 +725,8 @@ static int cmd_blockstate(const char *pack_dir, const char *spec)
                 return MCME_EXIT_USAGE;
             }
             props[prop_count].name  = e->name.data;
-            props[prop_count].value = e->value->string.data;
+            props[prop_count].value = e->value->type == MCME_TAG_String
+                ? e->value->string.data : NULL;
             prop_count++;
         }
     }
@@ -783,9 +781,25 @@ static int cmd_blockstate(const char *pack_dir, const char *spec)
         }
     } else {
         printf("%s:%s", ns, base);
-        for (size_t i = 0; i < prop_count; ++i)
-            printf("%s%s:\"%s\"", i ? "," : "{", props[i].name,
-                   props[i].value);
+        for (size_t i = 0; i < prop_count; ++i) {
+            if (props[i].value) {
+                printf("%s%s:\"%s\"", i ? "," : "{", props[i].name,
+                       props[i].value);
+            } else {
+                /* a typed state, spelled as the spec format
+                   spells it: the tag's own SNBT, round-tripping
+                   what was asked (D43) */
+                McmeBuffer out;
+                mcme_buffer_init(&out);
+                if (mcme_nbt_write_snbt(
+                        states->compound.entries[i].value, &out, 0))
+                    printf("%s%s:%.*s", i ? "," : "{",
+                           props[i].name, (int)out.len, out.data);
+                else
+                    printf("%s%s:?", i ? "," : "{", props[i].name);
+                mcme_buffer_free(&out);
+            }
+        }
         if (prop_count) printf("}");
         if (answer.missing) {
             printf("  (no blockstate in this pack)\n");
@@ -1123,22 +1137,15 @@ static int build_block_mesh(const char *verb, const char *pack_dir,
         return MCME_EXIT_USAGE;
     }
 
-    /* The block's states, as the lookup wants them — the game's
-       own domain: a non-string state is a refusal, not a
-       coercion, exactly as cmd_blockstate enforces it. */
+    /* The block's states, as the lookup wants them — a typed
+       state carried with a NULL value, exactly as
+       cmd_blockstate carries it: present, and matching nothing
+       (D43). */
     McmeState props[64];
     size_t prop_count = 0;
     if (states) {
         for (size_t i = 0; i < states->compound.len; ++i) {
             const McmeCompoundEntry *e = &states->compound.entries[i];
-            if (e->value->type != MCME_TAG_String) {
-                mcme_set_error("%s: state '%.*s' is not a "
-                               "string — Java blockstate properties "
-                               "are strings",
-                               verb, (int)e->name.len, e->name.data);
-                mcme_arena_free(arena);
-                return MCME_EXIT_USAGE;
-            }
             if (prop_count >= sizeof props / sizeof props[0]) {
                 mcme_set_error("%s: block '%s' has more than "
                                "%zu states", verb, spec,
@@ -1147,7 +1154,8 @@ static int build_block_mesh(const char *verb, const char *pack_dir,
                 return MCME_EXIT_USAGE;
             }
             props[prop_count].name  = e->name.data;
-            props[prop_count].value = e->value->string.data;
+            props[prop_count].value = e->value->type == MCME_TAG_String
+                ? e->value->string.data : NULL;
             prop_count++;
         }
     }

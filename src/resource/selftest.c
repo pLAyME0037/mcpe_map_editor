@@ -277,6 +277,18 @@ static void test_blockstates(void)
     static const McmeState a_2[] = { { "a", "2" } };
     expect_models(idx, "quirk", a_2, 1, NULL, 0, true);
 
+    /* A state the store typed (value NULL): present, and
+       matching nothing — the reference compares py_data against
+       the text, and a typed value is never equal to it (D43).
+       The other keys still match; a key naming the typed state
+       never does. */
+    static const McmeState a1_typed_b[] = {
+        { "a", "1" }, { "b", NULL } };
+    expect_models(idx, "quirk", a1_typed_b, 2,
+                  (const char *const[]){ "m2" }, 1, false);
+    static const McmeState typed_a[] = { { "a", NULL } };
+    expect_models(idx, "quirk", typed_a, 1, NULL, 0, true);
+
     /* The `|` second value is never paired: key one sees only
        x=1, fails on x=2, and key two wins. */
     static const McmeState x_2[] = { { "x", "2" } };

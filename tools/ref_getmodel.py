@@ -726,12 +726,21 @@ def main() -> int:
         if rc != 1:
             raise AssertionError(f"empty name: exit {rc}, want 1")
         checks += 1
-        rc, _out, _err = run(args.mcme, "blockmesh", pack,
-                             "minecraft:rot_x{a:1}")
-        if rc != 1:
-            raise AssertionError(f"non-string state: exit {rc}, want 1")
+        rc, out, _err = run(args.mcme, "blockmesh", pack,
+                            "minecraft:rot_x{a:1}")
+        if rc != 0:
+            raise AssertionError(f"typed state: exit {rc}, want 0 — "
+                                 "the typed state matches nothing and "
+                                 "disturbs nothing (D43)")
         checks += 1
-        _log("ok — usage refusals: 1 / 2 / 1 / 1 / 1")
+        rc2, out2, _err = run(args.mcme, "blockmesh", pack,
+                              "minecraft:rot_x")
+        if rc2 != 0 or out.split("\n", 1)[1] != out2.split("\n", 1)[1]:
+            raise AssertionError("typed state changed the mesh past "
+                                 "the echo")
+        checks += 1
+        _log("ok — usage refusals: 1 / 2 / 1 / 1, and the typed "
+             "state meshing the stateless answer (D43)")
 
         _log(f"ok — {checks} checks")
         return 0

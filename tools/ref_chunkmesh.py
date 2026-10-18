@@ -72,6 +72,20 @@ transparency: a read that surfaced the water anywhere would
 change the totals or the standing faces, and both sides would
 have to agree to be wrong together — neither is.
 
+The spellings close behind them (D43): the spec format's
+conventions, pinned where both readers meet it. Keys sort
+case-insensitively — the store keeps its insertion order and
+both spellings draw the same canonical text from it, the
+mixed-case key among the probes proving the rule rather than
+assuming it. Values are the store's OWN types, spelled the way
+`chunk get` spells them back: strings quoted, a byte bare with
+its b, an int bare, and the suffixes the writer carries for the
+rest. Two probes per format carry them — one written unsorted
+with mixed-case keys, one typed — through `chunk set`, both
+walks' verbatim spelling, and the table, the variant still
+selecting on axis so a read that mangled the states would mesh
+the default and change every row.
+
   MIXED        — one opaque cull cube with a different neighbour on
                  each side: opaque below, east and south cull those
                  faces away; a partial above, a translucent north
@@ -162,6 +176,16 @@ PROBES = [
     ((8, 109, 8), "atlas_turn", {}),
     ((8, 111, 8), "atlas_cull",
      {"east": 'atlas_turn{axis: "x"}'}),
+    # The spellings themselves: written unsorted so the sorted
+    # text is a claim, and typed so the walk's report is the
+    # store's own tags — a byte bare with its suffix, an int
+    # bare, exactly what `chunk get` prints back. The mixed-case
+    # key pins the sort's own rule (case-insensitive, both
+    # sides); the variant still selects on axis, so a read that
+    # mangled the states would mesh the default and change every
+    # row.
+    ((8, 21, 8), 'atlas_turn{zz: "1", Zz: "2", axis: "x"}', {}),
+    ((8, 24, 8), 'atlas_turn{axis: "y", bit: 1b, num: 5}', {}),
 ]
 
 # The cell the world-edge probe rests on: x = 32 is chunk (2, 0),
@@ -368,13 +392,12 @@ class BedrockWalk:
     def spec_of(entry) -> str:
         name = entry["name"].py_data
         states = entry.get("states")
-        props = {} if states is None else {
-            k: v.py_data for k, v in states.items()}
-        if not props:
+        if states is None or len(states) == 0:
             return name
         items = ", ".join(
-            f'{k}: "{v}"'
-            for k, v in sorted(props.items(), key=lambda kv: kv[0].lower()))
+            f"{k}: {J.snbt_value(v)}"
+            for k, v in sorted(states.items(),
+                               key=lambda kv: kv[0].lower()))
         return f"{name}{{{items}}}"
 
 
@@ -1090,16 +1113,15 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], world, walk,
                 x, y, z, checks, f"java probe ({x}, {y}, {z})")
-        _log("ok — java probes: 10 positions answered alike — six "
+        _log("ok — java probes: 12 positions answered alike — six "
              "different neighbours on six sides at once (the band's "
              "period), the chained pair on one side (the band's "
              "peak), a neighbour across the chunk boundary, one "
              "across the section edge, the none bucket ringed by "
              "opaque all round, the world's edge open on the sixth "
-             "side, and the states' own four: two variants "
-             "selecting different models, the un-stated default, "
-             "and a stateful neighbour whose transparency the "
-             "variant decides")
+             "side, the states' own four, and the spellings' two: "
+             "the unsorted write spelled in the canonical order, "
+             "the typed states spelled as the store holds them")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], world, walk,
             checks, "java subchunk")
@@ -1136,13 +1158,14 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
                 x, y, z, checks, f"bedrock probe ({x}, {y}, {z})")
-        _log("ok — bedrock probes: the same 10 positions answered "
+        _log("ok — bedrock probes: the same 12 positions answered "
              "alike over the other format's own data — the "
              "subchunk payloads read by amulet-core's loader, the "
              "section-edge probe crossing two of them, the chunk "
              "edge crossing two chunks, the store's own edge open "
-             "on the sixth side, and the states' four spelling "
-             "back verbatim through the store's own palette")
+             "on the sixth side, the states' four spelling back "
+             "verbatim through the store's own palette, and the "
+             "spellings' two over its typed tags")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
             checks, "bedrock subchunk")

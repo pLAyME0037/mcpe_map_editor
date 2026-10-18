@@ -392,13 +392,29 @@ def main() -> int:
             raise AssertionError(
                 f"missing pack dir: exit {rc}, want 2")
         checks += 1
-        rc, _out, _err = run(args.mcme, "blockstate", pack,
-                             "minecraft:stairs{x:1}")
-        if rc != 1:
-            raise AssertionError(
-                f"non-string state: exit {rc}, want 1")
+        rc, out, _err = run(args.mcme, "blockstate", pack,
+                            "minecraft:stairs{x:1}")
+        if rc != 0:
+            raise AssertionError(f"typed state: exit {rc}, want 0 — "
+                                 "the reference meshes on, the typed "
+                                 "state matching nothing (D43)")
         checks += 1
-        _log("ok — usage refusals: 1 / 2 / 1")
+        # The answer is the stateless one: the typed state names
+        # no variant key, so it changes nothing past the echo,
+        # which spells it as the tag stands.
+        rc2, out2, _err = run(args.mcme, "blockstate", pack,
+                              "minecraft:stairs")
+        if rc2 != 0 or out.split("\n", 1)[1] != out2.split("\n", 1)[1]:
+            raise AssertionError("typed state changed the answer "
+                                 "past the echo")
+        checks += 1
+        if not out.split("\n", 1)[0].startswith("minecraft:stairs{x:1}"):
+            raise AssertionError(f"typed echo: "
+                                 f"{out.split(chr(10), 1)[0]!r}")
+        checks += 1
+        _log("ok — usage refusals: 1 / 2, and the typed state "
+             "answering the stateless answer with its tag spelled "
+             "back (D43)")
 
         _log(f"ok — {checks} checks")
         return 0
