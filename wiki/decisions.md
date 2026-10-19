@@ -3150,3 +3150,71 @@ sort), the reference's matcher changes its py_data-against-text
 comparison or its default-fill quirk, the CLI starts coercing
 typed states instead of carrying them, or the walks stop
 reporting the store's types.
+
+## D44 — the tints: the lookup's colours, the faces that carry them
+
+What the reference does. `_get_block_tint` answers one block
+state's colour before any fold: redstone_wire's `power` and the
+stems' `age` index their tables by the state's STRING value —
+inside the minecraft namespace only — and the name table answers
+by the block's full namespaced name, defaulting (1, 1, 1). Both
+state-keyed lookups can raise, and do: a state the block lacks
+(KeyError), a state the store typed (AttributeError — D43's
+finding, reaching the tints too), a value no table holds
+(KeyError) — raised inside each apply's own try, caught there,
+so every apply is refused and the walk falls through to the
+missing block (variants) or the empty merge (multipart). The
+colour lands only where the model's face declares `tintindex` —
+presence, whatever the value — on that face's four vertices;
+every other face carries (1, 1, 1).
+
+What mcme does. The lookup is `mcme_block_tint`
+(src/resource/tint.c): the three tables transcribed as their own
+bytes divided by 255 — the same IEEE products `_get_colour`
+computes — and the rule's shape kept: the state branches only
+inside minecraft, only for a present string state, a miss
+answering false. The mesh builder's faces had 1.0 hardcoded; a
+face declaring tintindex now takes the block's colour, and the
+block-level walk hands it there before selection (one wiring
+point: every block verb funnels through the one prelude). A
+false from the lookup raises the walk's skip flag, refusing
+every apply — which the walk's own fall-through already turns
+into the missing block or the empty merge, no special case. The
+model-direct verb builds with (1, 1, 1): a model carries no
+block, so there is nothing to look up.
+
+How parity was measured. The crafted pack grew a full cube whose
+up face alone declares a tintindex, on the existing texture so
+the page stands as pinned, under five blocks: grass_block and
+birch_leaves (two name-table constants), redstone_wire at power
+5 and 15, pumpkin_stem at age 7 (the three state branches), and
+atlas_tint — a name no table holds, its tinted face white, the
+table's default beside the presence rule. Two probes pin the
+raises: power "99" (outside the table) and power absent, where
+both sides answer the missing block. Every probe rides the fold:
+the reference's builder reads the model's tint_verts, mcme's
+table carries its own, and the tinted rows must meet the
+reference's colour times brightness times shade under D36's
+machinery. The vanilla sweep no longer skips the reference's
+tinted blocks — it reports them (69 probes, 0 tinted: the
+shipped fix pack holds no tintindex models). The selftest pins
+the table direct and the tint through the walk — the raise
+answering the missing block for a variant and the empty merge
+for a multipart stem. 182 checks rc=0; battery rc=0; selftest
+PASS 6 suites.
+
+Out of domain, recorded. The pin's props are strings, so the
+Bedrock-typed power — a byte, where the reference raises
+AttributeError — is answered at the table level (the typed
+state's false) but not probed through the pin's own reference
+side, whose props are text: the same fidelity limit D43's typed
+states carry. A multipart whose cases all raise is pinned empty
+by construction; a partial raise cannot occur — the lookup is
+per block, not per case. The atlas page's doubling overflow
+stands where it was.
+
+Reverses if: the reference's three tint tables change, the
+tintindex gate moves from presence to a value, the raise's
+catch changes shape (answering something other than the
+walked-through fall-through), or the block-level walk stops
+handing the build its tint.

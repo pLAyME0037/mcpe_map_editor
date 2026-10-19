@@ -1422,6 +1422,32 @@ static void test_blockmeshes(void)
         "{\"multipart\":[{\"when\":{\"a\":\"1\"},"
         "\"apply\":{\"model\":\"mc:block/tex\"}}]}");
 
+    /* The block tint's own ground (D44): a full cube whose UP face
+       alone declares a tintindex — the tint lands on that one
+       bucket and nowhere else. */
+    put(BFIXDIR "/assets/mc/models/block/tintface.json",
+        "{\"textures\":{\"a\":\"block/opaque\"},"
+        "\"elements\":[{\"from\":[0,0,0],\"to\":[16,16,16],"
+        "\"faces\":{"
+          "\"down\":{\"texture\":\"#a\",\"cullface\":\"down\"},"
+          "\"up\":{\"texture\":\"#a\",\"cullface\":\"up\","
+                  "\"tintindex\":0},"
+          "\"north\":{\"texture\":\"#a\",\"cullface\":\"north\"},"
+          "\"east\":{\"texture\":\"#a\",\"cullface\":\"east\"},"
+          "\"south\":{\"texture\":\"#a\",\"cullface\":\"south\"},"
+          "\"west\":{\"texture\":\"#a\",\"cullface\":\"west\"}}}]}");
+    /* Three blocks under their own (minecraft) namespace, where the
+       tint's branches live: the name table, the power state, and a
+       multipart stem whose age is absent — the lookup's raise. */
+    put(BFIXDIR "/assets/minecraft/blockstates/grass_block.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/tintface\"}}}");
+    put(BFIXDIR "/assets/minecraft/blockstates/redstone_wire.json",
+        "{\"variants\":{\"\":{\"model\":\"mc:block/tintface\"}}}");
+    put(BFIXDIR "/assets/minecraft/blockstates/melon_stem.json",
+        "{\"multipart\":["
+          "{\"apply\":{\"model\":\"mc:block/tintface\"}},"
+          "{\"apply\":{\"model\":\"mc:block/tex\"}}]}");
+
     /* --- indexes --- */
     McmeBlockstateIndex *states = NULL;
     CHECK_MSG(mcme_blockstate_index_open(BFIXDIR, &states),
@@ -1454,6 +1480,157 @@ static void test_blockmeshes(void)
                                       qs_, qn_, (out)), \
                   "%s: %s", (stem), mcme_last_error()); \
     } while (0)
+
+    /* --- the block tint lookup itself (D44) --- */
+    {
+        double rgb[3];
+        static const McmeState p5[] = { { "power", "5" } };
+        static const McmeState p15[] = { { "power", "15" } };
+        static const McmeState pbad[] = { { "power", "99" } };
+        static const McmeState ptyped[] = { { "power", NULL } };
+        static const McmeState age7[] = { { "age", "7" } };
+        static const McmeState age8[] = { { "age", "8" } };
+
+        CHECK(mcme_block_tint("minecraft", "redstone_wire", p5, 1, rgb));
+        check_floats("redstone power 5", rgb, 3,
+                     (const double[]){ 153.0 / 255.0, 0, 0 }, 3);
+        CHECK(mcme_block_tint("minecraft", "redstone_wire", p15, 1, rgb));
+        check_floats("redstone power 15", rgb, 3,
+                     (const double[]){ 1.0, 50.0 / 255.0, 0 }, 3);
+        CHECK(!mcme_block_tint("minecraft", "redstone_wire", NULL, 0, rgb));
+        CHECK(!mcme_block_tint("minecraft", "redstone_wire", pbad, 1, rgb));
+        CHECK(!mcme_block_tint("minecraft", "redstone_wire", ptyped, 1,
+                               rgb));
+        CHECK(mcme_block_tint("minecraft", "melon_stem", age7, 1, rgb));
+        check_floats("stem age 7", rgb, 3,
+                     (const double[]){ 224.0 / 255.0, 199.0 / 255.0,
+                                       28.0 / 255.0 }, 3);
+        CHECK(!mcme_block_tint("minecraft", "melon_stem", NULL, 0, rgb));
+        CHECK(!mcme_block_tint("minecraft", "melon_stem", age8, 1, rgb));
+        CHECK(mcme_block_tint("minecraft", "grass_block", NULL, 0, rgb));
+        check_floats("grass_block name", rgb, 3,
+                     (const double[]){ 146.0 / 255.0, 188.0 / 255.0,
+                                       88.0 / 255.0 }, 3);
+        CHECK(mcme_block_tint("minecraft", "birch_leaves", NULL, 0, rgb));
+        check_floats("birch_leaves name", rgb, 3,
+                     (const double[]){ 128.0 / 255.0, 167.0 / 255.0,
+                                       85.0 / 255.0 }, 3);
+        CHECK(mcme_block_tint("minecraft", "oak_leaves", NULL, 0, rgb));
+        check_floats("oak_leaves name", rgb, 3,
+                     (const double[]){ 119.0 / 255.0, 171.0 / 255.0,
+                                       47.0 / 255.0 }, 3);
+        /* The name table never raises — absent, it defaults. */
+        CHECK(mcme_block_tint("minecraft", "stone", NULL, 0, rgb));
+        check_floats("stone default", rgb, 3,
+                     (const double[]){ 1, 1, 1 }, 3);
+        /* Outside the minecraft namespace the state branches never
+           run — mc:grass_block is a different block. */
+        CHECK(mcme_block_tint("mc", "grass_block", NULL, 0, rgb));
+        check_floats("mc grass_block default", rgb, 3,
+                     (const double[]){ 1, 1, 1 }, 3);
+        /* A NULL namespace reads as minecraft. */
+        CHECK(mcme_block_tint(NULL, "grass_block", NULL, 0, rgb));
+        check_floats("null ns grass_block", rgb, 3,
+                     (const double[]){ 146.0 / 255.0, 188.0 / 255.0,
+                                       88.0 / 255.0 }, 3);
+    }
+
+    /* --- the tintindex face takes the build's tint (D44) --- */
+    {
+        McmeMesh m;
+        static const double tint[3] = { 0.5, 0.25, 0.125 };
+        CHECK_MSG(mcme_mesh_build_tinted(models, tex, "mc",
+                                         "block/tintface", tint, &m),
+                  "tinted build: %s", mcme_last_error());
+        CHECK(m.present[MCME_CULL_UP]);
+        for (int i = 0; i < 12; ++i)
+            CHECK_MSG(fabs(m.buckets[MCME_CULL_UP].tint_verts[i] -
+                           tint[i % 3]) < 1e-12,
+                      "up tint vert %d is %g", i,
+                      m.buckets[MCME_CULL_UP].tint_verts[i]);
+        for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
+            if (d == MCME_CULL_UP) continue;
+            CHECK(m.present[d]);
+            for (int i = 0; i < 12; ++i)
+                CHECK_MSG(m.buckets[d].tint_verts[i] == 1.0,
+                          "bucket %d tint vert %d is %g", d, i,
+                          m.buckets[d].tint_verts[i]);
+        }
+        mcme_mesh_free(&m);
+        /* The wrapper hands (1,1,1): the tintindex face carries no
+           colour there either. */
+        CHECK(build_mesh(models, tex, "mc", "block/tintface", &m));
+        CHECK(m.present[MCME_CULL_UP]);
+        for (int i = 0; i < 12; ++i)
+            CHECK(m.buckets[MCME_CULL_UP].tint_verts[i] == 1.0);
+        mcme_mesh_free(&m);
+    }
+
+    /* --- the tint through the block-level walk (D44) --- */
+    {
+        McmeMesh m, want;
+        static const McmeState p5[] = { { "power", "5" } };
+
+        /* The power branch answers, the tintindex face carries it. */
+        CHECK_MSG(mcme_mesh_for_block(states, models, tex, "minecraft",
+                                      "redstone_wire", p5, 1, &m),
+                  "redstone powered: %s", mcme_last_error());
+        CHECK(m.present[MCME_CULL_UP]);
+        {
+            static const double want[3] = { 153.0 / 255.0, 0, 0 };
+            for (int i = 0; i < 12; ++i)
+                CHECK(fabs(m.buckets[MCME_CULL_UP].tint_verts[i] -
+                           want[i % 3]) < 1e-12);
+        }
+        mcme_mesh_free(&m);
+
+        /* The name branch, through the same walk. */
+        CHECK(mcme_mesh_for_block(states, models, tex, "minecraft",
+                                  "grass_block", NULL, 0, &m));
+        CHECK(m.present[MCME_CULL_UP]);
+        {
+            static const double want[3] = { 146.0 / 255.0,
+                                            188.0 / 255.0,
+                                            88.0 / 255.0 };
+            for (int i = 0; i < 12; ++i)
+                CHECK(fabs(m.buckets[MCME_CULL_UP].tint_verts[i] -
+                           want[i % 3]) < 1e-12);
+        }
+        mcme_mesh_free(&m);
+
+        /* The lookup raises without the power state: every apply
+           refused, the missing block answers for a variant. */
+        CHECK(mcme_mesh_for_block(states, models, tex, "minecraft",
+                                  "redstone_wire", NULL, 0, &m));
+        CHECK(mcme_mesh_missing_block(&want));
+        CHECK_MSG(m.transparency == want.transparency,
+                  "raised transparency %d want %d", m.transparency,
+                  want.transparency);
+        for (int d = 0; d < 7; ++d) {
+            CHECK_MSG(m.present[d] == want.present[d],
+                      "raised bucket %d present %d want %d", d,
+                      m.present[d], want.present[d]);
+            if (!want.present[d]) continue;
+            CHECK_MSG(m.buckets[d].vert_count ==
+                      want.buckets[d].vert_count,
+                      "raised bucket %d verts %zu want %zu", d,
+                      m.buckets[d].vert_count,
+                      want.buckets[d].vert_count);
+            for (size_t i = 0; i < m.buckets[d].vert_count * 3; ++i)
+                CHECK_MSG(m.buckets[d].tint_verts[i] == 1.0,
+                          "raised tint vert %zu is %g", i,
+                          m.buckets[d].tint_verts[i]);
+        }
+        mcme_mesh_free(&want);
+        mcme_mesh_free(&m);
+
+        /* The same raise on a multipart stem: every case refused,
+           the empty merge of none answers. */
+        CHECK(mcme_mesh_for_block(states, models, tex, "minecraft",
+                                  "melon_stem", NULL, 0, &m));
+        for (int d = 0; d < 7; ++d) CHECK(!m.present[d]);
+        mcme_mesh_free(&m);
+    }
 
     /* --- x 90: the up face turns, the none bucket stays --- */
     {

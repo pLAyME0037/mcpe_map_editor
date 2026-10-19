@@ -133,6 +133,9 @@ typedef struct {
     char **paths;
     size_t count;
     size_t cap;
+    /* The block's tint (D44): the colour the reference's lookup
+       answered, riding to every face that declares `tintindex`. */
+    double tint[3];
 } BuildCtx;
 
 static void bucket_free(McmeMeshBucket *b)
@@ -354,7 +357,7 @@ static void rotate_3d(double verts[4][3], double rx, double ry, double rz,
 static bool emit_face(BuildCtx *ctx, int dir, int cull,
                       const double box[8][3], const double uv[4],
                       int k2, uint32_t tex_index, bool have_rot,
-                      const double rot[7])
+                      const double rot[7], const double tint[3])
 {
     McmeMesh *mesh = ctx->mesh;
     mesh->present[cull] = true;
@@ -382,7 +385,7 @@ static bool emit_face(BuildCtx *ctx, int dir, int cull,
         }
         for (int j = 0; j < 3; ++j)
             if (!put_double(&mesh->buckets[cull].tint_verts,
-                           &ctx->i_n[cull], &ctx->i_cap[cull], 1.0))
+                           &ctx->i_n[cull], &ctx->i_cap[cull], tint[j]))
                 return false;
     }
 
@@ -745,8 +748,15 @@ static bool build_element(BuildCtx *ctx, const struct cJSON *el,
             else k2 = ((k2 % 8) + 8) % 8;
         }
 
+        /* The reference's per-face tint rule (D44): a face whose
+           model JSON declares `tintindex` — presence, whatever
+           the value — takes the block's tint, every other face
+           (1, 1, 1). */
+        const struct cJSON *tintj =
+            cJSON_GetObjectItemCaseSensitive(face, "tintindex");
+        static const double one[3] = { 1.0, 1.0, 1.0 };
         bool ok = emit_face(ctx, dir, cull, box, uv, k2, tex_index,
-                            have_rot, rot);
+                            have_rot, rot, tintj ? ctx->tint : one);
         free(rel);
         if (!ok) {
             mcme_set_error("mesh: out of memory");
@@ -783,10 +793,12 @@ bool mcme_mesh_missing_block(McmeMesh *out)
         box[i][2] = (i & 1)        ? 1 : 0;
     }
     double uv[4] = { 0, 0, 1, 1 };
+    static const double one[3] = { 1.0, 1.0, 1.0 };
     for (int dir = 0; dir < 6; ++dir) {
         uint32_t tex = intern_texture(&ctx, "missing_no", "missing_no");
         if (tex == (uint32_t)-1 ||
-            !emit_face(&ctx, dir, dir, box, uv, 0, tex, false, NULL)) {
+            !emit_face(&ctx, dir, dir, box, uv, 0, tex, false, NULL,
+                       one)) {
             mcme_set_error("mesh: out of memory");
             ctx_free(&ctx);
             return false;
@@ -807,6 +819,15 @@ bool mcme_mesh_build(const McmeModelIndex *models,
                      const McmeTextureIndex *textures,
                      const char *namespace, const char *path,
                      McmeMesh *out)
+{
+    return mcme_mesh_build_tinted(models, textures, namespace, path,
+                                  NULL, out);
+}
+
+bool mcme_mesh_build_tinted(const McmeModelIndex *models,
+                            const McmeTextureIndex *textures,
+                            const char *namespace, const char *path,
+                            const double tint[3], McmeMesh *out)
 {
     if (!models || !textures || !path || !out) {
         mcme_set_error("mesh build: null argument");
@@ -836,6 +857,10 @@ bool mcme_mesh_build(const McmeModelIndex *models,
     BuildCtx ctx;
     memset(&ctx, 0, sizeof ctx);
     ctx.mesh = out;
+    if (tint)
+        memcpy(ctx.tint, tint, sizeof ctx.tint);
+    else
+        ctx.tint[0] = ctx.tint[1] = ctx.tint[2] = 1.0;
 
     if (cJSON_IsArray(elements)) {
         for (const struct cJSON *el = elements->child; el; el = el->next)

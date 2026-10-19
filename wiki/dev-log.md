@@ -7,6 +7,80 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-19 — The tints: the lookup's colours, the faces that carry them
+
+### Built
+
+- The block tints, whole. The reference's lookup transcribed as
+  `mcme_block_tint` (src/resource/tint.c): the name table —
+  twenty-two blocks, the grass and foliage colours among them —
+  redstone's power 0–15, the stems' age 0–7, each colour the
+  table's own bytes divided by 255 exactly as `_get_colour`
+  does. The state-keyed branches live only inside the minecraft
+  namespace and only where the state is present and a string: a
+  missing or typed state raises in the reference (KeyError,
+  AttributeError), and false here means exactly that.
+- The per-face rule, and the plumbing that carries it. A model
+  face that declares `tintindex` — presence, whatever the value —
+  takes the block's colour on its four vertices; every other face
+  keeps (1, 1, 1). mcme's mesh builder had 1.0 hardcoded; now the
+  block-level walk hands the build the block's tint
+  (`mcme_mesh_build_tinted`), and every block verb family —
+  blockmesh, atlasmesh, chunk mesh, chunk submesh, all through
+  the one prelude — tints where the reference tints. The
+  model-direct verb builds with (1, 1, 1): a model carries no
+  block, so there is nothing to look up.
+- The raise rides the walk's own skip: every apply refused, so a
+  variant falls through to the missing block and a multipart
+  merges no cases — the empty mesh — exactly what the
+  reference's caught exception leaves behind.
+- The pin grew with it. The crafted pack gained a full cube
+  whose up face alone declares a tintindex, on the existing
+  texture so the page stands as pinned, under five blocks:
+  grass_block and birch_leaves (two name constants),
+  redstone_wire at power 5 and 15, pumpkin_stem at age 7, and
+  atlas_tint — a block no table names, its tinted face white.
+  Two more probes pin the raises: a power outside the table and
+  a power absent, both answering the missing block on both
+  sides. The D32-era exclusion (`in_tint_domain`) is gone:
+  16 crafted probes, 182 checks.
+
+### Notes
+
+- The reference applies the tint where its builder reads the
+  selected model, and the selection was already the reference's
+  (D30, battery green through D43) — so the tint was the last
+  uniform divergence under the fold, and the fold itself needed
+  no change: the table reads tint_verts off the mesh on both
+  sides, and D36's tolerance covers the float32 storage bound.
+- The vanilla sweep reports its tinted blocks now instead of
+  skipping them: 69 probes, 0 tinted — the shipped fix pack
+  holds no tintindex models and no tinted names among its
+  probes, so the real-data ground there is unchanged.
+- Selftest: the table's branches direct (power 5 and 15, the
+  table-miss, the typed NULL, the absent state, age 7 and its
+  miss, three name constants, the namespace gate, a NULL
+  namespace reading as minecraft), the tintindex face through
+  the build — tinted and the wrapper's untinted — and the walk:
+  the power and name branches through for_block, the raise
+  answering the missing block for a variant and the empty merge
+  for a multipart stem.
+- Gates: pin 182 checks rc=0; battery rc=0; `./rebuild.sh test`
+  PASS; `./mcme selftest` PASS 6 suites; `git status tests/`
+  clean.
+
+### Next
+
+- Recorded limits: the pin's props are strings, so the
+  Bedrock-typed power — a byte, where the reference raises
+  AttributeError — is answered at the table level (the typed
+  state's false) but not probed through the pin's own reference
+  side, whose props are text: the same limit D43's typed states
+  carry. A multipart whose cases all raise is pinned empty by
+  construction; a partial raise cannot occur — the lookup is
+  per block, not per case. The atlas page's doubling overflow
+  stands where it was.
+
 ## 2026-10-18 — The spellings: what the store typed, the selection answers around
 
 ### Built

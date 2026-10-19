@@ -302,7 +302,9 @@ def ref_get_model(mgr, name: str, props: dict[str, str]) -> dict:
 
 
 def ref_tint(name: str, props: dict[str, str]):
-    """The reference's own block-tint function — the exclusion rule."""
+    """The reference's own block-tint function (D44) — its exact
+    colour for one block state, or None where the lookup RAISES
+    (a missing or typed state, a value no table holds)."""
     from minecraft_model_reader.api.resource_pack.java.resource_pack_manager import (  # noqa: E501
         _get_block_tint)
 
@@ -310,15 +312,6 @@ def ref_tint(name: str, props: dict[str, str]):
         return tuple(_get_block_tint(make_block(name, props)))
     except Exception:
         return None
-
-
-def in_tint_domain(name: str, props: dict[str, str]) -> bool:
-    """D32 answers every block with the default tint; a block the
-    reference colours is out of the pin's domain."""
-    t = ref_tint(name, props)
-    return t is not None and all(
-        math.isclose(a, b, rel_tol=0, abs_tol=1e-12)
-        for a, b in zip(t, (1.0, 1.0, 1.0)))
 
 
 def build_opack(mgr):
@@ -803,6 +796,17 @@ def craft_pack(root: str) -> str:
         "cube_alpha": cube("block/alpha", False),
         # The merge partner, never probed alone.
         "cube_mag": cube("block/magenta", False),
+        # The tint's own ground (D44): a full cube whose UP face
+        # alone declares a tintindex — the reference colours that
+        # face's four vertices and no others. Existing texture, so
+        # the page and its bounds stand exactly as pinned.
+        "cube_tint": {
+            "textures": {"all": "block/red"},
+            "elements": [{"from": [0, 0, 0], "to": [16, 16, 16],
+                          "faces": {**{d: {"texture": "#all"}
+                                       for d in SIX},
+                                    "up": {"texture": "#all",
+                                           "tintindex": 0}}}]},
         # Three faces in one bucket on three textures: the 3-row
         # triangle step, three rectangles inside one face stream.
         "three_up": {
@@ -846,6 +850,15 @@ def craft_pack(root: str) -> str:
             {"apply": {"model": "mc:block/cube_mag"}}]},
         "ring_opaque": variants("ring_cube"),
         "ring_translucent": variants("ring_cubea"),
+        # The block tints (D44): the same tintface model under five
+        # blocks — two the NAME table colours, two the state
+        # branches (power, age), and one no table names, so its
+        # tintindex face stays white.
+        "grass_block": variants("cube_tint"),
+        "birch_leaves": variants("cube_tint"),
+        "redstone_wire": variants("cube_tint"),
+        "pumpkin_stem": variants("cube_tint"),
+        "atlas_tint": variants("cube_tint"),
         # States select the model (D41): three keys, first-match in
         # file order — axis=x, then axis=y, the un-stated default
         # last — each pointing at a model the pack already holds, so
@@ -869,6 +882,19 @@ CRAFTED_PROBES = [
     ("atlas_wrap", {}),     # uv past both edges: wrap, not clamp
     ("atlas_missing", {}),  # a texture the pack lacks: the sentinel
     ("atlas_merge", {}),    # multipart: two cubes, one bucket
+    # The block tints (D44): the tintindex face of cube_tint under
+    # every clause the reference's lookup answers — the name table
+    # twice, the power and age branches, the white control, and
+    # the two raises (a power outside the table, a power absent)
+    # where both sides answer the missing block.
+    ("grass_block", {}),                  # name: GrassColour
+    ("birch_leaves", {}),                 # name: birch's own
+    ("redstone_wire", {"power": "5"}),    # power: 0.6 red
+    ("redstone_wire", {"power": "15"}),   # power: full, greenish
+    ("pumpkin_stem", {"age": "7"}),       # age: the ripened stem
+    ("atlas_tint", {}),                   # tintindex, no table: 1
+    ("redstone_wire", {"power": "99"}),   # raise: not a table key
+    ("redstone_wire", {}),                # raise: no power state
 ]
 
 
@@ -1111,11 +1137,14 @@ def main() -> int:
             checks = check_probe(args.mcme, pack, mgr, opack,
                                  img.size[0], name, props, checks,
                                  "crafted")
-        _log("ok — crafted pack: 8 probes — the empty ring block, the "
+        _log("ok — crafted pack: 16 probes — the empty ring block, the "
              "none and cull buckets, the translucent stream, three "
              "rectangles in one bucket, UVs wrapped not clamped, the "
-             "sentinel behind a missing texture, and a multipart "
-             "merge — every row's rectangle, auv and tint alike")
+             "sentinel behind a missing texture, a multipart merge, "
+             "and eight block tints (D44): the name table, the power "
+             "and age branches, the white control, and the two "
+             "raises the missing block answers — every row's "
+             "rectangle, auv and tint alike")
 
         # --- the band shade over the world height: the wave the
         # builder reads out of the vertex's y, at every turn ---
@@ -1182,21 +1211,18 @@ def main() -> int:
         if img.size[0] != img.size[1]:
             raise AssertionError(f"vanilla_fix: reference page {img.size}")
         probes = vanilla_probes(completed)
-        tinted = 0
+        tinted = sum(1 for name, props in probes
+                     if ref_tint(name, props) != (1.0, 1.0, 1.0))
         for name, props in probes:
-            if not in_tint_domain(name, props):
-                tinted += 1
-                continue
             checks = check_probe(args.mcme, completed, mgr, opack,
                                  img.size[0], name, props, checks,
                                  "vanilla_fix")
-        _log(f"ok — java_vanilla_fix: {len(probes) - tinted} probes "
+        _log(f"ok — java_vanilla_fix: {len(probes)} probes "
              f"answered alike over real game data — banners, chests, "
-             f"heads and statues; {tinted} skipped as blocks the "
-             f"reference tints (the block tints stay out of domain — "
-             f"under the fold mcme's default would part company with "
-             f"the reference's colour), {wrote} opaque images behind "
-             f"the pack and the air ring it does not ship")
+             f"heads and statues, {tinted} of them blocks the "
+             f"reference tints (D44 answered those), {wrote} opaque "
+             f"images behind the pack and the air ring it does not "
+             f"ship")
 
         # --- the same sweep with a neighbour standing: opaque
         # stone culls every cullface bucket away over real data —
@@ -1211,8 +1237,6 @@ def main() -> int:
                 f"vanilla beside stone: transparency {beside_t}, want 0")
         ran = 0
         for name, props in probes:
-            if not in_tint_domain(name, props):
-                continue
             ran += 1
             checks = check_probe(
                 args.mcme, completed, mgr, opack, img.size[0],

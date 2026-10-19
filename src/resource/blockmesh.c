@@ -35,6 +35,11 @@ struct BlockMeshCtx {
     const McmeTextureIndex *textures;
     McmeMesh *parts;
     size_t    count, cap;
+    /* The block's tint (D44): its colour for every apply's build,
+       and the reference's own raise flag when the lookup raised —
+       then every apply refuses, exactly its caught exception. */
+    double    tint[3];
+    bool      tint_raised;
 };
 
 static void parts_free(struct BlockMeshCtx *ctx)
@@ -51,6 +56,15 @@ static void parts_free(struct BlockMeshCtx *ctx)
 static bool take_apply(const McmeModelRef *ref, void *ud)
 {
     struct BlockMeshCtx *ctx = ud;
+
+    if (ctx->tint_raised) {
+        /* The reference's `_get_block_tint(block)` raised inside
+           this apply's own try: caught, logged, this apply
+           refused (D44). Every apply refusing is the fall-through
+           the walk already answers — the missing block for
+           variants, the empty merge for multipart. */
+        return false;
+    }
 
     McmeMesh mesh;
     if (!ref->model) {
@@ -78,8 +92,8 @@ static bool take_apply(const McmeModelRef *ref, void *ud)
             strcpy(path, ref->model);
         }
 
-        bool built = mcme_mesh_build(ctx->models, ctx->textures, ns, path,
-                                     &mesh);
+        bool built = mcme_mesh_build_tinted(ctx->models, ctx->textures,
+                                            ns, path, ctx->tint, &mesh);
         free(ns);
         free(path);
         if (!built) return false; /* the reference's caught load */
@@ -123,7 +137,16 @@ bool mcme_mesh_for_block(const McmeBlockstateIndex *blockstates,
         return false;
     }
 
-    struct BlockMeshCtx ctx = { models, textures, NULL, 0, 0 };
+    struct BlockMeshCtx ctx = { models, textures, NULL, 0, 0,
+                                { 1.0, 1.0, 1.0 }, false };
+    /* The block's own tint before any selection (D44): the
+       reference evaluates it inside each matched branch's try, and
+       a raise there is caught per apply — this flag refuses every
+       apply below, which the walk already turns into its missing
+       block (variants) or empty merge (multipart). */
+    if (!mcme_block_tint(namespace, base_name, states, state_count,
+                         ctx.tint))
+        ctx.tint_raised = true;
     McmeSelectKind kind;
     if (!mcme_blockstate_select(blockstates, namespace, base_name, states,
                                 state_count, take_apply, &ctx, &kind)) {

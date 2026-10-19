@@ -511,6 +511,37 @@ bool mcme_mesh_build(const McmeModelIndex *models,
                      McmeMesh *out);
 
 /*
+ * mcme_mesh_build with the block's tint in hand (D44): a face
+ * whose model JSON declares `tintindex` — presence, whatever the
+ * value — takes the tint on all four of its vertices, every other
+ * face (1, 1, 1), exactly the reference's per-face rule. `tint`
+ * NULL reads as (1, 1, 1); mcme_mesh_build is this call without
+ * one.
+ */
+bool mcme_mesh_build_tinted(const McmeModelIndex *models,
+                            const McmeTextureIndex *textures,
+                            const char *namespace, const char *path,
+                            const double tint[3], McmeMesh *out);
+
+/*
+ * The block tint (D44): the colour the reference's own lookup
+ * answers for one block state, before any fold. The three
+ * sources are the reference's tables, keyed its way: the block's
+ * own namespaced name (`BlockTints`), redstone_wire's `power`,
+ * pumpkin and melon stem's `age` — the state-keyed branches only
+ * inside the minecraft namespace, and only where the state is
+ * present and a string: a missing or typed state RAISES in the
+ * reference (KeyError, AttributeError), so false here means
+ * exactly that, and the caller answers what the reference's
+ * caught exception leaves behind. Every other block answers its
+ * colour, or (1, 1, 1) when no table names it. A `namespace` NULL
+ * reads as "minecraft".
+ */
+bool mcme_block_tint(const char *namespace, const char *base_name,
+                     const McmeState *states, size_t state_count,
+                     double out[3]);
+
+/*
  * The reference's `get_missing_block`: the unit cube wearing the
  * missing image, opaque, one bucket per cull direction. It answers
  * a block the pack's blockstates do not know, and the block-level
