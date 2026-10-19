@@ -7,6 +7,57 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-19 — The growth loop: the page that was too small, twice
+
+### Built
+
+- The atlas page-growth path pinned end to end — D40's
+  recorded out, closed. The reference's loop (area estimate,
+  first-fit tree, AtlasTooSmall caught, size doubled, a fresh
+  root and every frame re-placed) was mirrored in mcme since
+  D34, but no probe ever FIRED it: the crafted "double" pack's
+  growth claim predates D35's sentinel, whose own 16x16 pixels
+  lift the estimate to 32 where the three small frames fit.
+- Two crafted packs make the loop fire, geometry found by brute
+  force against the reference's own create_atlas (the scratch
+  generated real PNGs over ~2k adversarial frame sets and
+  measured the final page against the estimate): one doubling,
+  where the widest frame sets the estimate's floor at 48 and
+  the tree strands the tall one (48 → 96), and two doublings,
+  where the area term answers 32 and the tree wastes strips at
+  32 and again at 64 (32 → 64 → 128). Both verified under the
+  pin's own input shape — sorted names, the sentinel sorting
+  last by perimeter — before entering the pin.
+- The pin compares everything after every retry: the page side,
+  every rectangle at 1e-9, and every pixel of the page — a
+  retry that reused a stale root, kept a frame's old
+  coordinates, or doubled in a different order would move every
+  rectangle. The selftest grew the same two steps C-side with
+  the reference's own placements as literals, including the
+  sentinel landing LAST, in the strip the grown page leaves
+  behind.
+
+### Notes
+
+- Pin-only: mcme's loop already answered the reference exactly —
+  D34's mirror held, and this drop is the ground that proves it.
+  The old "double" pack keeps its small layout; its growth
+  comment moved to the two new packs.
+- The growth frames live at the fixture pack's root, where the
+  texture index does not scan them (broken.png's precedent) —
+  the pack's own enumeration keeps its seven.
+- Gates: pin 89 checks rc=0; battery rc=0; `./rebuild.sh test`
+  PASS; `./mcme selftest` PASS 6 suites; `git status tests/`
+  clean.
+
+### Next
+
+- Three or more doublings share the loop's single body (the
+  retry is one for(;;)); the geometry search stopped at two, so
+  a pack needing a third is unpinned by choice, not by gap. The
+  GUI's consumption of the sub-chunk answer remains unobservable
+  (D40's record) and stands where it was.
+
 ## 2026-10-19 — The tints: the lookup's colours, the faces that carry them
 
 ### Built

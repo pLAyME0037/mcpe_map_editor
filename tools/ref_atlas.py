@@ -32,16 +32,22 @@ same paths, both sides.
 
 What is compared:
 
-  CRAFTED PACKS — six packs, each one behaviour: three 2x2s (the
+  CRAFTED PACKS — eight packs, each one behaviour: three 2x2s (the
     perimeter tie keeps the sorted input; one of them is an RGB
     image, which must expand to the same opaque RGBA as Pillow's
     paste); a 4x2 among 2x2s (the perimeter sort beats the input
     order); a lone 2x4 (the bounds' min(h, w) top edge); 2x2,
-    2x2, 3x2 (the first page estimate fails and doubles); all six
-    images together (the tall/wide tie and a mixed layout); and
-    the empty pack (the missing image alone: the app's page is
-    never empty, the manager seeding its table, so the empty pack
-    answers the sentinel's own 16x16 rectangle).
+    2x2, 3x2 (the small layout the sentinel's own 16x16 now
+    shapes — written as a growth probe before D35 seeded it); the
+    growth loop firing once (the widest frame sets the estimate's
+    floor, the tree strands the tall one, 48 doubles to 96) and
+    twice (the area term answers 32, the tree wastes strips at 32
+    and again at 64, and 128 takes them — frames re-placed from a
+    fresh root both times); all six images together (the tall/
+    wide tie and a mixed layout); and the empty pack (the missing
+    image alone: the app's page is never empty, the manager
+    seeding its table, so the empty pack answers the sentinel's
+    own 16x16 rectangle).
 
   VANILLA FIX — the reader's own shipped pack as it ships: 22
     real images — 64x64 banners tying on perimeter, 16x16 blocks,
@@ -250,11 +256,33 @@ CRAFTED = {
         "tall.png": ("RGBA", (2, 4), MAGENTA),
     },
     # The area estimate does not fit these three at size 4; the
-    # page doubles to 8 and takes them.
+    # page doubles to 8 and takes them. (Written as a growth probe
+    # when the pin stripped the sentinel; D35's own 16x16 image
+    # lifts the estimate to 32, where these three fit — the pack
+    # now pins the small layout, and the growth path itself moved
+    # to grow and grow2 below.)
     "double": {
         "a.png": ("RGBA", (2, 2), RED),
         "b.png": ("RGBA", (2, 2), GREEN),
         "s3.png": ("RGBA", (3, 2), CYAN),
+    },
+    # The growth loop firing ONCE: the widest frame sets the
+    # estimate's floor at 48, and the first-fit tree strands the
+    # tall one there — the page doubles to 96 and takes them.
+    "grow": {
+        "a.png": ("RGBA", (48, 2), RED),
+        "b.png": ("RGBA", (2, 48), GREEN),
+        "c.png": ("RGBA", (32, 16), YELLOW),
+    },
+    # And TWICE: the area term answers 32 for these five together
+    # with the sentinel, the tree wastes strips at 32 and again at
+    # 64, and 128 takes them — the loop's second pass, frames
+    # re-placed from a fresh root both times.
+    "grow2": {
+        "a.png": ("RGBA", (31, 5), RED),
+        "b.png": ("RGBA", (28, 6), GREEN),
+        "c.png": ("RGBA", (7, 29), MAGENTA),
+        "d.png": ("RGBA", (27, 8), CYAN),
     },
     # Everything together: tall and wide tie at 12 and the tie
     # keeps the sorted input (tall.png sorts first), then s3,
@@ -306,8 +334,9 @@ def main() -> int:
             checks = check_pack(args.mcme, ref, pack, tag, tmp, checks)
         _log(f"ok — crafted packs: {len(CRAFTED)} layouts answered "
              "alike — the perimeter sort and its stable ties, the "
-             "min(h, w) top edge, the doubling page, the mixed pack "
-             "and the empty one's missing-image page")
+             "min(h, w) top edge, the growth loop firing once and "
+             "twice, the mixed pack and the empty one's "
+             "missing-image page")
 
         # --- the reader's own shipped pack, real game data ---
         vanilla_fix = os.path.join(

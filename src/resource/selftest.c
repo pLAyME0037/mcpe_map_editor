@@ -1925,6 +1925,24 @@ static void test_atlases(void)
     put_solid_png(pw20, 4, 20, 2, 255, 128, 0, 255); /* orange — wider
                                                       than any page
                                                       half of 16 */
+    /* The growth loop's own frames (D45): one set the maxdim
+       floor strands once, one the area term strands twice. At the
+       pack root where the index does not scan them — only
+       mcme_atlas_build is asked about them, by explicit path. */
+    const char *p48x2 = AFIXDIR "/g_48x2.png";
+    const char *p2x48 = AFIXDIR "/g_2x48.png";
+    const char *p32x16 = AFIXDIR "/g_32x16.png";
+    const char *p31x5 = AFIXDIR "/g_31x5.png";
+    const char *p28x6 = AFIXDIR "/g_28x6.png";
+    const char *p7x29 = AFIXDIR "/g_7x29.png";
+    const char *p27x8 = AFIXDIR "/g_27x8.png";
+    put_solid_png(p48x2, 4, 48, 2, 255, 0, 0, 255);
+    put_solid_png(p2x48, 4, 2, 48, 0, 255, 0, 255);
+    put_solid_png(p32x16, 4, 32, 16, 255, 255, 0, 255);
+    put_solid_png(p31x5, 4, 31, 5, 255, 0, 0, 255);
+    put_solid_png(p28x6, 4, 28, 6, 0, 255, 0, 255);
+    put_solid_png(p7x29, 4, 7, 29, 255, 0, 255, 255);
+    put_solid_png(p27x8, 4, 27, 8, 0, 255, 255, 255);
     /* A file the loader cannot read, at the pack root where the
        index does not scan it — only the atlas is asked about it. */
     put(AFIXDIR "/broken.png", "this is not a png");
@@ -2029,6 +2047,47 @@ static void test_atlases(void)
         check_px(&a, 8, 8, 0xf8, 0, 0xf8, 255, "doubling: the missing");
         check_px(&a, 26, 1, 255, 128, 0, 255, "doubling: wide20 at 16,0");
         check_px(&a, 1, 17, 255, 0, 0, 255, "doubling: a at 0,16");
+        mcme_atlas_free(&a);
+    }
+
+    /* --- the growth loop's own steps (D45): ONCE at the
+           estimate's maxdim floor — 48 doubles to 96 — and TWICE
+           at its area term — 32 through 64 to 128, frames
+           re-placed from a fresh root both times; every
+           rectangle below is the reference's own answer --- */
+    {
+        McmeAtlas a;
+        const char *g1[] = { p48x2, p2x48, p32x16 };
+        CHECK_MSG(mcme_atlas_build(g1, 3, &a),
+                  "grow atlas: %s", mcme_last_error());
+        CHECK_MSG(a.size == 96, "grow size %d, want 96", a.size);
+        CHECK_MSG(a.count == 4, "grow count %zu, want 4", a.count);
+        /* The sentinel, perimeter-last, lands in the strip the
+           three leave behind. */
+        check_bounds(&a, 0, 2.0 / 96, 18.0 / 96, 18.0 / 96, 34.0 / 96,
+                     "grow sentinel");
+        check_bounds(&a, 1, 0.0, 0.0, 48.0 / 96, 2.0 / 96, "grow 48x2");
+        check_bounds(&a, 2, 0.0, 2.0 / 96, 2.0 / 96, 4.0 / 96,
+                     "grow 2x48");
+        check_bounds(&a, 3, 2.0 / 96, 2.0 / 96, 34.0 / 96, 18.0 / 96,
+                     "grow 32x16");
+        mcme_atlas_free(&a);
+
+        const char *g2[] = { p31x5, p28x6, p7x29, p27x8 };
+        CHECK_MSG(mcme_atlas_build(g2, 4, &a),
+                  "grow2 atlas: %s", mcme_last_error());
+        CHECK_MSG(a.size == 128, "grow2 size %d, want 128", a.size);
+        CHECK_MSG(a.count == 5, "grow2 count %zu, want 5", a.count);
+        check_bounds(&a, 0, 7.0 / 128, 5.0 / 128, 23.0 / 128,
+                     21.0 / 128, "grow2 sentinel");
+        check_bounds(&a, 1, 0.0, 0.0, 31.0 / 128, 5.0 / 128,
+                     "grow2 31x5");
+        check_bounds(&a, 2, 58.0 / 128, 0.0, 86.0 / 128, 6.0 / 128,
+                     "grow2 28x6");
+        check_bounds(&a, 3, 0.0, 5.0 / 128, 7.0 / 128, 12.0 / 128,
+                     "grow2 7x29");
+        check_bounds(&a, 4, 31.0 / 128, 0.0, 58.0 / 128, 8.0 / 128,
+                     "grow2 27x8");
         mcme_atlas_free(&a);
     }
 

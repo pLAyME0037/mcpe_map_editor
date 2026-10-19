@@ -3218,3 +3218,58 @@ tintindex gate moves from presence to a value, the raise's
 catch changes shape (answering something other than the
 walked-through fall-through), or the block-level walk stops
 handing the build its tint.
+
+## D45 — the growth loop: the page that was too small, twice
+
+What the reference does. `create_atlas` estimates the page from
+the frames alone — max(max width, max height, the smallest power
+of two at least ceil(sqrt(total pixels))) — and packs: the
+perimeter sort (stable, ties keeping the input order), then the
+first-fit region tree, each taken frame splitting its region
+into the strip below (the frame's width) and the strip right
+(the region's full height). A frame no free region holds raises
+AtlasTooSmall; the loop catches it, doubles the size, and
+retries from a FRESH root — every frame re-placed, the previous
+attempt's coordinates overwritten. A frame needs both its
+dimensions at most the region's; the bound is exact.
+
+What mcme does. Nothing new — the mirror has held since D34:
+the same estimate including the empty answer of 2, the same
+sort with the input index as the tie-break, the same tree, the
+same for(;;) with size *= 2 and a fresh root each pass. What
+was missing was the GROUND: no probe ever fired the loop. The
+crafted "double" pack predates D35's sentinel — with the
+manager's own 16x16 image in the input the estimate is 32 and
+the three small frames fit — so the growth path carried zero
+coverage on both sides while every small layout was pinned to
+the pixel.
+
+How parity was measured. Two crafted packs whose geometry the
+brute force found against the reference's own create_atlas (the
+scratch generated real PNGs over ~2k adversarial frame sets and
+measured the final page against the estimate formula): grow — a
+48x2, a 2x48 and a 32x16 with the sentinel, where the widest
+frame sets the estimate's FLOOR at 48 and the first-fit tree
+strands the tall one, doubling to 96; and grow2 — a 31x5, a
+28x6, a 7x29 and a 27x8 with the sentinel, where the area term
+answers 32 and the tree wastes strips at 32 and again at 64,
+two growth steps to 128. Both were verified under the pin's
+input shape (sorted names, the sentinel sorting last by
+perimeter) before entering the pin. The pin compares the page
+side, every rectangle at 1e-9, and every pixel after every
+retry; the selftest pins the same steps C-side with the
+reference's own placements as literals — the sentinel landing
+last, in the strip the grown page leaves behind. 89 checks
+rc=0; battery rc=0.
+
+Out of domain, recorded. Three or more doublings share the
+loop's single body — the retry is one for(;;) — and the
+geometry search stopped at two, so a pack needing a third is
+unpinned by choice, not by gap. The GUI's consumption of the
+sub-chunk answer remains unobservable (D40's record) and stands
+where it was.
+
+Reverses if: the estimate formula changes, the tree's split or
+its first-fit order changes, the retry stops rebuilding the
+root or stops re-placing every frame from scratch, or the
+perimeter sort's tie-break moves off the input order.
