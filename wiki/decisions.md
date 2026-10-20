@@ -3381,3 +3381,47 @@ palette's tags over (the StringTag wrap returns and the pin
 reverts to recording around the limit), or the store stops
 round-tripping the byte (`typed_key{bit: 1b}` would spell — and
 read — differently, and the pair's typed half would part).
+
+---
+
+## D48 — the GUI builds beside the core build
+
+**Chosen.** `./mcgui` is built by `./rebuild_gui.sh`, not by
+build.c: the build script, `cli.h`, `bedrock_write.h`, and
+`leveldb/log.c` belong to another session's work and mcme's
+drops never stage them. The script compiles `gui/*.c` with
+`pkg-config`'s GTK4 flags — the system include dirs rewritten
+to `-isystem`, because the toolkit's headers are not ours to
+lint with `-Werror` — and links them against the core objects
+`./rebuild.sh` already produced: everything but the CLI's
+`src/app/main.c`, the vendored units included, the same
+`-lm -lpthread -lz`, and the same debug sanitizers the core
+build uses. The GUI's sources live at `gui/` at the repository
+root, because build.c collects every `.c` under `src/` into
+`./mcme` and GTK's flags are not in its vocabulary.
+
+**Why.** One flag set per side, neither side guessing at the
+other: the core's flags stay where they live (build.c), the
+GUI's live in its own script, and the core objects the GUI
+links are exactly the ones the CLI was tested with. The
+alternative — GUI sources under `src/` — would put GTK headers
+into the CLI's build; the alternative — editing build.c —
+belongs to the session that owns it. The script clears its own
+object dir before compiling, so a gui source that went away
+cannot keep linking.
+
+How it was verified. `./rebuild_gui.sh` builds clean under
+`-Werror`; `./mcgui --selftest` runs the wire's checks headless
+(no display, no `gtk_init`) and asserts its own allocations are
+gone through a recoverable leak check, the binary's default
+turning LeakSanitizer off for GTK's process-lifetime caches;
+`--smoke` under broadwayd opens the window and quits at 300 ms,
+rc=0; `./rebuild.sh test` and the pin battery are unchanged
+(5 suites, 19/19) — the core bytes did not move.
+
+Reverses if: build.c becomes ours — the script retires into
+build.c's targets (a `gui` option linking `./mcgui` beside
+`./mcme`, an exclusion so `gui/` may move under `src/`), or
+D3's client shape changes to the GUI spawning `./mcme` instead
+of linking the core — then the link step goes away entirely
+and only the compile of `gui/*.c` remains.

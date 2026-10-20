@@ -7,6 +7,79 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-20 — The GUI opens: the window and its wire
+
+### Built
+
+- G1, the phase's first drop: the shell. `./mcgui` — a
+  GtkApplication (D2's GTK4, 4.24.1 as recorded then) with one
+  window, a header bar, and a label saying the shell is up.
+  Every capability stays the CLI's (D3); the window grows calls
+  with the features that need them.
+- The wire, in the shape D6 named. The core has carried
+  `mcme_eq_post`/`mcme_eq_drain` since October (a mutex and an
+  stb_ds array, GLib-free) — what was missing is the meeting
+  point, `gui/wire.c`. Workers call `mcme_wire_post` from any
+  thread: it queues into the core's own queue and, unless a
+  wake is already pending, schedules a single `g_idle_add`
+  source; the visit clears the flag before draining so a
+  handler's post wakes the NEXT visit instead of stranding,
+  and the core queue's snapshot keeps the drain from growing
+  inside itself.
+- `--selftest`: 1029 checks, headless, no `gtk_init`. The core
+  queue's FIFO over three posts and a thousand-post worker
+  thread; the snapshot (a reposting handler waits one visit);
+  the wire's wake through the real main context (two posts
+  coalesce into one wake, both run in that visit, the next
+  post wakes again); and a recoverable LeakSanitizer check —
+  every Step and queue must be gone — because the binary's
+  default turns leak detection off (GTK's process-lifetime
+  caches are not ours to free) and the selftest asserts the
+  wire's own discipline where no GTK has run.
+- `--smoke`: open the window, quit after 300 ms; under
+  broadwayd that is a gate a script can assert on, rc decides.
+- The build rides beside build.c (D48): `./rebuild_gui.sh`
+  compiles `gui/*.c` with GTK's flags — system dirs as
+  `-isystem` so toolkit headers are not linted with ours — and
+  links the core objects `./rebuild.sh` already made,
+  everything but the CLI's main, vendored units included, the
+  same `-lm -lpthread -lz` and the same debug sanitizers.
+  Stale gui objects are cleared first; a source that went away
+  must not keep linking.
+
+### Notes
+
+- `gui/` lives at the repo root, not under `src/`: build.c
+  collects every .c under src/ into ./mcme, and GTK's flags
+  are not in its vocabulary. The selftest binary stays
+  display-free; the GUI's checks run in `./mcgui` itself,
+  `--selftest`, before any window exists.
+- The first draft brought its own queue beside the core's —
+  deleted on sight: D3 says the GUI calls the same code, and
+  `mcme_eq_*` was already it. `wire.c` is an adapter, not a
+  second queue.
+- GApplication parses argv: `main()` consumes
+  `--selftest`/`--smoke` itself and hands the application an
+  empty command line.
+- The disk stalled hard mid-drop (sdb1, ext4): one uncommitted
+  source was lost and one corrupted build produced nonsense
+  results before the mount recovered. Committed work was
+  untouched; the recreated files passed on the first healthy
+  build.
+- Gates: `./rebuild_gui.sh` clean; `./mcgui --selftest` PASS
+  1029 rc=0; `--smoke` under broadwayd rc=0; battery 19/19;
+  `./rebuild.sh test` PASS (5 suites); `git status tests/`
+  clean.
+
+### Next
+
+- G2 candidates: the shell's first client call — `pack info`
+  rendered into the window (D3's client shape) — or a
+  GtkGLArea viewport with the wire carrying the first
+  worker-built mesh (D6's contract in earnest). D40's
+  GUI-consumption record starts flipping the day the drain
+  reaches a widget.
+
 ## 2026-10-20 — The pin's own fidelity: the palette's tags, not the spelling
 
 ### Built
