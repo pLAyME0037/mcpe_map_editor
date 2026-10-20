@@ -3425,3 +3425,46 @@ build.c's targets (a `gui` option linking `./mcgui` beside
 D3's client shape changes to the GUI spawning `./mcme` instead
 of linking the core — then the link step goes away entirely
 and only the compile of `gui/*.c` remains.
+
+---
+
+## D49 — the client's seam: the core function, not the command's stdout
+
+**Chosen.** The GUI calls the same core function the CLI's
+command dispatches to — `mcme pack info`'s whole computation
+is `mcme_pack_open` (D3 in practice) — and renders its own
+presentation of the answer: the same four lines the command
+prints, formatted in the GUI (`gui/packtask.c`), the mirroring
+`cmd_pack_info`'s own --json comment already blessed (one
+schema, two presentations). The command stays a thin stdout
+wrapper in `src/app/main.c`; nothing in the CLI changed.
+
+**Why.** A command's printf belongs to its frontend; the
+reading does not. Two frontends over one function can never
+disagree about what a pack IS — they can only dress it
+differently — and the GUI's worker path (glib thread →
+mcme_pack_open → the wire → the visit's label) needs the
+answer as data, not as bytes on a pipe. The refusal travels
+the same road: `mcme_last_error()`'s text copied immediately
+after the failed call, because the core's error slot is one
+global and only the worker calls core code while the loop
+thread waits.
+
+How it was verified. `./mcgui --selftest`: a crafted
+pack.mcmeta in a temp dir summarized headless — the four
+lines, format 34, the description — the named refusal for a
+directory that is not a pack, and the whole client path
+(worker → wire → loop visit) with no display; 1041 checks
+rc=0 (was 1029). `--smoke build/blockmesh_fixtures/pack`
+rc=0 (the answer lands, the exit code carries ok) and
+`--smoke /tmp/mcme-no-such-pack-dir` rc=1 (the refusal
+lands) under broadwayd; battery 19/19 and
+`./rebuild.sh test` PASS — the CLI bytes did not move.
+
+Reverses if: a command's computation can not be lifted out of
+its stdout wrapper (then the GUI either refactors the command
+to produce-then-print — touching `src/app/main.c`'s shape —
+or spawns `./mcme` and parses its stdout, the
+client-by-subprocess shape), or the core's readers grow state
+that makes them main-thread-only (then the worker path needs
+the thread pool, `mcme_tp`, and the seam moves down a layer).

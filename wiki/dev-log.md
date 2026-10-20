@@ -7,6 +7,71 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-20 — The shell's first client: pack info behind the glass
+
+### Built
+
+- G2: the client call, D3 made real. `./mcgui <pack-dir>`
+  opens the window, a worker reads the pack through
+  `mcme_pack_open` — the function `mcme pack info` dispatches
+  to — the wire wakes the loop, and the visit (the only
+  thread that may touch GTK, D6) renders the same four lines
+  the command prints, monospace, into the label. The refusal
+  arrives the same road: `mcme_last_error()`'s text copied at
+  once after the failed call (the core's error slot is one
+  global; only the worker calls core code while the loop
+  waits), rendered, and in smoke mode carried by the exit
+  code.
+- `gui/packtask.{c,h}`: `mcme_pack_summarize` (the core read
+  plus the CLI's human format, worker-side), and
+  `mcme_packtask_start` — spawns the worker, the delivery
+  rides the wire; the thread is never joined, the wire is the
+  rendezvous; the result's ownership passes to the done
+  callback on the loop thread.
+- The wire now carries real work. The selftest's new group
+  writes a crafted pack.mcmeta to a temp dir, summarizes it
+  headless (format 34, the description, the four lines),
+  checks the named refusal for a directory that is not a
+  pack, and runs the whole client path — worker → wire →
+  visit — with no display in the building. 1041 checks (was
+  1029).
+- `--smoke` grew teeth: with a pack it quits the moment the
+  answer lands, the exit code carrying it (0 the pack opened,
+  1 the refusal arrived; a 3 s never-hang backstop), so the
+  gates are `--smoke build/blockmesh_fixtures/pack` rc=0 and
+  `--smoke /tmp/mcme-no-such-pack-dir` rc=1. The
+  window-only smoke keeps G1's 300 ms quit.
+- Teardown keeps D6's contract: the window may close while a
+  worker still reads; `main` waits the task out through the
+  loop before freeing the wire.
+
+### Notes
+
+- `gtk_label_set_monospace` does not exist in this GTK4
+  (4.24.1, header checked) — the monospace is a Pango family
+  attribute.
+- The G2 rewrite of main.c dropped G1's `__asan_default_options`
+  guard and every GTK exit again reported half a meg of
+  fontconfig/pango caches; restored, and the selftest's
+  recoverable leak check still asserts the GUI's own
+  allocations where no GTK has run.
+- `cmd_pack_info` stays a stdout wrapper — presentation is the
+  frontend's; the GUI formats the same four lines by hand,
+  the mirroring `cmd_pack_info`'s own --json comment already
+  blessed (one schema, two presentations). D49 records the
+  seam.
+- Gates: `--selftest` PASS 1041 rc=0; smokes under broadwayd:
+  pack rc=0, window-only rc=0, refusal rc=1; battery 19/19;
+  `./rebuild.sh test` PASS (5 suites); `git status tests/`
+  clean.
+
+### Next
+
+- G3 candidates: a GtkFileDialog so the window opens a pack
+  without the command line, or the first worker-built mesh
+  through the wire into a GtkGLArea viewport — D6's GL half,
+  and the day D40's GUI-consumption record starts to flip.
+
 ## 2026-10-20 — The GUI opens: the window and its wire
 
 ### Built

@@ -10,21 +10,28 @@
  *   wake    — the wire's g_idle_add path through the real main
  *             context: two posts coalesce into one wake, the visit
  *             drains both, and the next post wakes again.
+ *   pack    — the first client call (D3): a crafted pack.mcmeta read
+ *             through mcme_pack_open on a worker, delivered through
+ *             the wire to the loop thread, plus the named refusal for
+ *             a directory that is not a pack.
  *
  * The core queue (src/core/event_queue.c) has no glib in it and its own
  * tests can not see a main context; these checks stand where the two
- * halves meet, and cover the queue along the way.
+ * halves meet — and where the GUI meets the core's readers — and cover
+ * the queue along the way.
  */
 
 #include "selftest.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include <glib.h>
 #include <sanitizer/lsan_interface.h>
 
 #include "mcme/core.h"
+#include "packtask.h"
 #include "wire.h"
 
 static int g_checks;
@@ -199,12 +206,78 @@ static void test_wake(void)
     mcme_wire_free(wire);
 }
 
+static int g_pack_done_calls;
+static bool g_pack_done_ok;
+
+/* Loop thread, via the wire's visit — the shape on_pack_result has. */
+static void on_pack_done(void *userdata, McmePackResult *result)
+{
+    (void)userdata;
+    g_pack_done_calls++;
+    g_pack_done_ok = result->ok;
+    mcme_packresult_free(result);
+}
+
+static void test_packtask(void)
+{
+    char dir[] = "/tmp/mcme_gui_pack_XXXXXX";
+    char path[512];
+    McmePackResult *r;
+    McmeWire *wire;
+    FILE *f;
+
+    CHECK(mkdtemp(dir) != NULL);
+    snprintf(path, sizeof(path), "%s/pack.mcmeta", dir);
+    f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f != NULL) {
+        fprintf(f, "{\"pack\":{\"pack_format\":34,"
+                   "\"description\":\"gui selftest\"}}\n");
+        fclose(f);
+    }
+
+    /* The summarize: the core's read, the CLI's four lines. */
+    r = mcme_pack_summarize(dir);
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK(r->ok);
+        CHECK(r->text != NULL && strstr(r->text, "pack_format  34") != NULL);
+        CHECK(strstr(r->text, "gui selftest") != NULL);
+        mcme_packresult_free(r);
+    }
+
+    /* The refusal, named. */
+    r = mcme_pack_summarize("/tmp/mcme-no-such-pack-dir");
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK(!r->ok);
+        CHECK(r->text != NULL && r->text[0] != '\0');
+        mcme_packresult_free(r);
+    }
+
+    /* The whole client path headless: the worker summarizes, posts
+     * through the wire, the loop's visit delivers. */
+    wire = mcme_wire_new();
+    g_pack_done_calls = 0;
+    g_pack_done_ok = false;
+    CHECK(mcme_packtask_start(wire, dir, on_pack_done, NULL));
+    while (g_pack_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_pack_done_calls == 1);
+    CHECK(g_pack_done_ok);
+    mcme_wire_free(wire);
+
+    unlink(path);
+    rmdir(dir);
+}
+
 int mcme_gui_selftest(void)
 {
     test_fifo();
     test_worker();
     test_repost();
     test_wake();
+    test_packtask();
 
     /* The binary's default turns LeakSanitizer off for GTK's caches;
      * the wire's own allocations are asserted here, where nothing has
