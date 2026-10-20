@@ -257,6 +257,16 @@ def make_block(name: str, props: dict[str, str]):
                  {k: amulet_nbt.TAG_String(v) for k, v in props.items()})
 
 
+def make_block_tags(name: str, props):
+    """The block for tags the store actually holds (D47): no
+    TAG_String wrap — a byte stays a byte between the palette and
+    the reference's matcher, which is where a typed state's
+    answer lives."""
+    from minecraft_model_reader.api import Block
+
+    return Block("minecraft", name, dict(props or {}))
+
+
 def ref_input(mgr) -> tuple[str, ...]:
     """The input both sides are handed: the manager's own table
     shape — its missing_no sentinel seeded FIRST (asserted, so the
@@ -270,13 +280,18 @@ def ref_input(mgr) -> tuple[str, ...]:
     return (missing_no_path, *sorted(paths))
 
 
-def ref_get_model(mgr, name: str, props: dict[str, str]) -> dict:
+def ref_get_model(mgr, name: str, props: dict[str, str],
+                  tags: bool = False) -> dict:
     """The reference's block-level mesh document (D33's, reused
     field for field — this pin re-pins it on the new verb and then
-    rides its buckets)."""
+    rides its buckets). `tags` hands the props through as the
+    store's own tags (D47): no TAG_String wrap between the palette
+    and the lookup, so a typed state stays typed where the
+    variant matcher and the tint read it."""
     from minecraft_model_reader.api.image import missing_no_path
 
-    m = mgr._get_model(make_block(name, props))
+    m = mgr._get_model(
+        make_block_tags(name, props) if tags else make_block(name, props))
 
     def norm(path):
         if path == missing_no_path or path == getattr(mgr, "missing_no", None):
@@ -867,6 +882,16 @@ def craft_pack(root: str) -> str:
             "axis=x": {"model": "mc:block/three_up"},
             "axis=y": {"model": "mc:block/cube_red"},
             "": {"model": "mc:block/ring_cube"}}},
+        # The variant key naming a TYPED state (D47): `bit=1b` as
+        # TEXT against the store's own tags — the byte can not
+        # equal the string (the tag types differ, whichever way
+        # the matcher reads it), so the default key answers; the
+        # store's string "1b" matches the key and takes the cull
+        # cube. Two keys, two models the pack already holds: the
+        # texture table and its page stay D34's.
+        "typed_key": {"variants": {
+            "bit=1b": {"model": "mc:block/cube_cull"},
+            "": {"model": "mc:block/cube_red"}}},
     }
     for name, doc in blockstates.items():
         write_json(os.path.join(bsdir, name + ".json"), doc)

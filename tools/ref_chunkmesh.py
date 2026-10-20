@@ -86,6 +86,22 @@ walks' verbatim spelling, and the table, the variant still
 selecting on axis so a read that mangled the states would mesh
 the default and change every row.
 
+The pin's own fidelity closes behind them (D47): every
+reference answer over a store now starts from the walk's
+PALETTE — the Properties compound (Bedrock's states) handed
+over as the tags the format wrote, not the spelling drawn from
+them, so nothing wraps a typed state in a StringTag before the
+variant matcher reads it — the probe grids and the sub-chunk's
+18-cube alike. The probes are a pair: a blockstate whose first
+key names `bit=1b` as text, probed with the store's byte — no
+key matches a byte (the tag types differ), the un-stated
+default answering — and the same key probed with the store's
+string "1b", which matches and takes the cull cube. D43's
+record named the carve-out: the string path would have matched
+"bit=1b" where the real reference does not. The pair pins the
+difference instead of recording around it, through both
+walks' tags and both formats' stores.
+
   MIXED        — one opaque cull cube with a different neighbour on
                  each side: opaque below, east and south cull those
                  faces away; a partial above, a translucent north
@@ -186,14 +202,24 @@ PROBES = [
     # row.
     ((8, 21, 8), 'atlas_turn{zz: "1", Zz: "2", axis: "x"}', {}),
     ((8, 24, 8), 'atlas_turn{axis: "y", bit: 1b, num: 5}', {}),
-    # The typed TINT state (D46): power as the store's own byte.
-    # The reference's lookup has no py_str to read it with —
+    # The typed TINT state (D46): power as the store's own byte —
+    # the reference's lookup has no py_str to read it with,
     # AttributeError inside the apply's own try, caught, the
     # missing block answering; mcme's typed NULL answers the
-    # same. The pin's own props are the walk's text ("5b"), and
-    # the table misses there too — the raise converges either
-    # way, which is what closes D44's record.
+    # same. The raise converged either way even when the pin's
+    # side was the walk's text ("5b" missing from the table);
+    # since D47 the lookup gets the byte itself, so the store's
+    # own branch stands live.
     ((8, 27, 8), 'redstone_wire{power: 5b}', {}),
+    # The variant key naming a TYPED state (D47): `bit=1b` as
+    # TEXT — the store's byte can not equal the string (the tag
+    # types differ, whichever way the matcher reads it), so the
+    # default key answers; the store's STRING "1b" matches the
+    # key and takes the cull cube. The pair pins the matcher on
+    # types rather than spellings, read through the walks' own
+    # tags the whole way — D43's record's carve-out closed.
+    ((8, 18, 8), 'typed_key{bit: "1b"}', {}),
+    ((8, 30, 8), 'typed_key{bit: 1b}', {}),
 ]
 
 # The cell the world-edge probe rests on: x = 32 is chunk (2, 0),
@@ -288,20 +314,6 @@ def _log(msg: str) -> None:
     print(f"ref_chunkmesh: {msg}", file=sys.stderr)
 
 
-def parse_spec(spec: str) -> tuple[str, dict[str, str]]:
-    """The walk's own spelling — `minecraft:oak_log{pillar_axis:
-    "x"}` — back into the (name, props) pair the reference's
-    manager wants."""
-    name, _, rest = spec.partition("{")
-    name = name.split(":", 1)[-1]
-    props = {}
-    if rest:
-        for pair in rest.rstrip("}").split(","):
-            k, _, v = pair.partition(":")
-            props[k.strip()] = v.strip().strip('"')
-    return name, props
-
-
 class WorldWalk:
     """The world's blocks through ref_java_blocks' own walk: the
     chunk each position falls in, read once, absent chunks air."""
@@ -310,8 +322,7 @@ class WorldWalk:
         self.region_root = region_root
         self.tags: dict[tuple[int, int], object] = {}
 
-    def block_at(self, x: int, y: int, z: int) -> str:
-        cx, cz = x >> 4, z >> 4
+    def _chunk(self, cx: int, cz: int):
         tag = self.tags.get((cx, cz))
         if tag is None:
             rx, rz = cx >> 5, cz >> 5
@@ -322,12 +333,31 @@ class WorldWalk:
                 # chunk by (a sub-chunk's grid reaches the chunks
                 # beside it, and the fixture world starts at 0,0).
                 self.tags[(cx, cz)] = False
-                return J.AIR
+                return False
             tag = J.walk_chunk(path, cx, cz)
             self.tags[(cx, cz)] = tag if tag is not None else False
+        return tag
+
+    def block_at(self, x: int, y: int, z: int) -> str:
+        tag = self._chunk(x >> 4, z >> 4)
         if not tag:
             return J.AIR
         return J.block_at(tag, x, y, z)
+
+    def tags_at(self, x: int, y: int, z: int) -> tuple[str, dict]:
+        """The block at a position as the STORE holds it (D47):
+        the bare name and the properties as their own tags — the
+        palette's compound handed over, no text round-trip
+        between it and the reference's lookup."""
+        tag = self._chunk(x >> 4, z >> 4)
+        entry = J.block_entry(tag, x, y, z) if tag else None
+        if entry is None:
+            return J.AIR.split(":", 1)[-1], {}
+        name = entry["Name"].py_data.split(":", 1)[-1]
+        props = entry.get("Properties")
+        if props is None or len(props) == 0:
+            return name, {}
+        return name, dict(props)
 
 
 class BedrockWalk:
@@ -408,16 +438,34 @@ class BedrockWalk:
                                key=lambda kv: kv[0].lower()))
         return f"{name}{{{items}}}"
 
+    def tags_at(self, x: int, y: int, z: int) -> tuple[str, dict]:
+        """The cell's main block as the store holds it (D47): the
+        bare name and the states as their own tags — the palette's
+        compound handed over, no text round-trip between it and
+        the reference's lookup."""
+        main, _extras = self._cell(x, y, z)
+        if main is None:
+            return J.AIR.split(":", 1)[-1], {}
+        name = main["name"].py_data.split(":", 1)[-1]
+        states = main.get("states")
+        if states is None or len(states) == 0:
+            return name, {}
+        return name, dict(states)
 
-def around(walk, x: int, y: int, z: int) -> dict[tuple, str]:
-    """The 3x3x3 specs around a position, keyed by their offset
-    from its centre — the grid the builder is handed."""
+
+def around(walk, x: int, y: int, z: int) -> dict[tuple, tuple]:
+    """The 3x3x3's cells around a position, keyed by their offset
+    from its centre — the grid the builder is handed: the walk's
+    own spelling beside the walk's own tags (D47), the palette
+    built from the second and the slot key drawn from the first,
+    the store's types standing the whole way to the matcher."""
     cells = {}
     for dx in (-1, 0, 1):
         for dy in (-1, 0, 1):
             for dz in (-1, 0, 1):
-                cells[(dx, dy, dz)] = walk.block_at(
-                    x + dx, y + dy, z + dz)
+                px, py, pz = x + dx, y + dy, z + dz
+                cells[(dx, dy, dz)] = (
+                    walk.block_at(px, py, pz), *walk.tags_at(px, py, pz))
     return cells
 
 
@@ -437,13 +485,11 @@ def ref_world_table(opack, walk: WorldWalk, x: int, y: int, z: int):
     palette = []
     index: dict[str, int] = {}
     grid = numpy.zeros((3, 3, 3), numpy.uint32)
-    for (dx, dy, dz), spec in cells.items():
-        name, props = parse_spec(spec)
-        key = A.mcme_spec(name, props)
-        if key not in index:
-            index[key] = len(palette)
-            palette.append(A.make_block(name, props))
-        grid[dx + 1, dy + 1, dz + 1] = index[key]
+    for (dx, dy, dz), (spec, name, props) in cells.items():
+        if spec not in index:
+            index[spec] = len(palette)
+            palette.append(A.make_block_tags(name, props))
+        grid[dx + 1, dy + 1, dz + 1] = index[spec]
     opack.block_model_manager = {}
     opaque, trans = A._REF.cb.create_lod0_chunk(
         opack, numpy.array([x, y, z], numpy.int64), [(grid, 0)],
@@ -526,8 +572,8 @@ def check_world_probe(mcme, packdir, mgr, opack, page: int,
     Every row must agree, bucket by bucket, the survivors the
     per-side clauses' own."""
     probe_spec = walk.block_at(x, y, z)
-    name, props = parse_spec(probe_spec)
-    want = A.ref_get_model(mgr, name, props)
+    name, props = walk.tags_at(x, y, z)
+    want = A.ref_get_model(mgr, name, props, tags=True)
     got = mcme_chunk_mesh(mcme, world, packdir, x, y, z)
 
     # The position context the verb names itself by.
@@ -578,9 +624,9 @@ def check_world_probe(mcme, packdir, mgr, opack, page: int,
     # own block through the reference's classification.
     n_t = {}
     for dname, (dx, dy, dz) in DIR_OFFSETS.items():
-        n_name, n_props = parse_spec(walk.block_at(
-            x + dx, y + dy, z + dz))
-        n_t[dname] = A.ref_get_model(mgr, n_name, n_props)["transparent"]
+        n_name, n_props = walk.tags_at(x + dx, y + dy, z + dz)
+        n_t[dname] = A.ref_get_model(
+            mgr, n_name, n_props, tags=True)["transparent"]
 
     def culled_out(dname: str) -> bool:
         return dname != "none" and (
@@ -690,10 +736,11 @@ def write_subchunk(mcme: str, world: str) -> int:
     return filled
 
 
-def subgrid_specs(walk, sub=SUB) -> dict[tuple, str]:
+def subgrid_specs(walk, sub=SUB) -> dict[tuple, tuple]:
     """Every cell the sub-chunk's grid holds, by world position —
-    the walk's reads once, the builder and the comparison both
-    drawing from them."""
+    the walk's reads once: its own spelling beside its own tags
+    (D47), the comparison drawing the first and the palette the
+    second."""
     origin = tuple(c * 16 for c in sub)
     specs = {}
     for i in range(18):
@@ -701,7 +748,7 @@ def subgrid_specs(walk, sub=SUB) -> dict[tuple, str]:
             for k in range(18):
                 p = (origin[0] + i - 1, origin[1] + j - 1,
                      origin[2] + k - 1)
-                specs[p] = walk.block_at(*p)
+                specs[p] = (walk.block_at(*p), *walk.tags_at(*p))
     return specs
 
 
@@ -716,18 +763,17 @@ def ref_subchunk(opack, specs: dict[tuple, str], sub=SUB):
 
     origin = tuple(c * 16 for c in sub)
     grid = numpy.zeros((18, 18, 18), numpy.uint32)
-    palette = [A.make_block("air", {})]
+    palette = [A.make_block_tags("air", {})]
     index = {"minecraft:air": 0}
     for i in range(18):
         for j in range(18):
             for k in range(18):
-                spec = specs[(origin[0] + i - 1,
-                              origin[1] + j - 1,
-                              origin[2] + k - 1)]
+                spec, name, props = specs[(origin[0] + i - 1,
+                                           origin[1] + j - 1,
+                                           origin[2] + k - 1)]
                 slot = index.get(spec)
                 if slot is None:
-                    palette.append(
-                        A.make_block(*parse_spec(spec)))
+                    palette.append(A.make_block_tags(name, props))
                     slot = index[spec] = len(palette) - 1
                 grid[i, j, k] = slot
     opack.block_model_manager = {}
@@ -779,10 +825,12 @@ def check_subchunk(mcme, packdir, mgr, opack, page: int, world: str,
 
     docs: dict[str, dict] = {}
 
-    def doc_for(spec: str) -> dict:
+    def doc_for(cell) -> dict:
+        spec, name, props = cell
         d = docs.get(spec)
         if d is None:
-            d = docs[spec] = A.ref_get_model(mgr, *parse_spec(spec))
+            d = docs[spec] = A.ref_get_model(mgr, name, props,
+                                             tags=True)
         return d
 
     cursor = {"opaque": 0, "translucent": 0}
@@ -793,8 +841,8 @@ def check_subchunk(mcme, packdir, mgr, opack, page: int, world: str,
                 wx = origin[0] + cx
                 wy = origin[1] + cy
                 wz = origin[2] + cz
-                spec = specs[(wx, wy, wz)]
-                doc = doc_for(spec)
+                spec, _name, _props = specs[(wx, wy, wz)]
+                doc = doc_for(specs[(wx, wy, wz)])
                 self_t = doc["transparent"]
                 stream = ("translucent" if self_t == 1 else "opaque")
                 rows = rows_t if self_t == 1 else rows_o
@@ -1121,7 +1169,7 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], world, walk,
                 x, y, z, checks, f"java probe ({x}, {y}, {z})")
-        _log("ok — java probes: 13 positions answered alike — six "
+        _log("ok — java probes: 15 positions answered alike — six "
              "different neighbours on six sides at once (the band's "
              "period), the chained pair on one side (the band's "
              "peak), a neighbour across the chunk boundary, one "
@@ -1131,7 +1179,9 @@ def main() -> int:
              "the unsorted write spelled in the canonical order, "
              "the typed states spelled as the store holds them, "
              "and the typed tint state answering the missing "
-             "block (D46)")
+             "block (D46), and the variant-key pair: the typed "
+             "state taking the default key, the string taking "
+             "the one it spells (D47)")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], world, walk,
             checks, "java subchunk")
@@ -1168,15 +1218,16 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
                 x, y, z, checks, f"bedrock probe ({x}, {y}, {z})")
-        _log("ok — bedrock probes: the same 13 positions answered "
+        _log("ok — bedrock probes: the same 15 positions answered "
              "alike over the other format's own data — the "
              "subchunk payloads read by amulet-core's loader, the "
              "section-edge probe crossing two of them, the chunk "
              "edge crossing two chunks, the store's own edge open "
              "on the sixth side, the states' four spelling back "
              "verbatim through the store's own palette, the "
-             "spellings' two over its typed tags, and the typed "
-             "tint state's missing block (D46)")
+             "spellings' two over its typed tags, the typed "
+             "tint state's missing block (D46), and the "
+             "variant-key pair over the payload's own tags (D47)")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
             checks, "bedrock subchunk")

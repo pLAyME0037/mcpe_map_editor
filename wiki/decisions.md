@@ -3323,3 +3323,61 @@ stops being per-apply (then a raise would propagate instead of
 falling through), or the store stops round-tripping the byte
 (`power: 5b` would spell differently and the probe's walk side
 would part from mcme's).
+
+## D47 — the pin's own fidelity: the palette's tags, not the spelling
+
+What the reference does. The variant matcher compares a key's
+text against the block's property TAGS: a StringTag equals the
+same text, a byte never equals any string — whichever way the
+comparison is written (`str(py_data)` or tag equality), the
+byte answers neither `1` nor `1b` against the key `1b`. D41
+pinned first-match and the default-fill quirk; D43 pinned that
+a key naming a typed state never matches — but only at the C
+level, because the pin's reference side took the walk's
+SPELLING and re-parsed it into StringTags: props were text
+before the reference ever saw them, so a store byte arrived as
+the string "1b" and the pin's own reference would have
+MATCHED the key `bit=1b` where the real one does not. That was
+recorded as out of domain.
+
+What mcme does. Nothing new — D43's matcher already answers by
+types (a typed value never equals key text, a string equals
+string), and both formats' stores round-trip tag types (D43's
+write/read ground). What changed is the PIN: every reference
+answer over a store now starts from the walk's palette entry
+itself. `block_entry` in the region walk exposes the entry,
+both walks gain `tags_at`, and `make_block_tags` /
+`ref_get_model(tags=True)` build the reference's blocks without
+the TAG_String wrap — the probe grids, the per-side
+transparency classifications, and the sub-chunk's 18-cube
+palette all riding the store's own tags.
+
+How parity was measured. A crafted blockstate `typed_key` with
+two variant keys: `bit=1b` as text first, the un-stated
+default second, both pointing at models the pack already holds
+(cube_cull, cube_red — the texture table and its page stay
+D34's). Two probes on both formats: `typed_key{bit: 1b}` — the
+store's byte, no key matches, the default answers cube_red's
+none bucket; `typed_key{bit: "1b"}` — the store's string, the
+key matches, cube_cull's six. The mesh document and every row
+of the builder's table are compared through both walks' tags,
+java and bedrock alike: 39 checks rc=0 (was 35); battery rc=0.
+The D46 probe rides the same path and now raises the record's
+REAL AttributeError (`ByteTag has no py_str`) instead of the
+string-side KeyError — same per-apply catch, same missing
+block, executed rather than argued.
+
+Out of domain, recorded. The store-side carve-outs are closed:
+the typed tint state (D46) and this matcher limit both answer
+from the store's own tags now. ref_getmodel's pack-level probes
+keep text props by design — no store stands between them and
+the lookup, so the fidelity limit never applied there. D40's
+GUI consumption of the sub-chunk answer remains unobservable.
+
+Reverses if: the reference's matcher starts stringifying typed
+states before comparing (a byte would begin matching `bit=1b`
+and the default's answer would move), a walk stops handing its
+palette's tags over (the StringTag wrap returns and the pin
+reverts to recording around the limit), or the store stops
+round-tripping the byte (`typed_key{bit: 1b}` would spell — and
+read — differently, and the pair's typed half would part).

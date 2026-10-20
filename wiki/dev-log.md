@@ -7,6 +7,61 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-20 — The pin's own fidelity: the palette's tags, not the spelling
+
+### Built
+
+- D43's record closed — on the pin's side. Every reference
+  answer over a store now starts from the walk's PALETTE: the
+  java Properties compound and Bedrock's states handed over as
+  the tags the format wrote, instead of the spelling drawn from
+  them and re-parsed into StringTags. Nothing wraps a typed
+  state before the variant matcher reads it. `block_entry`
+  exposes the region walk's palette entry itself, both walks
+  grow `tags_at`, and the probe grids, the per-side
+  neighbour classifications, and the sub-chunk's 18-cube
+  palette all build their blocks from tags (`make_block_tags`,
+  `ref_get_model`'s `tags=True`).
+- The closing probe pair: a crafted blockstate `typed_key`
+  whose first variant key names `bit=1b` as TEXT. Probed with
+  the store's byte: no key matches a byte — the tag types
+  differ, whichever way the matcher reads it — and the
+  un-stated default answers, cube_red's none bucket. Probed
+  with the store's string "1b": the key matches, cube_cull's
+  six. Same key, two stores, two answers — mcme's D43 rule
+  agrees with both, on both formats, document and table row
+  for row.
+- The D46 probe rides the tags path too: its reference side
+  now gets the REAL byte, so the pin's stderr shows the
+  record's own AttributeError (`ByteTag has no py_str`)
+  instead of the string-side KeyError — same catch, same
+  fall-through, the missing block. The convergence D46
+  recorded is executed now, not argued.
+- One probe-check per new probe per format: 39 checks (was 35).
+
+### Notes
+
+- `parse_spec` is gone — no caller left inside the pin; the
+  grammar lives where the stores spell it (`snbt_value`,
+  `spec_of`).
+- The sub-chunk path took the tags too, so the fidelity claim
+  covers the whole pin rather than the world probes alone.
+- Pin-only: mcme's matcher already answered by types (D43's C
+  ground) and both stores round-trip tag types (D43's write
+  ground), so no C changed. Gates: pin 39 checks rc=0; battery
+  rc=0; `./rebuild.sh test` PASS; `./mcme selftest` PASS 6
+  suites; `git status tests/` clean.
+
+### Next
+
+- Records standing: D40's GUI sub-chunk consumption stays
+  unobservable. ref_getmodel's pack-level probes keep text
+  props by design — no store stands between them and the
+  lookup, so the fidelity limit never applied there.
+- The store-side carve-outs are closed: D44's typed tint (D46)
+  and the variant-key matcher (this drop) both answer from the
+  store's own tags now.
+
 ## 2026-10-20 — The typed tint state: the raise converges, both ways
 
 ### Built

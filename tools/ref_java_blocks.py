@@ -115,15 +115,17 @@ def section_for(tag, y: int):
     return None
 
 
-def block_at(tag, x: int, y: int, z: int) -> str:
-    """The block at a position, unpacked the way the format packs —
-    the reference's own bits, none of mcme's."""
+def block_entry(tag, x: int, y: int, z: int):
+    """The palette entry at a position, unpacked the way the format
+    packs — the entry as the store holds it (D47): the name and
+    Properties compound standing, every value its own tag. None
+    when the section or its states are absent."""
     sec = section_for(tag, y)
     if sec is None:
-        return AIR
+        return None
     bs = sec.get("block_states")
     if bs is None:
-        return AIR
+        return None
     pal = bs["palette"]
     if len(pal) == 1:
         idx = 0
@@ -134,7 +136,15 @@ def block_at(tag, x: int, y: int, z: int) -> str:
         word, bit = divmod(pos, per_long)
         longs = bs["data"].py_data
         idx = (longs[word] >> (bit * bits)) & ((1 << bits) - 1)
-    entry = pal[idx]
+    return pal[idx]
+
+
+def block_at(tag, x: int, y: int, z: int) -> str:
+    """The block at a position, unpacked the way the format packs —
+    the reference's own bits, none of mcme's."""
+    entry = block_entry(tag, x, y, z)
+    if entry is None:
+        return AIR
     name = entry["Name"].py_data
     props = entry.get("Properties")
     if props is not None and len(props) > 0:
