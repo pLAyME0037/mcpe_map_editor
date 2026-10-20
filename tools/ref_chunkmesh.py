@@ -186,6 +186,14 @@ PROBES = [
     # row.
     ((8, 21, 8), 'atlas_turn{zz: "1", Zz: "2", axis: "x"}', {}),
     ((8, 24, 8), 'atlas_turn{axis: "y", bit: 1b, num: 5}', {}),
+    # The typed TINT state (D46): power as the store's own byte.
+    # The reference's lookup has no py_str to read it with —
+    # AttributeError inside the apply's own try, caught, the
+    # missing block answering; mcme's typed NULL answers the
+    # same. The pin's own props are the walk's text ("5b"), and
+    # the table misses there too — the raise converges either
+    # way, which is what closes D44's record.
+    ((8, 27, 8), 'redstone_wire{power: 5b}', {}),
 ]
 
 # The cell the world-edge probe rests on: x = 32 is chunk (2, 0),
@@ -1113,15 +1121,17 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], world, walk,
                 x, y, z, checks, f"java probe ({x}, {y}, {z})")
-        _log("ok — java probes: 12 positions answered alike — six "
+        _log("ok — java probes: 13 positions answered alike — six "
              "different neighbours on six sides at once (the band's "
              "period), the chained pair on one side (the band's "
              "peak), a neighbour across the chunk boundary, one "
              "across the section edge, the none bucket ringed by "
              "opaque all round, the world's edge open on the sixth "
-             "side, the states' own four, and the spellings' two: "
+             "side, the states' own four, the spellings' two: "
              "the unsorted write spelled in the canonical order, "
-             "the typed states spelled as the store holds them")
+             "the typed states spelled as the store holds them, "
+             "and the typed tint state answering the missing "
+             "block (D46)")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], world, walk,
             checks, "java subchunk")
@@ -1158,14 +1168,15 @@ def main() -> int:
             checks = check_world_probe(
                 mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
                 x, y, z, checks, f"bedrock probe ({x}, {y}, {z})")
-        _log("ok — bedrock probes: the same 12 positions answered "
+        _log("ok — bedrock probes: the same 13 positions answered "
              "alike over the other format's own data — the "
              "subchunk payloads read by amulet-core's loader, the "
              "section-edge probe crossing two of them, the chunk "
              "edge crossing two chunks, the store's own edge open "
              "on the sixth side, the states' four spelling back "
-             "verbatim through the store's own palette, and the "
-             "spellings' two over its typed tags")
+             "verbatim through the store's own palette, the "
+             "spellings' two over its typed tags, and the typed "
+             "tint state's missing block (D46)")
         checks = check_subchunk(
             mcme, pack, mgr, opack, img.size[0], bworld, bwalk,
             checks, "bedrock subchunk")

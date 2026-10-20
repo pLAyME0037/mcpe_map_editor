@@ -3273,3 +3273,53 @@ Reverses if: the estimate formula changes, the tree's split or
 its first-fit order changes, the retry stops rebuilding the
 root or stops re-placing every frame from scratch, or the
 perimeter sort's tie-break moves off the input order.
+
+## D46 — the typed tint state: the raise converges, both ways
+
+What the reference does. `_get_block_tint` reads redstone's
+power with `properties["power"].py_str` — a method only
+StringTag carries. A byte in the store raises AttributeError
+inside the apply's own try, caught there; every apply refused;
+the walk falls through to the missing block (variants) or the
+empty merge (multipart). D44 pinned the rule at the table level,
+where a missing, typed, or unlisted state answers false. What
+stayed unpinned was the REAL store's byte: the pin's own props
+are text (D43's fidelity limit), so its reference side could
+only reach the table-miss branch — KeyError on "5b" — never the
+AttributeError the store's byte raises.
+
+What mcme does. Nothing new — D44's raise already answers the
+missing block for a typed NULL power, on both formats' stores.
+What was missing is the proof that the two branches CONVERGE:
+the table-miss (string "5b") and the attribute-miss (byte 5b)
+are different exceptions at the same line, caught by the same
+try, leaving the same fall-through. The pin proves the
+convergence instead of recording around it.
+
+How parity was measured. One probe, `redstone_wire{power: 5b}`,
+at (8, 27, 8) — a free band beside D43's spelling probes, in the
+sub-chunk none of the fills touch. `chunk set` writes it with
+the store's own byte on both formats (D43's typed-write ground);
+the java region walk and the bedrock subchunk payload each read
+it back verbatim; the pin's reference side takes the walk's
+spelling ("5b" as text — the table miss) and mcme reads the byte
+(its typed NULL — the attribute miss), and both sides answer
+the missing block: the mesh document and every row of the
+builder's table, compared on both formats. 35 checks rc=0;
+battery rc=0.
+
+Out of domain, recorded. D43's variant-key limit stands and is a
+different shape: a variant key that NAMES a typed state stays
+unpinned through the pin's string fidelity — the pin's reference
+side would match "bit=1b" where the real reference would not.
+The raise converges because both exceptions leave the same
+fall-through; the matcher does not converge, because the string
+comparison itself is the answer. The GUI's consumption of the
+sub-chunk answer remains unobservable (D40's record).
+
+Reverses if: the reference's tint lookup stops raising on a
+typed state (then the missing-block answer moves), the catch
+stops being per-apply (then a raise would propagate instead of
+falling through), or the store stops round-tripping the byte
+(`power: 5b` would spell differently and the probe's walk side
+would part from mcme's).

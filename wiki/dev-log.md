@@ -7,6 +7,55 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-20 — The typed tint state: the raise converges, both ways
+
+### Built
+
+- D44's record closed, world-side. The typed tint power — a
+  byte in the store, where the reference's lookup has no py_str
+  to read and raises (AttributeError, caught inside the apply's
+  own try) — was answered at the table level only, unpinned
+  through the pin's own reference side whose props are text. The
+  world pin now probes it: a redstone_wire whose power rides the
+  store's OWN byte, written through `chunk set`, read back
+  verbatim by both walks.
+- The convergence the pin proved: the walk's spelling hands the
+  reference side the TEXT "5b" and the table misses there
+  (KeyError), while the real store hands the reference its byte
+  and the lookup raises AttributeError — different exceptions at
+  the same line, caught by the same try, leaving the same
+  fall-through: every apply refused, the missing block. mcme's
+  typed NULL answers the same. The fidelity limit's two branches
+  meet, so the carve-out is gone rather than kept.
+- One probe, both formats: the same position through the java
+  region walk and the bedrock subchunk payload, the mesh
+  document and every row of the builder's table compared —
+  35 checks (was 33).
+
+### Notes
+
+- The probe stands at (8, 27, 8) — a free band beside D43's
+  spelling probes, in the sub-chunk none of the fills touch.
+- The KeyError traceback in the pin's stderr is the reference's
+  own caught-exception log — the raise the probe is FOR, not a
+  failure.
+- Pin-only again: mcme's D44 raise already answered the missing
+  block; this drop is the world-side ground that closes the
+  record. Gates: pin 35 checks rc=0; battery rc=0;
+  `./rebuild.sh test` PASS; `./mcme selftest` PASS 6 suites;
+  `git status tests/` clean.
+
+### Next
+
+- D43's variant-key record stands and is a different shape: a
+  variant key NAMING a typed state stays unpinned through the
+  pin's string fidelity — the pin's reference side would match
+  "bit=1b" where the real reference would not. The raise
+  converges because both exceptions leave the same fall-through;
+  the matcher does not converge, because the string comparison
+  itself is the answer. The GUI's sub-chunk consumption remains
+  unobservable (D40's record) and stands where it was.
+
 ## 2026-10-19 — The growth loop: the page that was too small, twice
 
 ### Built
