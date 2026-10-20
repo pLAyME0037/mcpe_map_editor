@@ -20,8 +20,9 @@ mkdir -p build/obj/gui
 rm -f build/obj/gui/*.o
 
 # GTK's include dirs as -isystem: their headers are not ours to lint.
-gtk_cflags=$(pkg-config --cflags gtk4 | sed 's/-I/-isystem /g')
-gtk_libs=$(pkg-config --libs gtk4)
+# epoxy carries the gl* calls the viewport makes directly.
+gtk_cflags=$(pkg-config --cflags gtk4 epoxy | sed 's/-I/-isystem /g')
+gtk_libs=$(pkg-config --libs gtk4 epoxy)
 
 for src in gui/*.c; do
     obj="build/obj/gui/$(basename "$src" .c).o"

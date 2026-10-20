@@ -7,6 +7,96 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The mesh crosses: a worker-built cube behind the glass
+
+### Built
+
+- G3, D6's GL half made real: the first worker-built mesh
+  through the wire into a GtkGLArea viewport. `./mcgui
+  <pack-dir> ns:model` — the pack task opens, its answer
+  chains the mesh task (one core-calling worker at a time:
+  the error slot is one global), `mcme_mesh_build` runs on
+  the worker, the result rides the wire, and the visit hands
+  it to the viewport, whose render callback uploads the
+  staged floats and dresses them (D50's seam).
+- `gui/task.{c,h}`: spawn-and-deliver — `mcme_task_start`
+  (five args, no free function): the worker computes, the
+  delivery rides the wire; a failed worker posts its result
+  with the refusal text and never runs the done callback on
+  the worker thread.
+- `gui/packtask.c` rewritten over it (same public API;
+  `McmePackResult` stays in packtask.h); `gui/meshtask.{c,h}`
+  — fresh model and texture indices per job, the answer
+  copied out at once.
+- `gui/viewport.{c,h}`: two halves, one thread rule. The
+  staging half is pure arithmetic and runs headless in the
+  selftest — interleaved position+tint floats merged across
+  the mesh's seven buckets, an index past its bucket's
+  vertices refused at the door. The GL half runs only inside
+  GtkGLArea's callbacks (GLES `#version 300 es`, a
+  hand-rolled perspective·tilt·turn·center MVP, depth on, no
+  culling — the builder's winding is its own business).
+- `main.c`: the box is [viewport, mesh label, pack label];
+  `--smoke` grew the mesh cases with the exit codes 0 = both
+  halves and the frame drew, 1 = refusal or never drew, 2 =
+  GL gave out; the frame-wait holds only when a mesh was
+  actually asked and built, and the 3 s backstop keeps every
+  gate from hanging.
+- Selftest +74 (the mesh task's worker→wire→visit path, the
+  staging headless): 1115 checks, still with no display in
+  the building.
+
+### Notes
+
+- The first display smokes hung at 99 % userspace CPU — an
+  mmap/madvise flood with `/proc/self/maps` reads, before
+  `main`'s first print, while `--selftest` passed every time.
+  `kill -SEGV` on the wedged process made ASan's
+  deadly-signal handler print the truth: the main thread was
+  inside `libGLX_nvidia` → `libnvidia-glcore` 580.159.03's
+  init, spinning through ASan's string interceptors — the
+  driver's enumeration against ASan's 15 TB shadow. A
+  no-sanitizer mirror build in /tmp ran the same code clean.
+- The nvidia vendor now never loads: two empty stub `.so`s
+  shadowing `libGLX_nvidia.so.0`/`libEGL_nvidia.so.0` via
+  `LD_LIBRARY_PATH` (GLVND dlopens vendors by SONAME), plus
+  `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`. The
+  mesa EGL pin alone did not help — the GLX side loads
+  regardless — and the first attempt pointed at a
+  nonexistent `10_mesa.json` (the file is `50_mesa.json`).
+- True broadway is GL-less by design ("The current backend
+  does not support OpenGL"), so the mesh smokes ran on the
+  session's wayland display (an x11 run too). And
+  `/usr/bin/broadwayd` on this box is **gtk3's** server —
+  abstract sockets, GTK3 protocol — while the client is
+  GTK4; gtk4's server is `/usr/bin/gtk4-broadwayd`
+  (filesystem sockets).
+- Two real bugs, both found by the gates: the frame-wait
+  also held when no mesh was asked (pack-only fell to the
+  backstop's rc=1 instead of settling at once), and the
+  model argument split passed `"mc:block/cull6"` whole as
+  the namespace — the core answered the unknown model with
+  the empty mesh (its answer-not-failure rule, resource.h),
+  so the frame waited on nothing. The split now mirrors the
+  CLI's: bytes before the colon are the namespace, the rest
+  the path — `mc:block/cull6` is model `block/cull6` in
+  namespace `mc`.
+- Gates: `--selftest` PASS 1115 rc=0; smokes (wayland,
+  nvidia-stubbed llvmpipe): window-only rc=0, pack-only
+  rc=0, pack+mesh `mc:block/cull6` rc=0 with `pack=ok
+  mesh=ok drew=1 gl_failed=0` on stderr, refusal
+  `mc:block/full_missing` rc=1; an x11 pack+mesh rc=0;
+  battery 19/19; `./rebuild.sh test` PASS; `git status
+  tests/` clean.
+
+### Next
+
+- G4 candidates: a GtkFileDialog so the window opens a pack
+  without the command line, or the viewport's next seam —
+  block textures behind the glass (today the shader dresses
+  vertices by tint alone), or D40's GUI-consumption record
+  starts to flip.
+
 ## 2026-10-20 — The shell's first client: pack info behind the glass
 
 ### Built

@@ -1,8 +1,8 @@
 /*
- * See packtask.h. One worker per started task; it outlives the call
- * that started it (g_thread_unref right after creation — nobody joins,
- * the wire is the rendezvous), and the delivery runs on the loop
- * thread, which is the only thread allowed to touch a widget.
+ * See packtask.h. The G2 client, now riding the shared spawn-and-
+ * deliver layer (gui/task.c): this file keeps the typed seams — the
+ * summarize, the result, the trampoline that hands McmePackResult to
+ * the caller's callback on the loop thread.
  */
 
 #include "packtask.h"
@@ -10,19 +10,7 @@
 #include <glib.h>
 
 #include "mcme/resource.h" /* mcme_pack_open — the CLI's dispatch target */
-
-typedef struct {
-    McmeWire *wire;
-    char *dir;
-    McmePackDoneFn done;
-    void *userdata;
-} Job;
-
-typedef struct {
-    McmePackDoneFn done;
-    void *userdata;
-    McmePackResult *result;
-} Delivery;
+#include "task.h"
 
 McmePackResult *mcme_pack_summarize(const char *dir)
 {
@@ -60,47 +48,57 @@ void mcme_packresult_free(McmePackResult *result)
     g_free(result);
 }
 
-static void deliver(void *userdata)
-{
-    Delivery *d = userdata;
+typedef struct {
+    char *dir;
+} PackWork;
 
-    d->done(d->userdata, d->result); /* done owns the result now */
-    g_slice_free(Delivery, d);
+typedef struct {
+    McmePackDoneFn fn;
+    void *userdata;
+} PackDone;
+
+static void *pack_work(void *work_ud)
+{
+    PackWork *w = work_ud;
+    McmePackResult *result = mcme_pack_summarize(w->dir);
+
+    g_free(w->dir);
+    g_free(w);
+    return result;
 }
 
-static gpointer run_job(gpointer data)
+static void pack_deliver(void *done_ud, void *result)
 {
-    Job *job = data;
-    Delivery *d = g_slice_new(Delivery);
+    PackDone *d = done_ud;
 
-    d->done = job->done;
-    d->userdata = job->userdata;
-    d->result = mcme_pack_summarize(job->dir);
-    if (!mcme_wire_post(job->wire, deliver, d)) {
-        mcme_packresult_free(d->result);
-        g_slice_free(Delivery, d);
-    }
-    g_free(job->dir);
-    g_slice_free(Job, job);
-    return NULL;
+    d->fn(d->userdata, (McmePackResult *)result);
+    g_free(d);
 }
 
 bool mcme_packtask_start(McmeWire *wire, const char *dir,
                          McmePackDoneFn done, void *userdata)
 {
-    Job *job;
-    GThread *t;
+    PackWork *w;
+    PackDone *d;
 
     if (wire == NULL || dir == NULL || done == NULL) return false;
 
-    job = g_try_new0(Job, 1);
-    if (job == NULL) return false;
-    job->wire = wire;
-    job->dir = g_strdup(dir);
-    job->done = done;
-    job->userdata = userdata;
+    w = g_try_new0(PackWork, 1);
+    d = g_try_new0(PackDone, 1);
+    if (w == NULL || d == NULL) {
+        g_free(w);
+        g_free(d);
+        return false;
+    }
+    w->dir = g_strdup(dir);
+    d->fn = done;
+    d->userdata = userdata;
 
-    t = g_thread_new("pack-info", run_job, job);
-    g_thread_unref(t); /* nobody joins: the wire is the rendezvous */
+    if (!mcme_task_start(wire, pack_work, w, pack_deliver, d)) {
+        g_free(w->dir);
+        g_free(w);
+        g_free(d);
+        return false;
+    }
     return true;
 }

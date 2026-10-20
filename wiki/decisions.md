@@ -3468,3 +3468,54 @@ or spawns `./mcme` and parses its stdout, the
 client-by-subprocess shape), or the core's readers grow state
 that makes them main-thread-only (then the worker path needs
 the thread pool, `mcme_tp`, and the seam moves down a layer).
+
+---
+
+## D50 — the GL seam: data crosses the wire, the callback uploads and dresses
+
+**Chosen.** The mesh crosses the seam as data: the worker's
+`McmeMeshResult` rides the wire to the loop thread, the
+visit hands it to the viewport, and only the render callback
+— inside GtkGLArea's own callbacks, where the context is
+current — stages it into GPU buffers and dresses it:
+interleaved position+tint floats merged across the mesh's
+seven buckets, a fixed presentation camera (perspective ·
+tilt · turn · center), depth on, no face culling.
+
+**Why.** D6's thread rule: no `gl*` call ever touches a
+worker — GL calls belong where the context is current, and
+GTK owns that place. Dressing (camera, clear color, later
+textures) is presentation, not data — the same line D49
+drew for the label's four lines. Staging is pure arithmetic
+and runs headless in the selftest; the GL half is thin
+upload-and-draw.
+
+**Rejected.**
+- *Building GL buffers on the worker with a shared
+  context*: needs a second context and its own
+  synchronization; nothing the worker does needs the GPU.
+- *Backface culling at the seam*: the builder's winding is
+  its own business (the cull directions are data, D46); the
+  depth buffer settles visibility either way, and a winding
+  pin belongs in the mesher's tests, not the frontend's
+  draw.
+- *The mesh crossing as serialized bytes*: the wire is
+  in-process (an fd pair carrying tagged pointers);
+  serializing would copy the bucket arrays for no isolation
+  they need.
+
+**How verified.** `./mcgui --selftest` 1115 rc=0 — the
+staging half headless (the bucket merge, the out-of-bounds
+index refused at the door) and the mesh task's
+worker→wire→visit path; display smokes: pack+mesh
+`mc:block/cull6` rc=0 with `pack=ok mesh=ok drew=1
+gl_failed=0`, refusal `mc:block/full_missing` rc=1,
+window-only and pack-only rc=0, an x11 variation rc=0 (env:
+nvidia-stubbed llvmpipe — the driver wedge is recorded in
+the G3 log entry); battery 19/19; `./rebuild.sh test` PASS.
+
+**Reverses if:** the mesh ever needs GL-side building (a
+context-sharing worker pool), or backface culling pins
+winding at this layer and the pins demand it — then the
+seam moves: the render callback grows a builder, or the
+staging half grows a winding decision.
