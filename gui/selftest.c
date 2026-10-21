@@ -220,6 +220,8 @@ static void test_wake(void)
 
 static int g_pack_done_calls;
 static bool g_pack_done_ok;
+static size_t g_pack_done_models;
+static bool g_pack_done_has_pick;
 
 /* Loop thread, via the wire's visit — the shape on_pack_result has. */
 static void on_pack_done(void *userdata, McmePackResult *result)
@@ -227,8 +229,16 @@ static void on_pack_done(void *userdata, McmePackResult *result)
     (void)userdata;
     g_pack_done_calls++;
     g_pack_done_ok = result->ok;
+    g_pack_done_models = result->model_count;
+    g_pack_done_has_pick = false;
+    for (size_t i = 0; i < result->model_count; ++i)
+        if (result->models[i] != NULL &&
+            strcmp(result->models[i], "mc:block/pick") == 0)
+            g_pack_done_has_pick = true;
     mcme_packresult_free(result);
 }
+
+static void write_file(const char *path, const char *text);
 
 static void test_packtask(void)
 {
@@ -247,23 +257,36 @@ static void test_packtask(void)
                    "\"description\":\"gui selftest\"}}\n");
         fclose(f);
     }
+    /* One model, so the result's list has something to carry. */
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block", dir);
+    CHECK(mcme_fs_mkdir_p(path));
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block/pick.json",
+             dir);
+    write_file(path, "{\"textures\":{\"a\":\"t/a\"}}\n");
 
-    /* The summarize: the core's read, the CLI's four lines. */
+    /* The summarize: the core's read, the CLI's four lines, and the
+       pack's one model as "ns:path" (D53's list, walk order). */
     r = mcme_pack_summarize(dir);
     CHECK(r != NULL);
     if (r != NULL) {
         CHECK(r->ok);
         CHECK(r->text != NULL && strstr(r->text, "pack_format  34") != NULL);
         CHECK(strstr(r->text, "gui selftest") != NULL);
+        CHECK(r->model_count == 1);
+        CHECK(r->models != NULL && r->models[0] != NULL &&
+              strcmp(r->models[0], "mc:block/pick") == 0);
+        CHECK(r->models != NULL && r->models[1] == NULL);
         mcme_packresult_free(r);
     }
 
-    /* The refusal, named. */
+    /* The refusal, named, with no list at all. */
     r = mcme_pack_summarize("/tmp/mcme-no-such-pack-dir");
     CHECK(r != NULL);
     if (r != NULL) {
         CHECK(!r->ok);
         CHECK(r->text != NULL && r->text[0] != '\0');
+        CHECK(r->model_count == 0);
+        CHECK(r->models == NULL);
         mcme_packresult_free(r);
     }
 
@@ -272,13 +295,27 @@ static void test_packtask(void)
     wire = mcme_wire_new();
     g_pack_done_calls = 0;
     g_pack_done_ok = false;
+    g_pack_done_models = 99;
+    g_pack_done_has_pick = false;
     CHECK(mcme_packtask_start(wire, dir, on_pack_done, NULL));
     while (g_pack_done_calls == 0)
         g_main_context_iteration(NULL, TRUE);
     CHECK(g_pack_done_calls == 1);
     CHECK(g_pack_done_ok);
+    CHECK(g_pack_done_models == 1);
+    CHECK(g_pack_done_has_pick);
     mcme_wire_free(wire);
 
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/models", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/mc", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/pack.mcmeta", dir);
     unlink(path);
     rmdir(dir);
 }

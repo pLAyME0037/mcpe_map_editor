@@ -12,6 +12,42 @@
 #include "mcme/resource.h" /* mcme_pack_open — the CLI's dispatch target */
 #include "task.h"
 
+/* The pack's models, joined "ns:path" in the index's own walk order.
+   A list that will not build whole is no list at all. */
+static void pack_models(McmePackResult *r, const char *dir)
+{
+    McmeModelIndex *models = NULL;
+    size_t n, built = 0;
+
+    if (!mcme_model_index_open(dir, &models)) return;
+    n = mcme_model_count(models);
+    if (n == 0) {
+        mcme_model_index_close(models);
+        return;
+    }
+    r->models = g_try_malloc((n + 1) * sizeof *r->models);
+    if (r->models != NULL) {
+        while (built < n) {
+            const char *ns = NULL, *path = NULL;
+
+            if (!mcme_model_at(models, built, &ns, &path)) break;
+            r->models[built] = g_strdup_printf("%s:%s", ns, path);
+            if (r->models[built] == NULL) break;
+            built++;
+        }
+    }
+    if (built == n && r->models != NULL) {
+        r->models[n] = NULL; /* the picker wants NULL's end */
+        r->model_count = n;
+    } else {
+        for (size_t i = 0; i < built; ++i) g_free(r->models[i]);
+        g_free(r->models);
+        r->models = NULL;
+        r->model_count = 0;
+    }
+    mcme_model_index_close(models);
+}
+
 McmePackResult *mcme_pack_summarize(const char *dir)
 {
     McmePackResult *r = g_new0(McmePackResult, 1);
@@ -37,6 +73,7 @@ McmePackResult *mcme_pack_summarize(const char *dir)
                               pack->description,
                               pack->has_icon ? "yes" : "no");
     mcme_pack_free(pack);
+    pack_models(r, dir);
     return r;
 }
 
@@ -45,6 +82,11 @@ void mcme_packresult_free(McmePackResult *result)
     if (result == NULL) return;
 
     g_free(result->text);
+    if (result->models != NULL) {
+        for (size_t i = 0; i < result->model_count; ++i)
+            g_free(result->models[i]);
+        g_free(result->models);
+    }
     g_free(result);
 }
 

@@ -236,6 +236,24 @@ void mcme_model_index_close(McmeModelIndex *index)
     free(index);
 }
 
+size_t mcme_model_count(const McmeModelIndex *index)
+{
+    return index ? index->count : 0;
+}
+
+bool mcme_model_at(const McmeModelIndex *index, size_t i,
+                   const char **ns_out, const char **path_out)
+{
+    if (!index || i >= index->count) {
+        if (ns_out) *ns_out = NULL;
+        if (path_out) *path_out = NULL;
+        return false;
+    }
+    if (ns_out) *ns_out = index->entries[i].ns;
+    if (path_out) *path_out = index->entries[i].path;
+    return true;
+}
+
 /* ========================================================================
  * Folding
  * ======================================================================== */

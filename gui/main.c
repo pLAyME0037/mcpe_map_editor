@@ -17,7 +17,12 @@
  * the dialog, the smoke gate's --open) — which owns the session's
  * directory and re-runs the chain against it. A pack switched
  * mid-flight cannot cross its wires: every task carries the session
- * generation and stale answers are dropped whole.
+ * generation and stale answers are dropped whole. G6 puts the pack
+ * itself on screen: the pack's answer carries every model its index
+ * holds (D53's enumeration, "ns:path" in the index's own walk order)
+ * into a dropdown, and a pick is a mesh request with its own
+ * generation — the last pick wins, stale meshes fall like stale
+ * packs.
  *
  * Flags:
  *   --selftest   run the wire's checks (no display needed) and exit
@@ -53,19 +58,23 @@ static gboolean g_smoke;
 static const char *g_pack_arg;    /* argv's directory, borrowed       */
 static const char *g_open_dir;    /* --open: the dialog without it    */
 static char *g_pack_dir;          /* the session's directory, owned   */
-static const char *g_mesh_ns;    /* the model split at ':'            */
-static const char *g_mesh_path;
-static char g_mesh_ns_buf[256];
+static char *g_mesh_ns;           /* the model split at ':', owned    */
+static char *g_mesh_path;
 static McmeWire *g_wire;         /* the shell's standing wire (D6)    */
 static GtkApplication *g_app;
 static int g_exit_code;
 static int g_tasks;              /* workers that may still post       */
 static int g_pack_gen;           /* session generation: stale falls   */
+static int g_mesh_gen;           /* selection generation: stale falls */
 static bool g_pack_settled, g_pack_ok;
 static bool g_mesh_settled, g_mesh_ok;
+static bool g_picker_sync;       /* populate must not fire the pick  */
+static size_t g_models_seen;     /* the pack answer's model count    */
 static GtkWidget *g_viewport;
 static GtkWidget *g_mesh_label;
 static GtkWidget *g_pack_label;
+static GtkWidget *g_picker;
+static GtkStringList *g_models;
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -98,8 +107,10 @@ static void maybe_smoke_quit(void)
         else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
     fprintf(stderr,
-            "mcgui: smoke: pack=%s mesh=%s drew=%d tex=%d gl_failed=%d\n",
+            "mcgui: smoke: pack=%s models=%zu mesh=%s drew=%d tex=%d "
+            "gl_failed=%d\n",
             g_pack_ok ? "ok" : "refused",
+            g_models_seen,
             g_mesh_ns == NULL ? "not-asked"
                               : (g_mesh_ok ? "ok" : "refused"),
             mcme_viewport_drew(g_viewport),
@@ -139,7 +150,7 @@ static void on_mesh_result(void *userdata, McmeMeshResult *result)
 {
     int gen = GPOINTER_TO_INT(userdata);
 
-    if (gen != g_pack_gen) {
+    if (gen != g_mesh_gen) {
         g_tasks--; /* a post is a post: the count follows workers */
         mcme_meshresult_free(result);
         return;
@@ -174,13 +185,39 @@ static void on_pack_result(void *userdata, McmePackResult *result)
                        result->text ? result->text : "(no memory)");
     g_pack_ok = result->ok;
     g_pack_settled = true;
+    /* The picker's rows: the pack's own models, walk order (D53).
+       The populate must not fire a pick, and the shown selection is
+       the model the chain is about to mesh — when the pack holds it. */
+    g_models_seen = result->ok ? result->model_count : 0;
+    g_picker_sync = true;
+    gtk_string_list_splice(g_models, 0,
+                           g_list_model_get_n_items(G_LIST_MODEL(g_models)),
+                           NULL);
+    for (size_t i = 0; i < result->model_count; ++i)
+        gtk_string_list_append(g_models, result->models[i]);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(g_picker),
+                               GTK_INVALID_LIST_POSITION);
+    if (result->ok && g_mesh_ns != NULL) {
+        char want[512];
+
+        snprintf(want, sizeof want, "%s:%s", g_mesh_ns, g_mesh_path);
+        for (guint i = 0;
+             i < g_list_model_get_n_items(G_LIST_MODEL(g_models)); ++i) {
+            if (strcmp(gtk_string_list_get_string(g_models, i), want)
+                == 0) {
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(g_picker), i);
+                break;
+            }
+        }
+    }
+    g_picker_sync = false;
     if (result->ok && g_mesh_ns != NULL) {
         /* The mesh's worker starts only now: the core's error slot is
            one global, so at any time one worker calls core code and
            copies its answer out (the G2 discipline, kept). */
         if (mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns,
                                 g_mesh_path, on_mesh_result,
-                                GINT_TO_POINTER(g_pack_gen))) {
+                                GINT_TO_POINTER(g_mesh_gen))) {
             g_tasks++;
         } else {
             g_mesh_settled = true;
@@ -193,6 +230,61 @@ static void on_pack_result(void *userdata, McmePackResult *result)
     mcme_packresult_free(result);
     g_tasks--;
     maybe_smoke_quit();
+}
+
+/* ns:path into owned pieces — the CLI's split rule: the bytes before
+ * the colon are the namespace (G3's discipline), and every caller
+ * lands here (argv's model, the picker's row). */
+static bool split_model(const char *s, char **ns_out, char **path_out)
+{
+    const char *colon = strchr(s, ':');
+    size_t ns_len;
+    char *ns, *path;
+
+    if (colon == NULL || colon == s || colon[1] == '\0') return false;
+    ns_len = (size_t)(colon - s);
+    if (ns_len >= 256) return false;
+    ns = g_strndup(s, ns_len);
+    path = g_strdup(colon + 1);
+    if (ns == NULL || path == NULL) {
+        g_free(ns);
+        g_free(path);
+        return false;
+    }
+    g_free(*ns_out);
+    g_free(*path_out);
+    *ns_out = ns;
+    *path_out = path;
+    return true;
+}
+
+/* The picker's row: the selection is the new mesh request, and its
+ * own generation retires any mesh still on the road (the pack's
+ * answers already retire on the pack's). */
+static void on_model_picked(GtkDropDown *dd, GParamSpec *ps,
+                            gpointer user)
+{
+    guint pos = gtk_drop_down_get_selected(dd);
+
+    (void)ps;
+    (void)user;
+    if (g_picker_sync || pos == GTK_INVALID_LIST_POSITION) return;
+    if (!split_model(gtk_string_list_get_string(g_models, pos),
+                     &g_mesh_ns, &g_mesh_path))
+        return; /* a row without a colon: nothing to mesh */
+
+    g_mesh_settled = false;
+    g_mesh_ok = false;
+    gtk_label_set_text(GTK_LABEL(g_mesh_label), "meshing…");
+    if (mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns, g_mesh_path,
+                            on_mesh_result,
+                            GINT_TO_POINTER(++g_mesh_gen))) {
+        g_tasks++;
+    } else {
+        g_mesh_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_mesh_label),
+                           "mesh task: no memory");
+    }
 }
 
 /* The one pack session: every opener lands here — argv at startup,
@@ -208,6 +300,7 @@ static void open_pack(const char *dir)
     g_free(g_pack_dir);
     g_pack_dir = g_strdup(dir);
     gen = ++g_pack_gen;
+    ++g_mesh_gen; /* a pack switch retires in-flight meshes too */
     g_pack_settled = false;
     g_pack_ok = false;
     g_mesh_settled = false;
@@ -273,6 +366,10 @@ static void on_activate(GtkApplication *app, gpointer user)
     g_pack_label = gtk_label_new((g_pack_arg || g_open_dir)
                                  ? "reading the pack…"
                                  : "the shell is up — no world open");
+    g_models = gtk_string_list_new(NULL);
+    g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
+    g_signal_connect(g_picker, "notify::selected",
+                     G_CALLBACK(on_model_picked), NULL);
 
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(bar),
                                     gtk_label_new("mcme"));
@@ -290,6 +387,7 @@ static void on_activate(GtkApplication *app, gpointer user)
         gtk_label_set_attributes(GTK_LABEL(g_pack_label), attrs);
         pango_attr_list_unref(attrs);
     }
+    gtk_box_append(GTK_BOX(box), g_picker);
     gtk_box_append(GTK_BOX(box), g_viewport);
     gtk_box_append(GTK_BOX(box), g_mesh_label);
     gtk_box_append(GTK_BOX(box), g_pack_label);
@@ -319,7 +417,6 @@ int main(int argc, char **argv)
 {
     GtkApplication *app;
     const char *model = NULL;
-    const char *colon;
     const char *pos[2];
     int npos = 0;
     int rc;
@@ -367,9 +464,9 @@ int main(int argc, char **argv)
         model = npos > 1 ? pos[1] : NULL;
     }
     if (model != NULL) {
+        const char *colon = strchr(model, ':');
         size_t ns_len;
 
-        colon = strchr(model, ':');
         if (colon == NULL || colon == model || colon[1] == '\0') {
             fprintf(stderr, "mcgui: the model is ns:path\n");
             return 1;
@@ -377,14 +474,14 @@ int main(int argc, char **argv)
         /* The same split the CLI makes (src/app/main.c): the bytes
            before the colon are the namespace, the rest the path. */
         ns_len = (size_t)(colon - model);
-        if (ns_len >= sizeof g_mesh_ns_buf) {
+        if (ns_len >= 256) {
             fprintf(stderr, "mcgui: the namespace is too long\n");
             return 1;
         }
-        memcpy(g_mesh_ns_buf, model, ns_len);
-        g_mesh_ns_buf[ns_len] = '\0';
-        g_mesh_ns = g_mesh_ns_buf;
-        g_mesh_path = colon + 1;
+        if (!split_model(model, &g_mesh_ns, &g_mesh_path)) {
+            fprintf(stderr, "mcgui: the model is ns:path\n");
+            return 1;
+        }
     }
 
     g_wire = mcme_wire_new();
@@ -407,5 +504,7 @@ int main(int argc, char **argv)
     g_object_unref(app);
     mcme_wire_free(g_wire);
     g_free(g_pack_dir);
+    g_free(g_mesh_ns);
+    g_free(g_mesh_path);
     return g_exit_code ? g_exit_code : rc;
 }

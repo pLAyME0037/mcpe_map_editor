@@ -506,6 +506,34 @@ static void test_models(void)
               "index open: %s", mcme_last_error());
     if (!idx) { mcme_clear_error(); return; }
 
+    /* --- what the index holds, in its own walk order --- */
+
+    CHECK(mcme_model_count(idx) > 0);
+    {
+        bool saw_grand = false, saw_defns = false, saw_leaf = false;
+        const char *ns = NULL, *path = NULL;
+
+        for (size_t i = 0; i < mcme_model_count(idx); ++i) {
+            CHECK(mcme_model_at(idx, i, &ns, &path));
+            CHECK(ns != NULL && ns[0] != '\0');
+            CHECK(path != NULL && path[0] != '\0');
+            if (strcmp(ns, "mc") == 0 &&
+                strcmp(path, "block/grand") == 0) saw_grand = true;
+            if (strcmp(ns, "minecraft") == 0 &&
+                strcmp(path, "block/defns") == 0) saw_defns = true;
+            if (strcmp(ns, "minecraft") == 0 &&
+                strcmp(path, "block/leaf") == 0) saw_leaf = true;
+        }
+        CHECK(saw_grand && saw_defns && saw_leaf);
+        /* Out of range and null: refused, both outs named NULL. */
+        ns = path = "untouched";
+        CHECK(!mcme_model_at(idx, mcme_model_count(idx), &ns, &path));
+        CHECK(ns == NULL && path == NULL);
+        CHECK(!mcme_model_at(NULL, 0, &ns, &path));
+        CHECK(ns == NULL && path == NULL);
+    }
+    CHECK(mcme_model_count(NULL) == 0);
+
     /* --- the fold, rule for rule --- */
 
     /* A chain of three: grandchild over parent over grandparent.

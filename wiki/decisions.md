@@ -3634,3 +3634,55 @@ selftest pins); battery 19/19; `./rebuild.sh test` PASS.
 split view) — then the session becomes a list and staleness is
 per-session state; or the wire grows real cancellation — then
 superseded work is stopped instead of dropped.
+
+## D53 — The index answers what it holds
+
+**Chosen.** The model index exposes what it already holds: its
+count and the (namespace, path) of each entry in its own walk
+order (`mcme_model_count`, `mcme_model_at`). The GUI's pack
+answer carries that list — joined "ns:path" — to the window,
+where a dropdown's pick is a mesh request. Each pick gets its
+own generation (extending D52's rule): the last pick wins and
+stale meshes fall like stale packs, while a pack switch retires
+in-flight meshes too. A list that will not build whole is no
+list at all — the pack answer stays whole or carries none.
+
+**Why.** The picker was the nominated next seam, and its first
+step was honest core surface: the index parses every model at
+open and holds (ns, path) per entry — enumeration is an expose,
+not a new walk. The reference exposes no enumeration surface at
+all, so the order pinned is the walk's own (nothing else could
+be pinned without inventing), and display-ordering stays the
+client's dress. The list rides the pack answer because the pack
+read is already the worker that may call core code (D6, one
+worker at a time) — no new task, no new thread rule.
+
+**Rejected.**
+- *Enumerating in the GUI by walking the pack's directories*:
+  the index already holds the truth; a second walk could
+  disagree with what meshes (a file the parser skipped).
+- *A core verb or CLI surface for enumeration*: nothing in the
+  CLI needs it yet; the seam ships with its consumer.
+- *Sorting the list worker-side*: order is presentation (D49's
+  line); the index answers its walk, the client may sort.
+- *One generation for packs and picks together*: a pick would
+  then retire the pack's chain and vice versa; two counters,
+  each staleness rule checking its own.
+
+**How verified.** Core selftest: the index's count, every
+entry's non-empty (ns, path), the known keys present, and the
+out-of-range/null answers naming NULL — 5 suites PASS.
+GUI selftest: the pack answer carries the fixture's one model
+as "mc:block/pick" (NULL-ended), the refusal carries no list,
+the wire delivers both facts — 1204 checks PASS. Smokes: the
+settle line grew `models=` — pack-only and pack+mesh rc=0 with
+`models=6` on the fixture (the picker's rows, counted), the
+`--open` refusal rc=1, window-only rc=0, an x11 variation
+rc=0; battery 19/19; `git status tests/` clean.
+
+**Reverses if:** the picker wants block names rather than model
+paths (the blockmesh layer's blockstate resolution — then the
+list becomes the blockstate index's answer and the seam moves
+one layer down), or the walk order ever needs to match the
+reference's glob exactly (then the pin changes from "the
+walk's own" to a recorded reference order).

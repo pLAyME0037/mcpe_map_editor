@@ -15,6 +15,12 @@
 typedef struct {
     bool ok;    /* the pack opened; false carries the refusal in text */
     char *text; /* the summary or the refusal; free the whole result  */
+    /* What the pack can mesh — every model its index holds, joined
+       "ns:path", the index's own walk order (D53): the picker's rows
+       and the mesh argument's shape in one string. NULL when the pack
+       refused or the list would not build (never half a list). */
+    char **models;
+    size_t model_count;
 } McmePackResult;
 
 typedef void (*McmePackDoneFn)(void *userdata, McmePackResult *result);

@@ -274,6 +274,20 @@ bool mcme_model_index_open(const char *pack_dir, McmeModelIndex **out);
 void mcme_model_index_close(McmeModelIndex *index);
 
 /*
+ * What the index holds: how many models it parsed, and the
+ * (namespace, path) of the i-th — the index's own walk order (per
+ * namespace directory, recursive readdir, the fs's own). The
+ * reference exposes no enumeration surface, so nothing pins this
+ * order but the walk itself; a caller that wants a display order
+ * sorts the answers. Null index: count 0, every `at` false. An
+ * out-of-range `at` answers false and names NULL in both outs.
+ */
+size_t mcme_model_count(const McmeModelIndex *index);
+
+bool mcme_model_at(const McmeModelIndex *index, size_t i,
+                   const char **ns_out, const char **path_out);
+
+/*
  * Answers the merged model for `<namespace>:<path>`, or for a bare
  * `<path>` (the caller passes NULL for the namespace to take the
  * reference's default, `minecraft`). The result is a heap

@@ -7,6 +7,71 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The pack lists itself: a picker over the index
+
+### Built
+
+- G6 + D53: the window shows what the pack can mesh. The core
+  model index — which parses every model at open and holds
+  (namespace, path) per entry — now answers its count and its
+  entries in its own walk order (`mcme_model_count`,
+  `mcme_model_at`); the pack answer carries the list joined
+  "ns:path" to the loop thread; a GtkDropDown at the top of
+  the box holds the rows, and a pick is a mesh request.
+- D52's staleness rule extended per pick: `g_mesh_gen` is the
+  mesh's own generation — the last pick wins, a mesh from
+  before the pick falls whole, and a pack switch retires
+  in-flight meshes too (open_pack bumps both counters). The
+  mesh arguments became owned strings: the picker's rows live
+  in the string list and a re-open frees them, so nothing
+  points into borrowed memory.
+- `split_model` — the CLI's ns:path split (G3's rule) factored
+  once, used by argv and the picker's rows alike.
+- The picker shows the model the chain is about to mesh when
+  the pack holds it (argv/`--open`), and the populate never
+  fires a pick (the sync guard — GtkSingleSelection autoselect
+  lands on row 0 as the list fills).
+- The settle line grew `models=`: the fixture pack answers
+  `models=6`, counted through the same road the picker's rows
+  ride. Selftest +9 (the pack answer's list: one model as
+  "mc:block/pick", NULL-ended; the refusal carries no list;
+  the wire delivers both) — 1204 checks.
+
+### Notes
+
+- This box's GTK 4.24 headers have neither
+  `gtk_string_list_remove_all` nor the 5-argument
+  `gtk_string_list_splice` — the removal primitive is
+  `splice(pos, n_removals, NULL)` with the additions
+  NULL-terminated, and `get_size` is the GListModel
+  interface's `g_list_model_get_n_items`. Compile errors,
+  one search each, no design scars.
+- A self-inflicted near-miss worth recording: a chain of
+  `sed` edits to main.c ran against text I had just written
+  and partially misremembered — one became a no-op, one
+  changed a line I no longer wanted changed (caught by
+  re-reading the file, not by the build). Rule reaffirmed:
+  no chained edits over remembered text; read, then edit.
+- A picker row is a model path, not a block name — the
+  honest line the index can answer today. Block names
+  belong to the blockmesh layer's blockstate resolution;
+  when the picker wants those, the seam moves a layer down
+  (D53's reversal, pre-named).
+- Gates: `--selftest` PASS 1204 rc=0; smokes (wayland,
+  nvidia-stubbed llvmpipe): window-only rc=0, pack-only
+  rc=0 with `models=6`, pack+model rc=0 with `pack=ok
+  models=6 mesh=ok drew=1 tex=1 gl_failed=0`, `--open`
+  refusal rc=1 with `models=6`; an x11 pack+model rc=0;
+  battery 19/19; `./rebuild.sh test` PASS; `git status
+  tests/` clean.
+
+### Next
+
+- The picker's block-shaped twin (the blockmesh layer's
+  blockstate names — the same seam one layer down), or the
+  viewport's camera in the user's hand, or the standing
+  whole-pack page as the chunk view's foundation.
+
 ## 2026-10-21 — The window lets go of the command line
 
 ### Built
