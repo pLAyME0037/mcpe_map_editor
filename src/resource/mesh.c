@@ -208,6 +208,29 @@ bool mcme_mesh_cull_dirs(McmeMesh *mesh,
     return true;
 }
 
+/* The editor's own move (G11): every vertex position shifted by
+   (dx, dy, dz) — the offset a cell's culled mesh stands at in the
+   sub-chunk the window draws, the arithmetic the builder's rows
+   ride at row scale (the reference adds the world offset to every
+   bounds corner). Positions only: texture coordinates, tints,
+   faces, the texture list and the transparency stand. Rewritten in
+   place; false only on a null argument. */
+bool mcme_mesh_translate(McmeMesh *mesh, double dx, double dy,
+                         double dz)
+{
+    if (mesh == NULL) return false;
+    for (int i = 0; i <= MCME_CULL_NONE; ++i) {
+        if (!mesh->present[i]) continue;
+        double *v = mesh->buckets[i].verts;
+        for (size_t n = 0; n < mesh->buckets[i].vert_count; ++n) {
+            v[n * 3 + 0] += dx;
+            v[n * 3 + 1] += dy;
+            v[n * 3 + 2] += dz;
+        }
+    }
+    return true;
+}
+
 static void ctx_free(BuildCtx *ctx)
 {
     for (size_t i = 0; i < ctx->count; ++i) {

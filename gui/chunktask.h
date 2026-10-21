@@ -24,6 +24,19 @@
  *
  * Data crosses; no core call ever happens off the worker (the G2
  * discipline, kept).
+ *
+ * Since G11 the same road carries the WHOLE SUB-CHUNK the
+ * coordinates stand in (--section): the worker composes the grid
+ * the builder walks (mcme_world_subgrid — `chunk submesh`'s own
+ * seven layers, moved to the core whole), meshes every DISTINCT
+ * state the grid holds once (the verbs' prelude, D40), and walks
+ * the sub-chunk's 4096 cells in the builder's own order — each
+ * cell's mesh copied from its state, culled to its six real
+ * neighbours, moved to the cell (mcme_mesh_translate) — merging
+ * the survivors into one mesh at the sub-chunk's own origin.
+ * `faces` and `faces_total` sum the cells' answers and `cells`
+ * counts the cells whose faces stand. The spec rides the target
+ * CELL's answer: the store's own words for the coordinates asked.
  */
 #ifndef MCME_GUI_CHUNKTASK_H
 #define MCME_GUI_CHUNKTASK_H
@@ -40,6 +53,8 @@ typedef struct {
     char *spec;  /* the world's answer: "ns:name{states}" when ok */
     size_t faces;       /* the faces the world's sides keep      */
     size_t faces_total; /* the mesh's faces before the cull       */
+    size_t cells;       /* the cells whose faces stand (the
+                           section ask; the block ask's one)      */
     McmeMeshResult *mesh; /* owned; handed to the viewport, NULLed */
 } McmeChunkResult;
 
@@ -47,10 +62,12 @@ typedef void (*McmeChunkDoneFn)(void *userdata, McmeChunkResult *result);
 
 /* Worker: probe the world, read the spec at (x, y, z) in the
  * dimension (0 overworld, 1 nether, 2 end — the numbers the CLI
- * parses), mesh it with the pack, deliver on the loop thread. */
+ * parses), mesh it with the pack, deliver on the loop thread. With
+ * `section` the whole sub-chunk stands in instead of the one
+ * block (G11). */
 bool mcme_chunktask_start(McmeWire *wire, const char *world_dir,
                           const char *pack_dir, int32_t dimension,
-                          long x, long y, long z,
+                          long x, long y, long z, bool section,
                           McmeChunkDoneFn done, void *userdata);
 
 void mcme_chunkresult_free(McmeChunkResult *result);

@@ -627,6 +627,7 @@ static char g_chunk_done_text[512];
 static size_t g_chunk_done_verts;
 static size_t g_chunk_done_faces;
 static size_t g_chunk_done_faces_total;
+static size_t g_chunk_done_cells;
 static bool g_chunk_done_atlas;
 
 /* Loop thread, via the wire's visit — the shape on_mesh_result has,
@@ -641,12 +642,14 @@ static void on_chunk_done(void *userdata, McmeChunkResult *result)
     g_chunk_done_verts = 0;
     g_chunk_done_faces = 0;
     g_chunk_done_faces_total = 0;
+    g_chunk_done_cells = 0;
     g_chunk_done_atlas = false;
     if (result->ok) {
         snprintf(g_chunk_done_spec, sizeof g_chunk_done_spec, "%s",
                  result->spec != NULL ? result->spec : "");
         g_chunk_done_faces = result->faces;
         g_chunk_done_faces_total = result->faces_total;
+        g_chunk_done_cells = result->cells;
         if (result->mesh != NULL) {
             for (int d = 0; d < 7; ++d)
                 if (result->mesh->mesh.present[d])
@@ -674,7 +677,8 @@ static void test_chunktask(void)
     McmeWire *wire;
     bool golden = mcme_fs_exists("tests/golden/worlds/java");
 
-    printf("  chunktask (the world's own block through the wire)\n");
+    printf("  chunktask (the world's own block and sub-chunk through "
+           "the wire)\n");
 
     CHECK(mkdtemp(dir) != NULL);
     snprintf(path, sizeof(path), "%s/pack.mcmeta", dir);
@@ -726,7 +730,21 @@ static void test_chunktask(void)
     g_chunk_done_calls = 0;
     g_chunk_done_ok = true;
     CHECK(mcme_chunktask_start(wire, "/tmp/mcme_gui_no_world_dir",
-                               dir, 0, 5, 5, 5, on_chunk_done, NULL));
+                               dir, 0, 5, 5, 5, false, on_chunk_done,
+                               NULL));
+    while (g_chunk_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_chunk_done_calls == 1);
+    CHECK(!g_chunk_done_ok);
+    CHECK(g_chunk_done_text[0] != '\0');
+    mcme_clear_error();
+
+    /* the same refusal asked over the whole sub-chunk (G11) */
+    g_chunk_done_calls = 0;
+    g_chunk_done_ok = true;
+    CHECK(mcme_chunktask_start(wire, "/tmp/mcme_gui_no_world_dir",
+                               dir, 0, 5, 5, 5, true, on_chunk_done,
+                               NULL));
     while (g_chunk_done_calls == 0)
         g_main_context_iteration(NULL, TRUE);
     CHECK(g_chunk_done_calls == 1);
@@ -741,8 +759,8 @@ static void test_chunktask(void)
         g_chunk_done_calls = 0;
         g_chunk_done_ok = false;
         CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
-                                   dir, 0, 5, 5, 5, on_chunk_done,
-                                   NULL));
+                                   dir, 0, 5, 5, 5, false,
+                                   on_chunk_done, NULL));
         while (g_chunk_done_calls == 0)
             g_main_context_iteration(NULL, TRUE);
         CHECK(g_chunk_done_calls == 1);
@@ -753,6 +771,7 @@ static void test_chunktask(void)
            the clauses firing on the neighbour's flag alone). */
         CHECK(g_chunk_done_faces == 0);
         CHECK(g_chunk_done_faces_total == 6);
+        CHECK(g_chunk_done_cells == 0);
         CHECK(g_chunk_done_verts == 0);
         CHECK(g_chunk_done_atlas);
 
@@ -761,8 +780,22 @@ static void test_chunktask(void)
         g_chunk_done_calls = 0;
         g_chunk_done_ok = true;
         CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
-                                   dir, 1, 5, 5, 5, on_chunk_done,
-                                   NULL));
+                                   dir, 1, 5, 5, 5, false,
+                                   on_chunk_done, NULL));
+        while (g_chunk_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_chunk_done_calls == 1);
+        CHECK(!g_chunk_done_ok);
+        CHECK(g_chunk_done_text[0] != '\0');
+        mcme_clear_error();
+
+        /* the section ask's own: the compose refuses the nether
+           the same way (G11 — the core's grid, the same status) */
+        g_chunk_done_calls = 0;
+        g_chunk_done_ok = true;
+        CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
+                                   dir, 1, 5, 5, 5, true,
+                                   on_chunk_done, NULL));
         while (g_chunk_done_calls == 0)
             g_main_context_iteration(NULL, TRUE);
         CHECK(g_chunk_done_calls == 1);
@@ -794,8 +827,8 @@ static void test_chunktask(void)
         g_chunk_done_calls = 0;
         g_chunk_done_ok = false;
         CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
-                                   dir, 0, 5, 5, 5, on_chunk_done,
-                                   NULL));
+                                   dir, 0, 5, 5, 5, false,
+                                   on_chunk_done, NULL));
         while (g_chunk_done_calls == 0)
             g_main_context_iteration(NULL, TRUE);
         CHECK(g_chunk_done_calls == 1);
@@ -803,7 +836,53 @@ static void test_chunktask(void)
         CHECK(strcmp(g_chunk_done_spec, "minecraft:air") == 0);
         CHECK(g_chunk_done_faces == 6);
         CHECK(g_chunk_done_faces_total == 6);
+        CHECK(g_chunk_done_cells == 1);
         CHECK(g_chunk_done_verts == 24);
+        CHECK(g_chunk_done_atlas);
+
+        /* The WHOLE SUB-CHUNK over the same slab pack (G11): every
+           cell is the pack's partial air, so nothing culls and the
+           4096 cells all stand — the section ask's drawn extreme,
+           merged to one mesh at the sub-chunk's own origin. */
+        g_chunk_done_calls = 0;
+        g_chunk_done_ok = false;
+        CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
+                                   dir, 0, 5, 5, 5, true,
+                                   on_chunk_done, NULL));
+        while (g_chunk_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_chunk_done_calls == 1);
+        CHECK(g_chunk_done_ok);
+        CHECK(strcmp(g_chunk_done_spec, "minecraft:air") == 0);
+        CHECK(g_chunk_done_faces == 4096u * 6u);
+        CHECK(g_chunk_done_faces_total == 4096u * 6u);
+        CHECK(g_chunk_done_cells == 4096);
+        CHECK(g_chunk_done_verts == 4096u * 24u);
+        CHECK(g_chunk_done_atlas);
+
+        /* The pack's air back to its opaque cube: the section's
+           other extreme — every cell buried in opaque neighbours,
+           so the whole sub-chunk crosses empty, its 24576 faces
+           all counted before the cull (the settle's 0/N). */
+        snprintf(path, sizeof(path),
+                 "%s/assets/minecraft/blockstates/air.json", dir);
+        write_file(path, "{\"variants\":{\"\":{\"model\":"
+                         "\"mc:block/cube\"}}}\n");
+
+        g_chunk_done_calls = 0;
+        g_chunk_done_ok = false;
+        CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
+                                   dir, 0, 5, 5, 5, true,
+                                   on_chunk_done, NULL));
+        while (g_chunk_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_chunk_done_calls == 1);
+        CHECK(g_chunk_done_ok);
+        CHECK(strcmp(g_chunk_done_spec, "minecraft:air") == 0);
+        CHECK(g_chunk_done_faces == 0);
+        CHECK(g_chunk_done_faces_total == 4096u * 6u);
+        CHECK(g_chunk_done_cells == 0);
+        CHECK(g_chunk_done_verts == 0);
         CHECK(g_chunk_done_atlas);
     } else {
         printf("  SKIP golden world probes (tests/golden absent)\n");

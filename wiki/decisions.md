@@ -3924,3 +3924,66 @@ transparency flag (then the predicate grows the question and
 both surfaces keep sharing it), or a face's cull direction stops
 agreeing with its bucket (then the mesh cull goes per-face while
 the predicate stands).
+
+## D58 — The section the coordinates stand in
+
+**Chosen.** `--section` asks for the whole SUB-CHUNK the
+coordinates hold, and the core composes it: `mcme_world_subgrid`
+is the CLI's own grid reader moved whole from main.c into
+src/world/subgrid.c (seven layers through each format's reader,
+the 18³ padded cells, the edge rule among them), returning the
+G9 status the verbs already map — so `chunk submesh` refactors
+onto it and answers byte-identical JSON, and the GUI's worker
+asks the same road. The worker then runs the verbs' prelude
+(D40): every distinct spec TEXT meshed once (one pack, fixed per
+run — text is state identity), then the builder's x-then-y-then-z
+walk over the 16³ cells: each cell takes its state's mesh as a
+copy (one-part `mcme_mesh_merge` — the reference's pinned
+deep-copy semantics, so no new clone function exists to be
+wrong), is culled to its six padded-grid neighbours, is moved by
+`mcme_mesh_translate` (positions only — the section stands at
+the origin, D55's camera supplies world offset), and the kept
+parts merge whole into one mesh.
+
+**Why.** The CLI already answers the whole sub-chunk from D40's
+grid; a worker-side compose would be a second answer to a
+question the core settled, unadjudicable by the battery. One
+compose + one loop means the CLI's table and the window's
+picture disagree only where one of them is wrong, and the
+battery plus the cells/rows parity say neither does. The state
+cache keys on full spec text because the grid hands out text
+(palette slots differ per section; parsed-state identity would
+re-derive what text already names), and one mesh per text keeps
+4096 cells at one build — the verbs' own prelude.
+
+**Rejected.** Composing the grid in the worker (second answer,
+no single adjudicator); caching meshes by palette slot or
+rebuilding per cell (per-cell builds re-parse 4096 times for a
+handful of states, and slot numbers are section-local);
+culling in the viewport (D50/D57 — the wire carries what
+stands); translating to world offsets (the camera already works
+in world space; the extra numbers only drift); a bespoke
+per-cell clone beside merge (merge-of-one is pinned, a new
+function would not be).
+
+**How verified.** Resource suite: translate pins (exact
+per-vertex arithmetic, invariants, zero-offset identity, null
+args). World suite test_subgrid: the golden's grid all-air over
+every padded cell, totality past the box, the absent chunk →
+NOT_FOUND, the nether → NOT_FOUND, dimension 7 → USAGE, double
+free total. Battery 107/107 — its first run FAILED (84/36 vs
+52002/3366: one line of sub_layer_spec transcribed from memory
+without the indices indirection), fixed by diffing against a
+HEAD worktree build until `chunk submesh --json` cmp'd
+identical. GUI selftest +29 = 1430: both section extremes
+through the wire, both section refusals, cells pins. Smokes:
+0/24576, 24576/24576 cells=4096, 1536/24576 cells=1352 with
+CLI parity ("1352 cells answered", rows/6 == 1536), refusals
+rc=1 (flag without world, not a world, nether), x11 drew=1.
+
+**Reverses if:** the reference grows a section-level view whose
+grid differs from the seven-layer compose (then the layer set
+follows the reference and the core keeps the road), or the GUI
+adopts D36's per-cell band shading (then the tint path grows
+beside the translate — the CLI already shades its rows through
+the atlas tints).

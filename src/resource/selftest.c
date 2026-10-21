@@ -1923,6 +1923,49 @@ static void test_blockmeshes(void)
         mcme_mesh_free(&empty);
     }
 
+    /* --- translate: the cell offset the section view stands on
+       (G11) — positions only, exact arithmetic --- */
+    {
+        McmeMesh m;
+        static const char *const a1[] = { "a", "1", NULL };
+        BLOCKMESH("merge", a1, &m);
+        const McmeMeshBucket *b = &m.buckets[MCME_CULL_NONE];
+        CHECK_MSG(b->face_count > 0 && b->vert_count > 0,
+                  "translate: the fixture mesh has no faces");
+        size_t n = b->vert_count;
+        double *keep = malloc(n * 3 * sizeof *keep);
+        CHECK(keep != NULL);
+        if (keep != NULL)
+            memcpy(keep, b->verts, n * 3 * sizeof *keep);
+        uint32_t f0 = b->faces[0];
+        float t0 = b->tverts[0];
+        float tint0 = b->tint_verts[0];
+        CHECK(mcme_mesh_translate(&m, 1.5, -2.0, 0.25));
+        if (keep != NULL) {
+            static const double off[3] = { 1.5, -2.0, 0.25 };
+            size_t bad = 0;
+            for (size_t i = 0; i < n * 3; ++i)
+                if (b->verts[i] != keep[i] + off[i % 3]) ++bad;
+            CHECK_MSG(bad == 0, "translate: %zu vertices moved wrong",
+                      bad);
+        }
+        /* positions only: the indices, the uvs and the tints stand */
+        CHECK(b->faces[0] == f0 && b->tverts[0] == t0
+              && b->tint_verts[0] == tint0);
+        CHECK(b->vert_count == n);
+        /* a zero offset is the same mesh, exactly */
+        CHECK(mcme_mesh_translate(&m, 0.0, 0.0, 0.0));
+        if (keep != NULL) {
+            static const double off[3] = { 1.5, -2.0, 0.25 };
+            size_t bad = 0;
+            for (size_t i = 0; i < n * 3; ++i)
+                if (b->verts[i] != keep[i] + off[i % 3]) ++bad;
+            CHECK(bad == 0);
+        }
+        free(keep);
+        mcme_mesh_free(&m);
+    }
+
     /* --- null arguments --- */
     {
         McmeMesh m;
@@ -1941,6 +1984,7 @@ static void test_blockmeshes(void)
         CHECK(!mcme_mesh_rotate(NULL, 1, 0));
         CHECK(!mcme_mesh_merge(NULL, 1, &m));
         CHECK(!mcme_mesh_merge((const McmeMesh *const[]){ &m }, 1, NULL));
+        CHECK(!mcme_mesh_translate(NULL, 1.0, 0.0, 0.0));
     }
 
     mcme_blockstate_index_close(states);

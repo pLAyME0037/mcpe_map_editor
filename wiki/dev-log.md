@@ -7,6 +7,77 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The whole section: the sub-chunk in the window
+
+### Built
+
+- G11 + D58: the whole-section view — `--section` on the world
+  ask (`--world DIR --at X Y Z [--dimension N] [--section]`) says
+  the coordinates stand somewhere: the worker composes the
+  SUB-CHUNK those coordinates hold (16³ cells) and the window
+  holds it as one mesh. The smokes' three answers: the golden's
+  all-air section through the fixture pack `faces=0/24576
+  cells=0 drew=0` (air resolves opaque, everything culled);
+  through a pack whose air is a slab `faces=24576/24576
+  cells=4096` (partial on both counts, nothing culls); a
+  fill-sealed stone section `spec=minecraft:stone faces=1536/24576
+  cells=1352 drew=1` — the shell physics exactly (down 256 +
+  up 256 + four walls 256 each).
+- Core promotion: src/world/subgrid.c + the world.h section —
+  the CLI's two layer readers and the padded compose move whole
+  (SubchunkLayer, SUB_* geometry → MCME_SUB_*, kSubAir): one
+  `mcme_world_subgrid(info, dimension, x, y, z, grid)` returning
+  McmeWorldBlockStatus — the verbs map it, so their exit codes
+  stand — plus `mcme_subgrid_at` (the padded totality: -1..16,
+  air past the box) and `mcme_subgrid_free` (the arenas own the
+  specs and indices). Refusal words realign to "chunk: ..." per
+  G9's reader-context rule; the Java readers' own errors pass
+  through untouched, and `chunk submesh` refactored onto the
+  core answers byte-identical JSON to the pre-move binary
+  (cmp against a HEAD worktree build) with the battery at
+  107/107.
+- `mcme_mesh_translate` (mesh.c, decl in resource.h): every
+  vertex position offset in place — texture coordinates, tints,
+  faces, textures and transparency stand. Positions only, because
+  the section renders at the sub-chunk's origin and the camera
+  (D55) supplies the world offset itself.
+- gui/chunktask: the section mode — the compose through the core,
+  then the verbs' own prelude (D40): every DISTINCT spec text the
+  grid holds meshed once, its mesh's own transparency standing
+  for every cell wearing it. The builder's loop over the 16³
+  cells runs x-then-y-then-z; each cell's mesh is its state's
+  copy (a one-part merge — the reference's pinned deep copy, no
+  new clone), culled to its six padded-grid neighbours
+  (mcme_mesh_cull_dirs), moved to its cell, and the kept parts
+  merge whole into one mesh at section origin. `faces`,
+  `faces_total` and the new `cells` ride the result; a refused
+  compose delivers the store's own words with nothing staged.
+- GUI selftest +29 = 1430: both section extremes through the
+  wire (0/24576 and 24576/24576 with cells=0 and cells=4096),
+  the nether section refusal, the not-a-world section refusal,
+  and the block path's `cells` pins (0 and 1).
+
+### Notes
+
+- Parity on the fill-sealed world: GUI `cells=1352` equals the
+  CLI's "1352 cells answered", and the designed face arithmetic
+  is exact — GUI `faces=1536` = the CLI stream's 9216 rows / 6
+  (the table row's own shape, untouched), the per-dir split
+  matching the shell's physics 256×6.
+- The first build of the move transcribed one line from memory
+  wrongly (`sub_layer_spec` read `l->specs[idx]` instead of the
+  indices indirection) — ref_chunkmesh failed its stream check
+  (84/36 vs 52002/3366), a HEAD worktree binary pinpointed it,
+  and the JSON cmp turned identical after the fix. The battery
+  adjudicates; remembered code never does.
+- The smoke pack's air blockstate alone was not enough: a
+  blockstate naming a model file the pack does not ship meshes
+  to an empty mesh (faces=0/0, observed) — the slab model had to
+  ship beside the blockstate for the drawn extreme.
+- The section's mesh surface is unshaded: the CLI's table rides
+  D36's band at each cell's world height through the atlas
+  tints, the GUI carries raw tints — deferred to a later drop.
+
 ## 2026-10-21 — The block in situ: the faces the world would keep
 
 ### Built

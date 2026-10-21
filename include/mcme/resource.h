@@ -619,6 +619,17 @@ bool mcme_mesh_merge(const McmeMesh *const *parts, size_t count,
                      McmeMesh *out);
 
 /*
+ * The editor's own move (G11): every vertex position shifted by
+ * (dx, dy, dz) — the offset a cell's culled mesh stands at in the
+ * sub-chunk the window draws, the arithmetic the builder's rows
+ * ride at row scale. Positions only: texture coordinates, tints,
+ * faces, the texture list and the transparency stand. Rewritten in
+ * place; false only on a null argument.
+ */
+bool mcme_mesh_translate(McmeMesh *mesh, double dx, double dy,
+                         double dz);
+
+/*
  * The world's cull at mesh level (G10): the sides' own answer over
  * this mesh. Every face in a side bucket carries that side's
  * cullface (D32), so the whole bucket drops when mcme_cull_drops

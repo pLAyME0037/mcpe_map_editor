@@ -37,11 +37,16 @@
  *   --open DIR   the dialog's answer without the dialog (smoke gates):
  *                open_pack runs at startup exactly where the callback
  *                would land it
- *   --world DIR --at X Y Z [--dimension N]
- *                ask the world for one block: after the pack's answer
- *                lands, the worker reads the spec the store spells at
- *                those coordinates, reads the six neighbours standing
- *                beside it, and meshes it culled to them (G10) into
+ *   --world DIR --at X Y Z [--dimension N] [--section]
+ *                ask the world for one block — or, with --section,
+ *                the whole sub-chunk the coordinates stand in (G11):
+ *                after the pack's answer lands, the worker composes
+ *                the sub-chunk grid the builder walks and meshes
+ *                every cell the cull leaves faces, merged at the
+ *                sub-chunk's own origin — and reads the spec the
+ *                store spells at those coordinates, reads the six
+ *                neighbours standing beside it, and meshes it culled
+ *                to them (G10) into
  *                the viewport — a buried block lands as the empty
  *                mesh the world itself would draw, and both halves
  *                of the face count (kept/total) ride the settle
@@ -108,6 +113,9 @@ static bool g_chunk_settled, g_chunk_ok;
 static char *g_spec_seen;          /* the world's answer, its words   */
 static size_t g_chunk_faces;       /* the cull's kept faces (G10)     */
 static size_t g_chunk_faces_total; /* the mesh's own, before it       */
+static size_t g_chunk_cells;       /* the cells whose faces stand
+                                       (G11; the block ask's one)     */
+static bool g_section;             /* --section: the whole sub-chunk  */
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -161,8 +169,8 @@ static void maybe_smoke_quit(void)
         mcme_viewport_camera(g_viewport, &cyaw, &cpitch, &cdist);
         fprintf(stderr,
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
-                "world=%s spec=%s faces=%zu/%zu drew=%d tex=%d "
-                "gl_failed=%d cam=%.2f,%.2f,%.2f\n",
+                "world=%s spec=%s faces=%zu/%zu cells=%zu drew=%d "
+                "tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -173,6 +181,7 @@ static void maybe_smoke_quit(void)
                 g_chunk_ok && g_spec_seen != NULL ? g_spec_seen : "-",
                 g_chunk_faces,
                 g_chunk_faces_total,
+                g_chunk_cells,
                 mcme_viewport_drew(g_viewport),
                 mcme_viewport_textured(g_viewport),
                 mcme_viewport_gl_failed(g_viewport),
@@ -282,6 +291,7 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
         g_spec_seen = g_strdup(result->spec);
         g_chunk_faces = result->faces;
         g_chunk_faces_total = result->faces_total;
+        g_chunk_cells = result->cells;
         mcme_viewport_set_mesh(g_viewport, result->mesh); /* takes it */
         result->mesh = NULL;
     } else {
@@ -298,8 +308,10 @@ static void start_chunk_ask(void)
     g_chunk_ok = false;
     g_chunk_faces = 0;
     g_chunk_faces_total = 0;
+    g_chunk_cells = 0;
     if (mcme_chunktask_start(g_wire, g_world_dir, g_pack_dir,
                              g_world_dim, g_wx, g_wy, g_wz,
+                             g_section,
                              on_chunk_result,
                              GINT_TO_POINTER(g_mesh_gen))) {
         g_tasks++;
@@ -647,10 +659,14 @@ int main(int argc, char **argv)
             g_world_dim = (int32_t)dim;
             dim_seen = true;
             i++;
+        } else if (strcmp(argv[i], "--section") == 0) {
+            /* G11: the whole sub-chunk the coordinates stand in,
+               not the one block — the same road, one cell wider. */
+            g_section = true;
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
                             "[--open dir] [--world dir --at x y z "
-                            "[--dimension n]] "
+                            "[--dimension n] [--section]] "
                             "[pack-dir [ns:model]]\n");
             return 1;
         } else if (npos < 2) {
@@ -692,6 +708,10 @@ int main(int argc, char **argv)
     }
     if (dim_seen && g_world_dir == NULL) {
         fprintf(stderr, "mcgui: --dimension belongs to --world\n");
+        return 1;
+    }
+    if (g_section && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --section belongs to --world\n");
         return 1;
     }
     if (g_world_dir != NULL && g_open_dir == NULL && npos == 0) {

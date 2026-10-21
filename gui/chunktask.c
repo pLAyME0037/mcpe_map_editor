@@ -31,7 +31,16 @@ typedef struct {
     char *pack_dir;
     int32_t dim;
     long x, y, z;
+    bool section;   /* the whole sub-chunk, not the one block (G11) */
 } ChunkWork;
+
+/* One distinct state the section grid holds (G11): its spec text
+   and its mesh — the mesh's own transparency is the cull's answer
+   for every cell wearing it. */
+typedef struct {
+    char *spec;
+    McmeMesh mesh;
+} SectionState;
 
 typedef struct {
     McmeChunkDoneFn fn;
@@ -106,6 +115,37 @@ static size_t mesh_faces(const McmeMesh *mesh)
     return n;
 }
 
+/* One grid spec through the verbs' own road (G11 — the block
+   path's steps, once per DISTINCT state): parsed, split the way
+   they split it, meshed with the pack's total answer. The refusals
+   are mcme_last_error()'s own words. */
+static bool section_mesh_state(const char *spec, McmeArena *arena,
+                               McmeBlockstateIndex *blockstates,
+                               McmeModelIndex *models,
+                               McmeTextureIndex *textures,
+                               McmeMesh *out)
+{
+    char name[256], ns[256];
+    const McmeTag *states = NULL;
+    const char *base;
+    McmeState props[CHUNK_MAX_STATES];
+    size_t prop_count = 0;
+
+    if (!mcme_block_parse_spec(spec, arena, name, sizeof name,
+                               &states))
+        return false;
+    if (!state_pairs(states, props, &prop_count)) {
+        mcme_set_error("the block's states are too many");
+        return false;
+    }
+    if (!split_ns(name, ns, sizeof ns, &base)) {
+        mcme_set_error("the block's namespace is empty or too long");
+        return false;
+    }
+    return mcme_mesh_for_block(blockstates, models, textures, ns,
+                               base, props, prop_count, out);
+}
+
 static void *chunk_work(void *work_ud)
 {
     ChunkWork *w = work_ud;
@@ -121,9 +161,175 @@ static void *chunk_work(void *work_ud)
     McmeBlockstateIndex *blockstates = NULL;
     McmeModelIndex *models = NULL;
     McmeTextureIndex *textures = NULL;
+    /* the section path's own (G11), freed at out */
+    bool grid_live = false;
+    McmeSubgrid grid;
+    SectionState *grid_states = NULL;
+    size_t grid_state_count = 0;
+    uint16_t *st_cell = NULL;
+    McmeMesh **parts = NULL;
+    size_t part_count = 0;
 
     if (!mcme_world_probe(&info, w->world_dir)) {
         r->text = refuse_text();
+        goto out;
+    }
+
+    if (w->section) {
+        /* G11's road: the WHOLE SUB-CHUNK the coordinates stand
+           in — the grid the builder walks, composed by the core
+           whole (the same seven layers `chunk submesh` answers
+           its table from), every cell meshed and culled. */
+        McmeWorldBlockStatus st = mcme_world_subgrid(&info, w->dim,
+                                                     w->x, w->y,
+                                                     w->z, &grid);
+        if (st != MCME_WORLDBLOCK_OK) {
+            r->text = refuse_text();
+            mcme_world_info_free(&info);
+            goto out;
+        }
+        grid_live = true;
+        mcme_world_info_free(&info);
+        {
+            int lx = (int)(w->x - (w->x >> 4) * 16);
+            int ly = (int)(w->y - (w->y >> 4) * 16);
+            int lz = (int)(w->z - (w->z >> 4) * 16);
+
+            r->spec = g_strdup(mcme_subgrid_at(&grid, lx, ly, lz));
+        }
+        if (r->spec == NULL) {
+            r->text = g_strdup("out of memory");
+            goto out;
+        }
+
+        if (!mcme_blockstate_index_open(w->pack_dir, &blockstates) ||
+            !mcme_model_index_open(w->pack_dir, &models) ||
+            !mcme_texture_index_open(w->pack_dir, &textures)) {
+            r->text = refuse_text();
+            goto out;
+        }
+        arena = mcme_arena_new();
+        if (arena == NULL) {
+            r->text = g_strdup("out of memory");
+            goto out;
+        }
+
+        /* Every distinct state the grid holds, meshed once — the
+           verbs' prelude over the mesh road (D40): one state's
+           mesh answers every cell wearing it, transparency
+           among it. */
+        st_cell = g_new(uint16_t, MCME_SUB_CELLS);
+        for (int i = 0; i < MCME_SUB_CELLS; ++i) {
+            int gx = i / (MCME_SUB_WIDTH * MCME_SUB_WIDTH) - 1;
+            int gy = (i / MCME_SUB_WIDTH) % MCME_SUB_WIDTH - 1;
+            int gz = i % MCME_SUB_WIDTH - 1;
+            const char *spec = mcme_subgrid_at(&grid, gx, gy, gz);
+            size_t s;
+
+            for (s = 0; s < grid_state_count; ++s)
+                if (strcmp(grid_states[s].spec, spec) == 0) break;
+            if (s == grid_state_count) {
+                grid_states = g_renew(SectionState, grid_states,
+                                      grid_state_count + 1);
+                grid_states[grid_state_count].spec = g_strdup(spec);
+                memset(&grid_states[grid_state_count].mesh, 0,
+                       sizeof(McmeMesh));
+                grid_state_count++;
+                if (!section_mesh_state(
+                        spec, arena, blockstates, models, textures,
+                        &grid_states[s].mesh)) {
+                    r->text = refuse_text();
+                    goto out;
+                }
+            }
+            st_cell[i] = (uint16_t)s;
+        }
+
+        /* The builder's own loop over the sub-chunk's cells
+           (D40): x, then y, then z; each cell's six neighbours the
+           padded grid's own, DOWN through WEST. The cell's mesh is
+           its state's — copied by a one-part merge (the
+           reference's own), culled to the sides standing beside
+           it, moved to the cell it stands in (G11). */
+        parts = g_new0(McmeMesh *, MCME_SUB_EDGE * MCME_SUB_EDGE
+                                          * MCME_SUB_EDGE);
+        for (int cx = 0; cx < MCME_SUB_EDGE; ++cx) {
+            for (int cy = 0; cy < MCME_SUB_EDGE; ++cy) {
+                for (int cz = 0; cz < MCME_SUB_EDGE; ++cz) {
+                    size_t gi = (size_t)(cx + 1)
+                                        * MCME_SUB_WIDTH
+                                        * MCME_SUB_WIDTH
+                        + (size_t)(cy + 1) * MCME_SUB_WIDTH
+                        + (size_t)(cz + 1);
+                    McmeTransparency beside[MCME_CULL_NONE] = {
+                        grid_states[st_cell[gi - MCME_SUB_WIDTH]]
+                            .mesh.transparency,
+                        grid_states[st_cell[gi + MCME_SUB_WIDTH]]
+                            .mesh.transparency,
+                        grid_states[st_cell[gi - 1]]
+                            .mesh.transparency,
+                        grid_states[st_cell[gi + MCME_SUB_WIDTH
+                                                 * MCME_SUB_WIDTH]]
+                            .mesh.transparency,
+                        grid_states[st_cell[gi + 1]]
+                            .mesh.transparency,
+                        grid_states[st_cell[gi - MCME_SUB_WIDTH
+                                                 * MCME_SUB_WIDTH]]
+                            .mesh.transparency,
+                    };
+                    const SectionState *st =
+                        &grid_states[st_cell[gi]];
+                    const McmeMesh *one = &st->mesh;
+                    McmeMesh *cell = g_new0(McmeMesh, 1);
+                    size_t kept;
+
+                    if (!mcme_mesh_merge(&one, 1, cell)) {
+                        g_free(cell);
+                        r->text = refuse_text();
+                        goto out;
+                    }
+                    r->faces_total += mesh_faces(cell);
+                    if (!mcme_mesh_cull_dirs(cell, beside) ||
+                        !mcme_mesh_translate(cell, (double)cx,
+                                             (double)cy,
+                                             (double)cz)) {
+                        mcme_mesh_free(cell);
+                        g_free(cell);
+                        r->text = g_strdup("out of memory");
+                        goto out;
+                    }
+                    kept = mesh_faces(cell);
+                    if (kept == 0) {
+                        mcme_mesh_free(cell);
+                        g_free(cell);
+                        continue; /* buried: the cull's own no */
+                    }
+                    r->faces += kept;
+                    r->cells++;
+                    parts[part_count++] = cell;
+                }
+            }
+        }
+
+        /* The sub-chunk as one mesh: the parts merged whole — the
+           reference's merge again, at section scale — and the
+           pack's page over the union (the meshtask's own). */
+        r->mesh = g_new0(McmeMeshResult, 1);
+        if (!mcme_mesh_merge((const McmeMesh *const *)parts,
+                             part_count, &r->mesh->mesh)) {
+            r->text = refuse_text();
+            g_clear_pointer(&r->mesh, mcme_meshresult_free);
+            goto out;
+        }
+        /* the merged mesh owns the geometry now */
+        for (size_t p = 0; p < part_count; ++p) {
+            mcme_mesh_free(parts[p]);
+            g_free(parts[p]);
+        }
+        part_count = 0;
+        r->mesh->ok = true;
+        r->ok = true;
+        mcme_meshtask_pack_atlas(r->mesh, textures);
         goto out;
     }
 
@@ -259,6 +465,8 @@ static void *chunk_work(void *work_ud)
             goto out;
         }
         r->faces = mesh_faces(&r->mesh->mesh);
+        /* one cell was asked, and it stands if any face does */
+        r->cells = r->faces > 0 ? 1 : 0;
     }
 
     /* The mesh half's own ok — set_mesh gates its stage on it (the
@@ -273,6 +481,20 @@ out:
     mcme_texture_index_close(textures);
     for (int s = 0; s < 7; ++s) g_free(text[s]);
     if (arena != NULL) mcme_arena_free(arena);
+    if (grid_live) mcme_subgrid_free(&grid);
+    for (size_t s = 0; s < grid_state_count; ++s) {
+        g_free(grid_states[s].spec);
+        mcme_mesh_free(&grid_states[s].mesh);
+    }
+    g_free(grid_states);
+    g_free(st_cell);
+    if (parts != NULL) {
+        for (size_t p = 0; p < part_count; ++p) {
+            mcme_mesh_free(parts[p]);
+            g_free(parts[p]);
+        }
+        g_free(parts);
+    }
     g_free(w->world_dir);
     g_free(w->pack_dir);
     g_free(w);
@@ -289,7 +511,7 @@ static void chunk_deliver(void *done_ud, void *result)
 
 bool mcme_chunktask_start(McmeWire *wire, const char *world_dir,
                           const char *pack_dir, int32_t dimension,
-                          long x, long y, long z,
+                          long x, long y, long z, bool section,
                           McmeChunkDoneFn done, void *userdata)
 {
     ChunkWork *w;
@@ -312,6 +534,7 @@ bool mcme_chunktask_start(McmeWire *wire, const char *world_dir,
     w->x = x;
     w->y = y;
     w->z = z;
+    w->section = section;
     d->fn = done;
     d->userdata = userdata;
 

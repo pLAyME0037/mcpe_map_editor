@@ -6722,6 +6722,72 @@ static void test_world_block(void)
     mcme_world_info_free(&info);
 }
 
+/* The sub-chunk grid the builder walks (G11): the compose's cells,
+   its totality and its refusals, on the golden world's own answer.
+   The golden holds air everywhere it holds anything, so every cell
+   of the padded grid answers air — the target's chunk is stored,
+   the sides' need not be, and the padding past them is the world's
+   edge. */
+static void test_subgrid(void)
+{
+    McmeWorldInfo info;
+    McmeSubgrid grid;
+
+    printf("  subgrid (the seven layers, the padded grid)\n");
+
+    CHECK(mcme_world_probe(&info, kWorldDir));
+
+    /* the grid around the sub-chunk holding block (5, 5, 5): the
+       target's chunk is stored, its section air, so the whole
+       padded box answers air */
+    CHECK(mcme_world_subgrid(&info, 0, 5, 5, 5, &grid)
+          == MCME_WORLDBLOCK_OK);
+    {
+        size_t bad = 0;
+        for (int lx = -1; lx <= MCME_SUB_EDGE; ++lx)
+            for (int ly = -1; ly <= MCME_SUB_EDGE; ++ly)
+                for (int lz = -1; lz <= MCME_SUB_EDGE; ++lz) {
+                    const char *s =
+                        mcme_subgrid_at(&grid, lx, ly, lz);
+                    if (s == NULL || strcmp(s, "minecraft:air") != 0)
+                        ++bad;
+                }
+        CHECK(bad == 0);        /* every cell, the format's air */
+    }
+    /* totality: past the padded box every position is air, so the
+       builder's neighbour walk never reads outside it */
+    CHECK(strcmp(mcme_subgrid_at(&grid, -2, 0, 0),
+                 "minecraft:air") == 0);
+    CHECK(strcmp(mcme_subgrid_at(&grid, 0, MCME_SUB_EDGE + 1, 0),
+                 "minecraft:air") == 0);
+    /* the free is total — a second one owns nothing */
+    mcme_subgrid_free(&grid);
+    mcme_subgrid_free(&grid);
+
+    /* a chunk the region file does not hold: the target's own
+       refusal, named not-found — the verbs' exit 2 */
+    CHECK(mcme_world_subgrid(&info, 0, 40, 5, 5, &grid)
+          == MCME_WORLDBLOCK_NOT_FOUND);
+    mcme_clear_error();
+    mcme_subgrid_free(&grid);
+
+    /* the nether: this world keeps no DIM-1, so the target's chunk
+       is not stored — the refusal ref_chunkmesh pins */
+    CHECK(mcme_world_subgrid(&info, 1, 5, 5, 5, &grid)
+          == MCME_WORLDBLOCK_NOT_FOUND);
+    mcme_clear_error();
+    mcme_subgrid_free(&grid);
+
+    /* a dimension number no layout holds: usage, silently — the
+       caller's own argument to refuse */
+    CHECK(mcme_world_subgrid(&info, 7, 5, 5, 5, &grid)
+          == MCME_WORLDBLOCK_USAGE);
+    mcme_clear_error();
+    mcme_subgrid_free(&grid);
+
+    mcme_world_info_free(&info);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -6757,6 +6823,7 @@ int mcme_test_world(void)
     test_java_chunk();
     test_java_fill();
     test_world_block();
+    test_subgrid();
 
     return g_failed;
 }
