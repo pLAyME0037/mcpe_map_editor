@@ -3519,3 +3519,73 @@ context-sharing worker pool), or backface culling pins
 winding at this layer and the pins demand it — then the
 seam moves: the render callback grows a builder, or the
 staging half grows a winding decision.
+
+## D51 — The page rides the wire with the mesh
+
+**Chosen.** The viewport's textures cross the same road the
+mesh does: the meshtask worker packs the editor's page —
+`mcme_atlas_build` over the texture index's whole table, the
+missing image seeded first (D34/D35) — and answers where each
+of the mesh's own textures landed; the result carries mesh,
+page and a slot table (mesh texture → atlas slot). The loop
+thread bakes the texture coordinates in the staging half (the
+mesh's uvs lerped into the face's slot bounds — the builder's
+vertices are face-owned, four per face, so a per-vertex uv is
+the whole truth), and the page's pixels upload on the frame
+after they arrive, exactly like the floats. The shader
+multiplies the sampled colour by the vertex tint. A page that
+will not build (D34 refuses whole by name) is a tint-only
+viewport, not a refused mesh — the degradation is the answer.
+The mesh's `textures[]` turn out to be the index's own file
+paths ("the rels half was only the dedup key"), so the slot
+map is a straight name match, and the word `missing_no` is
+both the page's seeded first entry and the mesh's answer for
+a texture the pack lacks — both routes land on the missing
+image.
+
+**Why.** D6 unchanged: nothing GL-side happens off the loop
+thread, so the page rides staged like the vertices — pixels
+copied out of the result before its free, uploaded inside the
+render callback where the context is current. The page is
+built over the whole index because that is the editor's
+manager shape (the future chunk view wants one standing
+page), and the seam is one the core already stood up — the
+GUI change is consumption only (D40's record flips here).
+
+**Rejected.**
+- *A mesh-scoped page (only the block's own textures)*:
+  smaller upload, but every future block re-packs and the
+  editor's page is whole-pack by design; the reversal below
+  covers the cost if a huge pack ever proves slow.
+- *Extending the core with an ns-blind texture lookup*: the
+  mesh already carries the index's file paths — no new core
+  API is needed and the drop stays GUI-only.
+- *Copying the page at delivery, or uploading in set_mesh*:
+  the copy is waste and the upload would leave the
+  callbacks — the staged-pixels path is the D50/D51 shape.
+- *Flipping v on upload or in the shader*: the mesh's uvs
+  and the page's bounds already agree (v down from the top;
+  the page uploads row 0 first) — one convention, no flips,
+  and the selftest pins the pairing.
+
+**How verified.** `./mcgui --selftest` PASS 1195 rc=0 —
+the delivered page's facts (seed first, pixels present,
+bounds inside the unit square), the missing-texture partial
+landing on slot 0, the degradation (a garbage `.png`: the
+index warns "treated as opaque", the mesh answers, the page
+refuses whole → tint-only), the staging uv lerp against
+known bounds with the fallback zeros and the out-of-range
+slot; display smokes: pack+mesh `mc:block/cull6` rc=0 with
+`pack=ok mesh=ok drew=1 tex=1 gl_failed=0`, refusal rc=1,
+window-only and pack-only rc=0, an x11 variation rc=0 (env:
+nvidia-stubbed llvmpipe); battery 19/19; `./rebuild.sh
+test` PASS.
+
+**Reverses if:** a pack's whole-table page proves too slow
+or too big for the GUI (hundreds of textures) — then the
+worker scopes the atlas to the visible meshes and the slot
+table's meaning stays; or the reference's renderer turns out
+to dress faces with something beyond slot-bounds lerp
+(per-face rotations beyond what the mesher already baked, a
+second texture binding) — then the staging's uv math grows
+with it, still pure, still pinned.

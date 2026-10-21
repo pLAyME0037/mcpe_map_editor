@@ -6,10 +6,12 @@
  * and draw.
  *
  * The staged geometry is the mesh's own numbers dressed for the GPU:
- * positions and per-vertex tint, interleaved; the seven cull buckets
- * merged in direction order with each face's indices made global.
- * The mesh's texture half rides later (the atlas is the CLI's, D34);
- * tint is what every mesh already carries.
+ * positions, texture coordinates and per-vertex tint, interleaved;
+ * the seven cull buckets merged in direction order with each face's
+ * indices made global. The texture coordinates come from G4's seam:
+ * the mesh's own uvs lerped into the page's bounds for the face's
+ * slot (D34's atlas, built worker-side). The page uploads on the
+ * frame after it arrives — GL stays inside the callbacks, D6.
  */
 #ifndef MCME_GUI_VIEWPORT_H
 #define MCME_GUI_VIEWPORT_H
@@ -19,30 +21,36 @@
 
 #include <gtk/gtk.h>
 
-#include "mcme/resource.h" /* McmeMesh */
+#include "mcme/resource.h" /* McmeMesh, McmeAtlas */
 #include "meshtask.h"      /* McmeMeshResult */
 
 GtkWidget *mcme_viewport_new(void);
 
 /* Pure staging, no GL and no GTK: the mesh flattened into one
- * interleaved vertex stream (position then tint, three floats each)
- * and one index stream rebased onto it — bucket-local face indices
- * made stream-global. Both arrays are malloc'd; the caller frees
- * them. False on a NULL argument, out of memory, or a face pointing
- * past its bucket's vertices — a mesh no GPU should be handed. */
-bool mcme_viewport_stage(const McmeMesh *mesh, float **verts_out,
+ * interleaved vertex stream (position three floats, uv two, tint
+ * three) and one index stream rebased onto it — bucket-local face
+ * indices made stream-global. Each face's uvs lerp the mesh's own
+ * into the page's bounds for its texture slot; a NULL page (or
+ * slot table) dresses every vertex with uv 0 — the tint-only
+ * fallback. Both arrays are malloc'd; the caller frees them. False
+ * on a NULL mesh argument, out of memory, or a face pointing past
+ * its bucket's vertices — a mesh no GPU should be handed. */
+bool mcme_viewport_stage(const McmeMesh *mesh, const McmeAtlas *atlas,
+                         const uint32_t *tex_slots, float **verts_out,
                          uint32_t **idx_out, size_t *nverts_out,
                          size_t *nidx_out);
 
-/* Loop thread only: takes ownership of the result, stages it, and
- * queues a frame. A refused result is freed and leaves the viewport
- * as it was. */
+/* Loop thread only: takes ownership of the result, stages it (page
+ * and all), and queues a frame. A refused result is freed and leaves
+ * the viewport as it was. */
 void mcme_viewport_set_mesh(GtkWidget *viewport, McmeMeshResult *result);
 
 /* True once a frame carrying a mesh has been drawn; true when any GL
- * step went wrong (context, shader, upload, or draw). The smoke gate
- * reads both. */
+ * step went wrong (context, shader, upload, or draw); true once the
+ * page's texture has landed on the GPU. The smoke gates read all
+ * three. */
 bool mcme_viewport_drew(const GtkWidget *viewport);
 bool mcme_viewport_gl_failed(const GtkWidget *viewport);
+bool mcme_viewport_textured(const GtkWidget *viewport);
 
 #endif

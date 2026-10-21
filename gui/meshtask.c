@@ -4,6 +4,8 @@
 
 #include "meshtask.h"
 
+#include <string.h>
+
 #include <glib.h>
 
 #include "mcme/core.h"   /* mcme_last_error — one global, copied now */
@@ -15,8 +17,57 @@ void mcme_meshresult_free(McmeMeshResult *result)
     if (result == NULL) return;
 
     g_free(result->text);
-    if (result->ok) mcme_mesh_free(&result->mesh);
+    if (result->ok) {
+        mcme_mesh_free(&result->mesh);
+        if (result->has_atlas) mcme_atlas_free(&result->atlas);
+        g_free(result->tex_slots);
+    }
     g_free(result);
+}
+
+/* The seam the core left standing: the mesh's textures[] are the
+   index's own file paths ("the rels half was only the dedup key"),
+   and the page's names are those very paths fed in — so the slot is
+   a straight name match. The word "missing_no" is the page's seeded
+   first entry, and it is also the mesh's answer for a texture the
+   pack lacks, so both routes land on the missing image. Nothing
+   matches, the missing image answers. */
+static uint32_t atlas_slot(const McmeAtlas *atlas, const char *name)
+{
+    if (strcmp(name, "missing_no") == 0) return 0;
+    for (size_t j = 0; j < atlas->count; ++j)
+        if (strcmp(atlas->names[j], name) == 0)
+            return (uint32_t)j;
+    return 0;
+}
+
+/* The editor's page over the index's whole table (D34/D35: the
+   missing image first, then the pack's files in index order). A page
+   that will not build leaves the result atlas-less — the tint-only
+   viewport dresses the mesh it already has. */
+static void mesh_atlas(McmeMeshResult *r, const McmeTextureIndex *tex)
+{
+    size_t n = mcme_texture_count(tex);
+    const char **files = g_try_malloc((n ? n : 1) * sizeof *files);
+
+    if (files == NULL) return;
+    for (size_t i = 0; i < n; ++i)
+        files[i] = mcme_texture_at(tex, i);
+    if (mcme_atlas_build((const char *const *)files, n, &r->atlas)) {
+        r->has_atlas = true;
+        r->tex_slots = g_try_malloc((r->mesh.texture_count
+                                     ? r->mesh.texture_count : 1)
+                                    * sizeof *r->tex_slots);
+        if (r->tex_slots == NULL) {
+            mcme_atlas_free(&r->atlas);
+            r->has_atlas = false;
+        } else {
+            for (size_t i = 0; i < r->mesh.texture_count; ++i)
+                r->tex_slots[i] = atlas_slot(&r->atlas,
+                                             r->mesh.textures[i]);
+        }
+    }
+    g_free(files);
 }
 
 typedef struct {
@@ -41,6 +92,7 @@ static void *mesh_work(void *work_ud)
         mcme_texture_index_open(w->pack_dir, &textures) &&
         mcme_mesh_build(models, textures, w->ns, w->path, &r->mesh)) {
         r->ok = true;
+        mesh_atlas(r, textures);
     } else {
         /* The refusal, copied at once: the core's error slot is one
            global, and only this thread calls core code. */

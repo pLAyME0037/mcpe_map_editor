@@ -7,6 +7,85 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The block appears: textures behind the glass
+
+### Built
+
+- G4, D40's GUI-consumption record flipping: the viewport
+  draws the block's own texture now, not tint alone. The
+  meshtask worker packs the editor's page
+  (`mcme_atlas_build` over the texture index's whole table —
+  the missing image seeded first, D34/D35) and answers where
+  each of the mesh's own textures landed; the result crosses
+  the wire carrying mesh + page + a slot table; the staging
+  half bakes the texture coordinates (the mesh's uvs lerped
+  into the face's slot bounds); the render callback uploads
+  the page on the frame after it arrives — GL stays inside
+  the callbacks, D6 untouched. The shader samples the page
+  and multiplies by the vertex tint.
+- The degradation is the answer, not a failure: a page that
+  will not build (D34 refuses whole by name) leaves the
+  result atlas-less and the viewport draws the tint-only
+  mesh it already had. `McmeMeshResult` grew `has_atlas`,
+  `atlas`, `tex_slots`; `mcme_meshresult_free` releases
+  them with the mesh.
+- The staging half's stream is now position · uv · tint
+  (eight floats a vertex); `mcme_viewport_stage` takes the
+  page and the slot table and dresses uv 0 without either —
+  the selftest runs every path headless. The smoke settle
+  line grew `tex=`: the textured gate prints `pack=ok
+  mesh=ok drew=1 tex=1 gl_failed=0`.
+- Selftest +80: the delivered page's facts (the seed first,
+  pixels present, bounds inside the unit square), the
+  missing-texture partial landing on slot 0, the garbage
+  `.png` degradation, the uv lerp against known bounds, the
+  fallback and the out-of-range slot. 1195 checks, still
+  with no display in the building.
+
+### Notes
+
+- The first run failed one check — the mesh's texture name
+  did not suffix-match the page's file paths, so everything
+  mapped to slot 0 (the missing image). The fix was not a
+  cleverer match: the builder interns `textures[]` from the
+  index's own file paths ("the rels half was only the dedup
+  key") — the slot map is a straight name match, and
+  `missing_no` is simultaneously the page's seeded first
+  entry and the mesh's answer for an absent texture. The
+  core had left the seam standing; the first draft just
+  could not see it. Empiricism again: the check caught the
+  invention.
+- No v-flip anywhere, deliberately: the mesh's uvs are
+  v-down from the top, the page uploads row 0 first, and
+  GL's v counts rows in upload order — the pairing the
+  reference plays with its own page. Both halves are pinned
+  by the selftest, so any future flip has to argue with the
+  pins.
+- The texture index tolerates an image stb cannot read
+  (warns "treated as opaque", keeps the entry by name) —
+  which makes the degradation path constructible in the
+  selftest with nine bytes of garbage, no new core rules.
+- `/tmp/opencode/glstub` had evaporated with a /tmp cleanup
+  and all four smokes wedged at rc=124 before the stubs
+  were rebuilt (two one-line shared objects, the sonames
+  GLVND dlopens). The wedge is environmental and its fix
+  is now a two-command recipe in G3's notes above.
+- Gates: `--selftest` PASS 1195 rc=0; smokes (wayland,
+  nvidia-stubbed llvmpipe): window-only rc=0, pack-only
+  rc=0, pack+mesh `mc:block/cull6` rc=0 with `pack=ok
+  mesh=ok drew=1 tex=1 gl_failed=0` on stderr, refusal
+  `mc:block/full_missing` rc=1; an x11 pack+mesh rc=0 with
+  the same settle line; battery 19/19; `./rebuild.sh test`
+  PASS; `git status tests/` clean.
+
+### Next
+
+- The window opens a pack without the command line
+  (GtkFileDialog — the nominated candidate still standing),
+  or the viewport grows a camera the user can drive, or the
+  page goes standing (whole-pack, built once per pack) as
+  the chunk view's foundation.
+
 ## 2026-10-21 — The mesh crosses: a worker-built cube behind the glass
 
 ### Built

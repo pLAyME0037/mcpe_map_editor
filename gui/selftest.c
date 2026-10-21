@@ -286,6 +286,12 @@ static void test_packtask(void)
 static int g_mesh_done_calls;
 static bool g_mesh_done_ok;
 static size_t g_mesh_done_verts;
+static bool g_mesh_done_atlas;
+static bool g_mesh_done_missing_first;
+static bool g_mesh_done_page;
+static size_t g_mesh_done_atlas_count;
+static uint32_t g_mesh_done_slot0;
+static bool g_mesh_done_bounds_ok;
 
 /* Loop thread, via the wire's visit — the shape on_mesh_result has. */
 static void on_mesh_done(void *userdata, McmeMeshResult *result)
@@ -302,6 +308,31 @@ static void on_mesh_done(void *userdata, McmeMeshResult *result)
             CHECK(b->face_count >= 1);
             for (size_t f = 0; f < b->face_count * 6; ++f)
                 CHECK(b->faces[f] < b->vert_count);
+        }
+        /* The page's half (G4): the seed first, the pixels there,
+           the mesh's first texture mapped into bounds that stay
+           inside the unit square. */
+        g_mesh_done_atlas = result->has_atlas;
+        if (result->has_atlas) {
+            g_mesh_done_missing_first =
+                result->atlas.count > 0 &&
+                strcmp(result->atlas.names[0], "missing_no") == 0;
+            g_mesh_done_page = result->atlas.page.rgba != NULL &&
+                               result->atlas.page.width > 0 &&
+                               result->atlas.page.height > 0;
+            g_mesh_done_atlas_count = result->atlas.count;
+            if (result->mesh.texture_count > 0 &&
+                result->tex_slots != NULL) {
+                uint32_t s = result->tex_slots[0];
+
+                g_mesh_done_slot0 = s;
+                g_mesh_done_bounds_ok =
+                    (size_t)s * 4 + 3 < result->atlas.count * 4 &&
+                    result->atlas.bounds[s * 4 + 0] >= 0.0 &&
+                    result->atlas.bounds[s * 4 + 1] >= 0.0 &&
+                    result->atlas.bounds[s * 4 + 2] <= 1.0 &&
+                    result->atlas.bounds[s * 4 + 3] <= 1.0;
+            }
         }
     } else {
         CHECK(result->text != NULL && result->text[0] != '\0');
@@ -385,6 +416,12 @@ static void test_meshtask(void)
     g_mesh_done_calls = 0;
     g_mesh_done_ok = false;
     g_mesh_done_verts = 0;
+    g_mesh_done_atlas = false;
+    g_mesh_done_missing_first = false;
+    g_mesh_done_page = false;
+    g_mesh_done_atlas_count = 0;
+    g_mesh_done_slot0 = 99;
+    g_mesh_done_bounds_ok = false;
     CHECK(mcme_meshtask_start(wire, dir, "mc", "block/cube",
                               on_mesh_done, NULL));
     while (g_mesh_done_calls == 0)
@@ -392,11 +429,61 @@ static void test_meshtask(void)
     CHECK(g_mesh_done_calls == 1);
     CHECK(g_mesh_done_ok);
     CHECK(g_mesh_done_verts >= 4); /* four vertices a face (D32) */
+    /* The page rode with the mesh: the missing image seeded first,
+       the pack's own file behind it, the mesh's texture mapped into
+       bounds that stay inside the unit square. */
+    CHECK(g_mesh_done_atlas);
+    CHECK(g_mesh_done_missing_first);
+    CHECK(g_mesh_done_page);
+    CHECK(g_mesh_done_atlas_count >= 2);
+    CHECK(g_mesh_done_slot0 > 0);
+    CHECK(g_mesh_done_bounds_ok);
+
+    /* A face whose texture the pack does not hold is not a full
+       block: the mesh answers, and the missing image is its texture
+       — the page's seeded first slot. */
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block/partial.json",
+             dir);
+    write_file(path,
+        "{\"textures\":{\"a\":\"block/absent\"},\"elements\":"
+        "[{\"from\":[0,0,0],\"to\":[16,16,16],\"faces\":"
+        "{\"up\":{\"texture\":\"#a\"}}}]}\n");
+    g_mesh_done_calls = 0;
+    g_mesh_done_ok = false;
+    g_mesh_done_slot0 = 99;
+    CHECK(mcme_meshtask_start(wire, dir, "mc", "block/partial",
+                              on_mesh_done, NULL));
+    while (g_mesh_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_mesh_done_calls == 1);
+    CHECK(g_mesh_done_ok);
+    CHECK(g_mesh_done_atlas);
+    CHECK(g_mesh_done_slot0 == 0); /* missing_no, the seed */
+
+    /* A texture file stb will not read: the index still holds it by
+       name (the mesh answers), but the page refuses whole (D34) —
+       the degradation is the tint-only viewport, not a lost mesh. */
+    snprintf(path, sizeof(path),
+             "%s/assets/minecraft/textures/block/opaque.png", dir);
+    write_file(path, "not a png\n");
+    g_mesh_done_calls = 0;
+    g_mesh_done_ok = false;
+    g_mesh_done_atlas = true;
+    CHECK(mcme_meshtask_start(wire, dir, "mc", "block/cube",
+                              on_mesh_done, NULL));
+    while (g_mesh_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_mesh_done_calls == 1);
+    CHECK(g_mesh_done_ok);
+    CHECK(!g_mesh_done_atlas);
     mcme_wire_free(wire);
 
     snprintf(path, sizeof(path), "%s/pack.mcmeta", dir);
     unlink(path);
     snprintf(path, sizeof(path), "%s/assets/mc/models/block/cube.json",
+             dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block/partial.json",
              dir);
     unlink(path);
     snprintf(path, sizeof(path),
@@ -437,55 +524,93 @@ static uint32_t *uarray(size_t n)
 }
 
 /* The viewport's staging half, pure and headless: two buckets in,
-   one interleaved stream and one rebased index stream out — and the
-   refusal of a face that points past its bucket. */
+   one interleaved stream and one rebased index stream out — each
+   face's uvs lerped into its slot's page bounds, the tint-only
+   fallback, and the refusal of a face that points past its bucket. */
 static void test_stage(void)
 {
     McmeMesh m = {0};
     McmeMeshBucket *up, *none;
+    McmeAtlas atlas = {0};
+    double bounds[8] = {0.0, 0.0, 0.25, 0.25,   /* slot 0, missing  */
+                        0.25, 0.5, 0.75, 0.75}; /* slot 1           */
+    uint32_t slots[1] = {1};                    /* the mesh's one   */
+    char **tex_names;                           /* texture -> 1     */
     float *verts = NULL;
     uint32_t *idx = NULL;
     size_t nverts = 0, nidx = 0;
+
+    tex_names = calloc(1, sizeof *tex_names);
+    CHECK(tex_names != NULL); /* mcme_mesh_free frees per entry */
+    m.textures = tex_names;
+    m.texture_count = 1;
 
     up = &m.buckets[MCME_CULL_UP];
     none = &m.buckets[MCME_CULL_NONE];
     m.present[MCME_CULL_UP] = true;
     m.present[MCME_CULL_NONE] = true;
+    m.texture_count = 1;
 
     up->vert_count = 4;
     up->face_count = 1;
     up->verts = darray(12);
+    up->tverts = darray(8);
     up->tint_verts = darray(12);
     up->faces = uarray(6);
+    up->texture_indexes = uarray(2);
     for (int v = 0; v < 4; ++v) {
         up->verts[v * 3 + 0] = v;          /* x = 0,1,2,3      */
         up->verts[v * 3 + 1] = 10 + v;     /* y                */
         up->verts[v * 3 + 2] = 20 + v;     /* z                */
         up->tint_verts[v * 3 + 0] = 0.25;  /* flat tint, red   */
     }
+    up->tverts[0] = 0; up->tverts[1] = 1;
+    up->tverts[2] = 1; up->tverts[3] = 1;
+    up->tverts[4] = 1; up->tverts[5] = 0;
+    up->tverts[6] = 0; up->tverts[7] = 0;
+    up->texture_indexes[0] = 0;
+    up->texture_indexes[1] = 0;
     up->faces[0] = 0; up->faces[1] = 1; up->faces[2] = 2;
     up->faces[3] = 2; up->faces[4] = 3; up->faces[5] = 0;
 
     none->vert_count = 3;
     none->face_count = 1;
     none->verts = darray(9);
+    none->tverts = darray(6);
     none->tint_verts = darray(9);
     none->faces = uarray(6);
+    none->texture_indexes = uarray(2);
+    none->texture_indexes[0] = 0;
+    none->texture_indexes[1] = 0;
     none->faces[0] = 0; none->faces[1] = 1; none->faces[2] = 2;
     none->faces[3] = 2; none->faces[4] = 1; none->faces[5] = 0;
 
-    CHECK(mcme_viewport_stage(&m, &verts, &idx, &nverts, &nidx));
+    atlas.count = 2;
+    atlas.bounds = bounds;
+
+    CHECK(mcme_viewport_stage(&m, &atlas, slots, &verts, &idx,
+                              &nverts, &nidx));
     CHECK(nverts == 7);
     CHECK(nidx == 12);
     if (verts != NULL && idx != NULL) {
-        /* The interleave: position then tint, per vertex. */
+        /* The interleave: position, uv, tint — per vertex. The
+           first vertex's (u,v) = (0,1) lands on the slot's far
+           corner: u0 + 0*(u1-u0) = 0.25, v0 + 1*(v1-v0) = 0.75. */
         CHECK(verts[0] == 0.0f && verts[1] == 10.0f &&
               verts[2] == 20.0f);
-        CHECK(verts[3] == 0.25f && verts[4] == 0.0f &&
-              verts[5] == 0.0f);
-        /* The second bucket's first vertex sits at base 4. */
-        CHECK(verts[4 * 6 + 0] == 0.0f);
-        CHECK(verts[4 * 6 + 3] == 0.0f);
+        CHECK(verts[3] == 0.25f && verts[4] == 0.75f);
+        CHECK(verts[5] == 0.25f && verts[6] == 0.0f &&
+              verts[7] == 0.0f);
+        CHECK(verts[1 * 8 + 3] == 0.75f &&
+              verts[1 * 8 + 4] == 0.75f);
+        CHECK(verts[2 * 8 + 3] == 0.75f &&
+              verts[2 * 8 + 4] == 0.5f);
+        /* The second bucket's first vertex sits at base 4; its
+           zero uvs land on the slot's origin corner. */
+        CHECK(verts[4 * 8 + 0] == 0.0f);
+        CHECK(verts[4 * 8 + 3] == 0.25f &&
+              verts[4 * 8 + 4] == 0.5f);
+        CHECK(verts[4 * 8 + 5] == 0.0f);
         /* The rebase: none's local 0,1,2 became 4,5,6. */
         CHECK(idx[0] == 0 && idx[4] == 3);
         CHECK(idx[6] == 4 && idx[7] == 5 && idx[8] == 6);
@@ -493,14 +618,42 @@ static void test_stage(void)
     free(verts);
     free(idx);
 
+    /* No page: every uv 0 — the tint-only fallback. */
+    verts = NULL;
+    idx = NULL;
+    CHECK(mcme_viewport_stage(&m, NULL, slots, &verts, &idx,
+                              &nverts, &nidx));
+    if (verts != NULL) {
+        CHECK(verts[3] == 0.0f && verts[4] == 0.0f);
+        CHECK(verts[4 * 8 + 3] == 0.0f);
+    }
+    free(verts);
+    free(idx);
+
+    /* A slot past the page: the missing image's corner answers —
+       uv stays inside the page either way. */
+    slots[0] = 9;
+    verts = NULL;
+    idx = NULL;
+    CHECK(mcme_viewport_stage(&m, &atlas, slots, &verts, &idx,
+                              &nverts, &nidx));
+    if (verts != NULL) {
+        CHECK(verts[3] == 0.0f && verts[4] == 0.0f);
+    }
+    free(verts);
+    free(idx);
+    slots[0] = 1;
+
     /* A face past its bucket's vertices: refused, nothing handed. */
     up->faces[4] = 99;
     verts = NULL;
     idx = NULL;
-    CHECK(!mcme_viewport_stage(&m, &verts, &idx, &nverts, &nidx));
+    CHECK(!mcme_viewport_stage(&m, &atlas, slots, &verts, &idx,
+                               &nverts, &nidx));
     CHECK(verts == NULL && idx == NULL);
 
-    CHECK(!mcme_viewport_stage(NULL, &verts, &idx, &nverts, &nidx));
+    CHECK(!mcme_viewport_stage(NULL, &atlas, slots, &verts, &idx,
+                               &nverts, &nidx));
 
     mcme_mesh_free(&m); /* hand-built arrays free like the core's */
 }

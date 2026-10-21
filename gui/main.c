@@ -85,11 +85,12 @@ static void maybe_smoke_quit(void)
         else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
     fprintf(stderr,
-            "mcgui: smoke: pack=%s mesh=%s drew=%d gl_failed=%d\n",
+            "mcgui: smoke: pack=%s mesh=%s drew=%d tex=%d gl_failed=%d\n",
             g_pack_ok ? "ok" : "refused",
             g_mesh_ns == NULL ? "not-asked"
                               : (g_mesh_ok ? "ok" : "refused"),
             mcme_viewport_drew(g_viewport),
+            mcme_viewport_textured(g_viewport),
             mcme_viewport_gl_failed(g_viewport));
     g_application_quit(G_APPLICATION(g_app));
 }
