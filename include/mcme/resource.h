@@ -23,6 +23,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mcme/core.h"  /* McmeArena: the spec parse's own memory (G9) */
+#include "mcme/nbt.h"   /* McmeTag: a spec's {states} is one          */
+
 /*
  * What one pack's manifest held. Every string is a heap copy owned by the
  * record; `mcme_pack_free` releases the record and them together. A valid
@@ -614,6 +617,21 @@ bool mcme_mesh_rotate(McmeMesh *mesh, int32_t rotx, int32_t roty);
  */
 bool mcme_mesh_merge(const McmeMesh *const *parts, size_t count,
                      McmeMesh *out);
+
+/*
+ * One spec text as the verbs have always parsed it (G9, moved from
+ * the CLI whole): the block's name, then optional {SNBT states} —
+ * the dialect `chunk get` prints and `chunk set` accepts. `states`
+ * may be NULL when the caller does not want them. The parse copies
+ * into `arena`; nothing outlives it. False on a spec that names
+ * nothing usable — an empty name, a '{' without its closing '}',
+ * states that do not parse or are not a compound — with
+ * mcme_last_error() saying which and no verb: the caller wears its
+ * own.
+ */
+bool mcme_block_parse_spec(const char *spec, McmeArena *arena,
+                           char *name, size_t name_cap,
+                           const McmeTag **states);
 
 /*
  * The reference's `_get_model` as one call (D33): the block

@@ -79,6 +79,43 @@ typedef struct {
 const char *mcme_world_kind_name(McmeWorldKind k);
 const char *mcme_level_dat_frame_name(McmeLevelDatFrame f);
 
+/* ========================================================================
+ * One block out of the store (G9)
+ *
+ * The block position's own answer — what `chunk get` prints and
+ * `chunk mesh` reads its seven specs from — moved from the CLI into
+ * the core whole (G9): the same walks, the same "chunk: ..." messages,
+ * the same answers, and the same road the GUI's worker now asks. The
+ * verbs keep their exit codes by mapping this status; a non-OK answer
+ * always has mcme_last_error() standing.
+ * ======================================================================== */
+
+typedef enum {
+    MCME_WORLDBLOCK_OK = 0,
+    MCME_WORLDBLOCK_NOT_FOUND,   /* not stored, deleted, or this world
+                                    holds no such dimension          */
+    MCME_WORLDBLOCK_BAD_FORMAT,  /* the store's bytes are not the
+                                    format mcme reads                */
+    MCME_WORLDBLOCK_IO,          /* the store would not open or read */
+    MCME_WORLDBLOCK_USAGE,       /* the coordinates or the dimension
+                                    cannot name a block              */
+    MCME_WORLDBLOCK_INTERNAL     /* the path too long, or the heap   */
+} McmeWorldBlockStatus;
+
+/*
+ * The world's own answer for one block position: the spec text the
+ * store spells there — "minecraft:stone", with {states} when the
+ * entry carries them, the dialect `chunk set` accepts — appended to
+ * `out` (a fresh buffer's own). Dispatches on `info->kind`; a world
+ * that is neither Bedrock nor Java refuses usage with the CLI's own
+ * message. Every non-OK answer sets mcme_last_error() with the
+ * "chunk: ..." text the verbs have always printed, moved whole.
+ */
+McmeWorldBlockStatus mcme_world_block_spec(const McmeWorldInfo *info,
+                                           int32_t dimension,
+                                           long x, long y, long z,
+                                           McmeBuffer *out);
+
 /*
  * Inspect `path`. Returns false only when `path` is not a readable directory or
  * `out` is NULL; a directory that simply is not a world is a success with

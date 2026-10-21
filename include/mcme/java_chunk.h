@@ -25,6 +25,8 @@
 
 #include "mcme/core.h"
 #include "mcme/nbt.h"
+#include "mcme/world.h"          /* McmeWorldBlockStatus: the doc's
+                                     answer vocabulary              */
 #include "mcme/bedrock_write.h"   /* McmeWriteRefusal: the CLI's shared
                                      write vocabulary, as in region.h —
                                      and McmeBox, the corners fill speaks */
@@ -49,6 +51,24 @@
  */
 bool mcme_java_block_spec(const McmeTag *root, int x, int y, int z,
                           McmeBuffer *out);
+
+/*
+ * The chunk document under block (x, y, z), opened and parsed — the
+ * read every Java block answer stands on, moved from the CLI into
+ * the core whole (G9): the region file located through the world's
+ * dimension layout, read, decompressed, parsed into `*arena`/`doc`.
+ * `world_dir` is the world's own root; `out_file` (may be NULL)
+ * receives the region file's path — the write path's own need, kept
+ * in the same walk. The caller frees `*arena`. The statuses and the
+ * "chunk: ..." messages are the CLI's own, moved verbatim.
+ */
+McmeWorldBlockStatus mcme_java_chunk_doc(const char *world_dir,
+                                         int32_t dimension,
+                                         long x, long y, long z,
+                                         McmeArena **arena,
+                                         McmeNbtDoc *doc,
+                                         char *out_file,
+                                         size_t out_file_cap);
 
 /* ========================================================================
  * A whole section at once (D40)

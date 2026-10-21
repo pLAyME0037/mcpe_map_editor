@@ -2717,9 +2717,65 @@ static void test_atlas_uv(void)
     mcme_texture_index_close(tex);
 }
 
+/* G9: the spec parser the verbs carry, moved into the core whole —
+   the dialect `chunk get` prints and `chunk set` accepts, and the
+   refusals the wrapper always made. */
+static void test_block_spec(void)
+{
+    McmeArena *arena = mcme_arena_new();
+    char name[256];
+    const McmeTag *states = NULL;
+
+    CHECK(arena != NULL);
+    if (arena == NULL) return;
+
+    CHECK(mcme_block_parse_spec("minecraft:stone", arena, name,
+                                sizeof name, &states));
+    CHECK(strcmp(name, "minecraft:stone") == 0);
+    CHECK(states == NULL);
+
+    /* the namespace defaults the way the game does — the spec keeps
+       its bare name, the caller splits it */
+    CHECK(mcme_block_parse_spec("stone", arena, name, sizeof name,
+                                &states));
+    CHECK(strcmp(name, "stone") == 0);
+
+    CHECK(mcme_block_parse_spec("minecraft:oak_log{axis:\"y\"}", arena,
+                                name, sizeof name, &states));
+    CHECK(strcmp(name, "minecraft:oak_log") == 0);
+    CHECK(states != NULL && states->type == MCME_TAG_Compound);
+    CHECK(states != NULL && states->compound.len == 1);
+
+    /* a '{' without its closing '}' */
+    CHECK(!mcme_block_parse_spec("stone{axis", arena, name, sizeof name,
+                                 &states));
+    mcme_clear_error();
+    /* an empty name */
+    CHECK(!mcme_block_parse_spec("", arena, name, sizeof name,
+                                 &states));
+    mcme_clear_error();
+    /* states that are not a compound */
+    CHECK(!mcme_block_parse_spec("stone{42}", arena, name, sizeof name,
+                                 &states));
+    mcme_clear_error();
+    /* a name longer than the caller's own cap */
+    char small[4];
+    CHECK(!mcme_block_parse_spec("minecraft:stone", arena, small,
+                                 sizeof small, &states));
+    mcme_clear_error();
+    /* nothing at all */
+    CHECK(!mcme_block_parse_spec(NULL, arena, name, sizeof name,
+                                 &states));
+    CHECK(!mcme_block_parse_spec("stone", arena, name, sizeof name,
+                                 NULL));
+
+    mcme_arena_free(arena);
+}
+
 int mcme_test_resource(void)
 {
     g_failed = 0;
+    test_block_spec();
     test_pack_manifest();
     test_blockstates();
     test_models();

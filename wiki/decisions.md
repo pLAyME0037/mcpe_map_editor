@@ -3786,3 +3786,61 @@ ok/refused as asked, drew/tex/gl_failed as before, rc unchanged
 orbit grows a position and the road grows a pan — the adapter
 pattern stays), or a gesture needs finer resolution than pixel
 deltas (then the adapters carry more, the road still applies).
+
+## D56 — One road to the store's block
+
+**Chosen.** The world-block read leaves the CLI and moves into the
+core whole: `mcme_world_block_spec(info, dim, x, y, z, out)` in
+world.h over src/world/world_block.c, carrying java_chunk_doc,
+java_get_block and bedrock_get_block's bodies byte-for-byte —
+messages included ("chunk: ..." is the reader's own context, not a
+verb's). The answer is a status (McmeWorldBlockStatus: ok /
+not-found / format / io / usage / internal) and the verbs keep
+their exit codes by mapping it one switch — no observable CLI
+behaviour moves, which the battery's 107 pins adjudicate. The spec
+parser goes beside it: the body moves to `mcme_block_parse_spec`
+(resource.h over src/resource/blockspec.c), the verbs keep a
+wrapper that re-adds its own verb so the printed text stays
+byte-identical. The GUI walks neither region files, leveldb keys
+nor snbt: the chunk worker composes exactly the core calls the
+verbs call.
+
+**Why.** D3's line — the shared implementation lives where both
+clients reach it. A status rather than bool + error string because
+the verbs' families distinguish not-found from format from io, and
+prose does not carry the class; the store's own words ride on
+every non-OK answer, so the window's refusal is named, never a
+naked code. The ask rides the pack answer (one home per session,
+D52) and the mesh generation (open_pack bumps it, every pick bumps
+it), so one counter retires meshes and world answers alike at the
+viewport's door. The smoke's frame gate extends to the world path:
+an answer that never reaches a frame is not settled — which earned
+its keep the first run, catching an embedded mesh result whose own
+`ok` was never set (settle said ok, the viewport held nothing).
+
+**Rejected.**
+- *The worker re-walking the stores*: two implementations of one
+  read — G7's exact lesson, repeated a layer down.
+- *bool + last_error as the contract*: the verbs would re-derive
+  the exit-code class from prose.
+- *--dimension taking names in the window*: the CLI's spec
+  surface — the same line D54 drew for properties; the window
+  takes the number the store keys by.
+- *Starting the ask at activate*: a second home beside the pack
+  answer would strand it on a pack switch — one ask, one home.
+
+**How verified.** Battery 107/107 rc=0 after the move (every
+pinned verb's stdout, exit code and refusal text unchanged); core
+pins over the golden world at the battery's own probes (air at
+(5,5,5) and (15,255,15), not-found at (40,5,5) and for the
+nether, silent usage for a layoutless dimension) and the
+parser's dialect and refusals in the resource suite; the GUI
+selftest's wire probe pins spec=minecraft:air plus both
+refusals (+22 = 1389); smokes 0,0,0,0,1,0,1,1,1,0 with the
+world form reading `world=ok spec=minecraft:air drew=1 tex=1`.
+
+**Reverses if:** the messages ever need to differ between CLI
+and GUI (then the context belongs to the caller and the
+promotion splits into reader + formatter), or a second client
+wants a coarser answer than one spec per position (then the
+status gains a reason the caller can branch on).

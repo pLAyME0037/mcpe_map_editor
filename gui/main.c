@@ -37,6 +37,14 @@
  *   --open DIR   the dialog's answer without the dialog (smoke gates):
  *                open_pack runs at startup exactly where the callback
  *                would land it
+ *   --world DIR --at X Y Z [--dimension N]
+ *                ask the world for one block: after the pack's answer
+ *                lands, the worker reads the spec the store spells at
+ *                those coordinates and meshes it into the viewport
+ *                (G9). The dimension is a number here — the CLI
+ *                spells the names — and the three flags come as one
+ *                question: together or refused. A refusal's own
+ *                words land in the mesh label.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -48,10 +56,12 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <gtk/gtk.h>
 
+#include "chunktask.h"
 #include "meshtask.h"
 #include "packtask.h"
 #include "selftest.h"
@@ -83,6 +93,12 @@ static GtkWidget *g_picker;
 static GtkStringList *g_models;
 static GtkWidget *g_block_picker;
 static GtkStringList *g_blocks;
+static const char *g_world_dir;    /* --world: the world ask (G9)     */
+static int32_t g_world_dim;        /* --dimension: the number the CLI
+                                      parses, the window takes it raw */
+static long g_wx, g_wy, g_wz;      /* --at: where to stand            */
+static bool g_chunk_settled, g_chunk_ok;
+static char *g_spec_seen;          /* the world's answer, its words   */
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -101,10 +117,13 @@ static void maybe_smoke_quit(void)
 {
     if (!g_smoke || !g_pack_settled) return;
     if (!g_mesh_settled) return;
-    if (g_mesh_ns != NULL && g_mesh_ok &&
-        !mcme_viewport_drew(g_viewport) &&
-        !mcme_viewport_gl_failed(g_viewport))
-        return; /* a built mesh awaits its frame; the poll asks again */
+    if (g_world_dir != NULL && !g_chunk_settled) return;
+    if ((g_mesh_ns != NULL && g_mesh_ok) ||
+        (g_world_dir != NULL && g_chunk_ok)) {
+        if (!mcme_viewport_drew(g_viewport) &&
+            !mcme_viewport_gl_failed(g_viewport))
+            return; /* a built mesh awaits its frame; the poll asks */
+    }
 
     g_exit_code = 0;
     if (!g_pack_ok) {
@@ -114,18 +133,27 @@ static void maybe_smoke_quit(void)
         else if (mcme_viewport_gl_failed(g_viewport)) g_exit_code = 2;
         else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
+    if (g_world_dir != NULL) {
+        if (!g_chunk_ok) g_exit_code = 1;
+        else if (mcme_viewport_gl_failed(g_viewport)) g_exit_code = 2;
+        else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
+    }
     {
         float cyaw = 0, cpitch = 0, cdist = 0;
 
         mcme_viewport_camera(g_viewport, &cyaw, &cpitch, &cdist);
         fprintf(stderr,
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
-                "drew=%d tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f\n",
+                "world=%s spec=%s drew=%d tex=%d gl_failed=%d "
+                "cam=%.2f,%.2f,%.2f\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
                 g_mesh_ns == NULL ? "not-asked"
                                   : (g_mesh_ok ? "ok" : "refused"),
+                g_world_dir == NULL ? "not-asked"
+                                    : (g_chunk_ok ? "ok" : "refused"),
+                g_chunk_ok && g_spec_seen != NULL ? g_spec_seen : "-",
                 mcme_viewport_drew(g_viewport),
                 mcme_viewport_textured(g_viewport),
                 mcme_viewport_gl_failed(g_viewport),
@@ -214,6 +242,51 @@ static void picker_mirror(GtkStringList *list, GtkWidget *dd,
     }
 }
 
+/* The world's own block, asked once per pack session (G9). Its
+ * answer is a mesh like any other: it carries the mesh generation —
+ * open_pack bumps that counter on every pack switch and every pick
+ * bumps it too, so a world answer still on the road when either
+ * lands falls whole (D52, one counter at the viewport's door). */
+static void on_chunk_result(void *userdata, McmeChunkResult *result)
+{
+    int gen = GPOINTER_TO_INT(userdata);
+
+    g_tasks--; /* a post is a post: the count follows workers */
+    if (gen != g_mesh_gen) {
+        mcme_chunkresult_free(result);
+        return;
+    }
+    g_chunk_settled = true;
+    g_chunk_ok = result->ok;
+    if (result->ok) {
+        g_free(g_spec_seen);
+        g_spec_seen = g_strdup(result->spec);
+        mcme_viewport_set_mesh(g_viewport, result->mesh); /* takes it */
+        result->mesh = NULL;
+    } else {
+        gtk_label_set_text(GTK_LABEL(g_mesh_label),
+                           result->text ? result->text : "(no memory)");
+    }
+    mcme_chunkresult_free(result);
+    maybe_smoke_quit();
+}
+
+static void start_chunk_ask(void)
+{
+    g_chunk_settled = false;
+    g_chunk_ok = false;
+    if (mcme_chunktask_start(g_wire, g_world_dir, g_pack_dir,
+                             g_world_dim, g_wx, g_wy, g_wz,
+                             on_chunk_result,
+                             GINT_TO_POINTER(g_mesh_gen))) {
+        g_tasks++;
+    } else {
+        g_chunk_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_mesh_label),
+                           "chunk task: no memory");
+    }
+}
+
 static void on_pack_result(void *userdata, McmePackResult *result)
 {
     int gen = GPOINTER_TO_INT(userdata);
@@ -244,6 +317,15 @@ static void on_pack_result(void *userdata, McmePackResult *result)
                       want);
     }
     g_picker_sync = false;
+    /* The world's block rides this session's answer too: asked when
+       the pack landed (its mesh needs the pack's indices), settled
+       same-shaped as the mesh when no ask stands or the pack
+       refused (G9). */
+    if (result->ok && g_world_dir != NULL) {
+        start_chunk_ask();
+    } else {
+        g_chunk_settled = true;
+    }
     if (result->ok && g_mesh_ns != NULL) {
         /* The mesh's worker starts only now: the core's error slot is
            one global, so at any time one worker calls core code and
@@ -477,12 +559,27 @@ static void on_activate(GtkApplication *app, gpointer user)
     }
 }
 
+/* A coordinate as a whole block position — the CLI's parse_coord
+   shape, verbless (G9): the whole token consumed, inside int32's
+   range because the store's own keys are int32. */
+static bool parse_long(const char *text, long *out)
+{
+    char *end = NULL;
+    long v = strtol(text, &end, 10);
+
+    if (end == text || *end != '\0') return false;
+    if (v < INT32_MIN || v > INT32_MAX) return false;
+    *out = v;
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     GtkApplication *app;
     const char *model = NULL;
     const char *pos[2];
     int npos = 0;
+    bool at_seen = false, dim_seen = false;
     int rc;
 
     for (int i = 1; i < argc; ++i) {
@@ -496,9 +593,42 @@ int main(int argc, char **argv)
                 return 1;
             }
             g_open_dir = argv[++i];
+        } else if (strcmp(argv[i], "--world") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "mcgui: --world wants a directory\n");
+                return 1;
+            }
+            g_world_dir = argv[++i];
+        } else if (strcmp(argv[i], "--at") == 0) {
+            if (i + 3 >= argc) {
+                fprintf(stderr, "mcgui: --at wants three "
+                                "coordinates\n");
+                return 1;
+            }
+            if (!parse_long(argv[++i], &g_wx) ||
+                !parse_long(argv[++i], &g_wy) ||
+                !parse_long(argv[++i], &g_wz)) {
+                fprintf(stderr, "mcgui: --at wants whole "
+                                "coordinates\n");
+                return 1;
+            }
+            at_seen = true;
+        } else if (strcmp(argv[i], "--dimension") == 0) {
+            long dim;
+
+            if (i + 1 >= argc || !parse_long(argv[i + 1], &dim)) {
+                fprintf(stderr, "mcgui: --dimension is a number "
+                                "(the CLI spells the names)\n");
+                return 1;
+            }
+            g_world_dim = (int32_t)dim;
+            dim_seen = true;
+            i++;
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
-                            "[--open dir] [pack-dir [ns:model]]\n");
+                            "[--open dir] [--world dir --at x y z "
+                            "[--dimension n]] "
+                            "[pack-dir [ns:model]]\n");
             return 1;
         } else if (npos < 2) {
             pos[npos++] = argv[i];
@@ -526,6 +656,25 @@ int main(int argc, char **argv)
     } else {
         g_pack_arg = npos > 0 ? pos[0] : NULL;
         model = npos > 1 ? pos[1] : NULL;
+    }
+    /* The world ask (G9): one question in three flags — alone they
+       are a typo, together they need a pack to mesh the block with. */
+    if (at_seen && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --at wants --world\n");
+        return 1;
+    }
+    if (g_world_dir != NULL && !at_seen) {
+        fprintf(stderr, "mcgui: --world wants --at x y z\n");
+        return 1;
+    }
+    if (dim_seen && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --dimension belongs to --world\n");
+        return 1;
+    }
+    if (g_world_dir != NULL && g_open_dir == NULL && npos == 0) {
+        fprintf(stderr, "mcgui: a world block needs a pack to mesh "
+                        "it\n");
+        return 1;
     }
     if (model != NULL) {
         const char *colon = strchr(model, ':');
@@ -570,5 +719,6 @@ int main(int argc, char **argv)
     g_free(g_pack_dir);
     g_free(g_mesh_ns);
     g_free(g_mesh_path);
+    g_free(g_spec_seen);
     return g_exit_code ? g_exit_code : rc;
 }

@@ -44,8 +44,11 @@ static uint32_t atlas_slot(const McmeAtlas *atlas, const char *name)
 /* The editor's page over the index's whole table (D34/D35: the
    missing image first, then the pack's files in index order). A page
    that will not build leaves the result atlas-less — the tint-only
-   viewport dresses the mesh it already has. */
-static void mesh_atlas(McmeMeshResult *r, const McmeTextureIndex *tex)
+   viewport dresses the mesh it already has. Shared with the chunk
+   worker (G9): the same page dresses every mesh the window is
+   handed. */
+void mcme_meshtask_pack_atlas(McmeMeshResult *r,
+                              const McmeTextureIndex *tex)
 {
     size_t n = mcme_texture_count(tex);
     const char **files = g_try_malloc((n ? n : 1) * sizeof *files);
@@ -108,7 +111,7 @@ static void *mesh_work(void *work_ud)
     }
     if (built) {
         r->ok = true;
-        mesh_atlas(r, textures);
+        mcme_meshtask_pack_atlas(r, textures);
     } else {
         /* The refusal, copied at once: the core's error slot is one
            global, and only this thread calls core code. */

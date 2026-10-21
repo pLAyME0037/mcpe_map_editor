@@ -6638,6 +6638,90 @@ static void test_prune(void)
     rmdir(jw);
 }
 
+/* G9: the store's own answer for one block position, through the
+   core's one road — the battery's own probes: the golden's sections
+   read as the format's air (ref_java_blocks), a chunk the region
+   does not hold refuses not-found, the nether this world keeps no
+   directory for refuses the same (ref_chunkmesh), and the doc
+   loader the write path stands on answers the same chunk. */
+static void test_world_block(void)
+{
+    McmeWorldInfo info;
+    McmeBuffer spec;
+
+    printf("  world block spec (the store's own answer)\n");
+
+    CHECK(mcme_world_probe(&info, kWorldDir));
+    CHECK(info.kind == MCME_WORLD_JAVA);
+
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 5, 5, 5, &spec)
+          == MCME_WORLDBLOCK_OK);
+    /* The buffer carries bytes, no NUL (append_cstr's own contract):
+       the length and the bytes are the answer. */
+    CHECK(spec.data != NULL &&
+          spec.len == sizeof("minecraft:air") - 1 &&
+          memcmp(spec.data, "minecraft:air", spec.len) == 0);
+    mcme_buffer_free(&spec);
+
+    /* the sky above the sections' top: air there too */
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 15, 255, 15, &spec)
+          == MCME_WORLDBLOCK_OK);
+    CHECK(spec.data != NULL &&
+          spec.len == sizeof("minecraft:air") - 1 &&
+          memcmp(spec.data, "minecraft:air", spec.len) == 0);
+    mcme_buffer_free(&spec);
+
+    /* a chunk the region file does not hold: named not-found */
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 40, 5, 5, &spec)
+          == MCME_WORLDBLOCK_NOT_FOUND);
+    mcme_clear_error();
+    mcme_buffer_free(&spec);
+
+    /* the nether: this world keeps no DIM-1, so the chunk is not
+       stored — the refusal ref_chunkmesh pins */
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 1, 5, 5, 5, &spec)
+          == MCME_WORLDBLOCK_NOT_FOUND);
+    mcme_clear_error();
+    mcme_buffer_free(&spec);
+
+    /* a dimension number no layout holds: usage, silently — the
+       caller's own argument to refuse */
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 7, 5, 5, 5, &spec)
+          == MCME_WORLDBLOCK_USAGE);
+    mcme_clear_error();
+    mcme_buffer_free(&spec);
+
+    /* the doc loader, the write path's own road: the same chunk,
+       opened and parsed, its region file named */
+    {
+        McmeArena *arena = NULL;
+        McmeNbtDoc doc;
+        char file[MCME_REGION_PATH_MAX];
+
+        CHECK(mcme_java_chunk_doc(kWorldDir, 0, 5, 5, 5, &arena, &doc,
+                                  file, sizeof file)
+              == MCME_WORLDBLOCK_OK);
+        CHECK(arena != NULL);
+        CHECK(file[0] != '\0');
+        if (arena != NULL) mcme_arena_free(arena);
+    }
+
+    /* a directory that is not a world: usage with its path named */
+    info.kind = MCME_WORLD_UNKNOWN;
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 5, 5, 5, &spec)
+          == MCME_WORLDBLOCK_USAGE);
+    mcme_clear_error();
+    mcme_buffer_free(&spec);
+
+    mcme_world_info_free(&info);
+}
+
 int mcme_test_world(void)
 {
     g_failed = 0;
@@ -6672,6 +6756,7 @@ int mcme_test_world(void)
     test_region_compact();
     test_java_chunk();
     test_java_fill();
+    test_world_block();
 
     return g_failed;
 }

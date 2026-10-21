@@ -48,6 +48,7 @@
 #include "mcme/core.h"
 #include "mcme/resource.h"
 #include "camera.h"
+#include "chunktask.h"
 #include "meshtask.h"
 #include "packtask.h"
 #include "viewport.h"
@@ -619,6 +620,181 @@ static void test_meshtask(void)
     rmdir(dir);
 }
 
+static int g_chunk_done_calls;
+static bool g_chunk_done_ok;
+static char g_chunk_done_spec[512];
+static char g_chunk_done_text[512];
+static size_t g_chunk_done_verts;
+static bool g_chunk_done_atlas;
+
+/* Loop thread, via the wire's visit — the shape on_mesh_result has,
+   with the world's own words riding both answers. */
+static void on_chunk_done(void *userdata, McmeChunkResult *result)
+{
+    (void)userdata;
+    g_chunk_done_calls++;
+    g_chunk_done_ok = result->ok;
+    g_chunk_done_spec[0] = '\0';
+    g_chunk_done_text[0] = '\0';
+    g_chunk_done_verts = 0;
+    g_chunk_done_atlas = false;
+    if (result->ok) {
+        snprintf(g_chunk_done_spec, sizeof g_chunk_done_spec, "%s",
+                 result->spec != NULL ? result->spec : "");
+        if (result->mesh != NULL) {
+            for (int d = 0; d < 7; ++d)
+                if (result->mesh->mesh.present[d])
+                    g_chunk_done_verts +=
+                        result->mesh->mesh.buckets[d].vert_count;
+            g_chunk_done_atlas = result->mesh->has_atlas;
+        }
+    } else {
+        snprintf(g_chunk_done_text, sizeof g_chunk_done_text, "%s",
+                 result->text != NULL ? result->text : "");
+    }
+    mcme_chunkresult_free(result);
+}
+
+/* The world's block through the wire, headless (G9): the battery's
+   own probe — the golden world answers "minecraft:air" at (5,5,5)
+   (ref_java_blocks) — meshed by a crafted pack under the block's
+   own namespace, the spec riding the result, and the named
+   refusals: a directory that is not a world, and the nether this
+   world keeps no DIM-1 for (ref_chunkmesh's own refusal). */
+static void test_chunktask(void)
+{
+    char dir[] = "/tmp/mcme_gui_chunk_XXXXXX";
+    char path[512];
+    McmeWire *wire;
+    bool golden = mcme_fs_exists("tests/golden/worlds/java");
+
+    printf("  chunktask (the world's own block through the wire)\n");
+
+    CHECK(mkdtemp(dir) != NULL);
+    snprintf(path, sizeof(path), "%s/pack.mcmeta", dir);
+    write_file(path, "{\"pack\":{\"pack_format\":34,"
+               "\"description\":\"gui chunk selftest\"}}\n");
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block", dir);
+    CHECK(mcme_fs_mkdir_p(path));
+    snprintf(path, sizeof(path), "%s/assets/minecraft/textures/block",
+             dir);
+    CHECK(mcme_fs_mkdir_p(path));
+    /* The pack's selection for the world's answer — under the
+       block's OWN namespace (the chunk worker's split, G9), the
+       cube test_meshtask meshes already. */
+    snprintf(path, sizeof(path),
+             "%s/assets/minecraft/blockstates", dir);
+    CHECK(mcme_fs_mkdir_p(path));
+    snprintf(path, sizeof(path),
+             "%s/assets/minecraft/blockstates/air.json", dir);
+    write_file(path, "{\"variants\":{\"\":{\"model\":"
+                     "\"mc:block/cube\"}}}\n");
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block/cube.json",
+             dir);
+    write_file(path,
+        "{\"textures\":{\"a\":\"block/opaque\"},\"elements\":"
+        "[{\"from\":[0,0,0],\"to\":[16,16,16],\"faces\":"
+        "{\"down\":{\"texture\":\"#a\",\"cullface\":\"down\"},"
+        "\"up\":{\"texture\":\"#a\",\"cullface\":\"up\"},"
+        "\"north\":{\"texture\":\"#a\",\"cullface\":\"north\"},"
+        "\"east\":{\"texture\":\"#a\",\"cullface\":\"east\"},"
+        "\"south\":{\"texture\":\"#a\",\"cullface\":\"south\"},"
+        "\"west\":{\"texture\":\"#a\",\"cullface\":\"west\"}}}]}\n");
+    {
+        McmeImage img = {2, 2, NULL};
+        unsigned char px[2 * 2 * 4];
+
+        for (int i = 0; i < 4; ++i) {
+            px[i * 4 + 0] = 200; px[i * 4 + 1] = 170;
+            px[i * 4 + 2] = 90;  px[i * 4 + 3] = 255;
+        }
+        img.rgba = px;
+        snprintf(path, sizeof(path),
+                 "%s/assets/minecraft/textures/block/opaque.png", dir);
+        CHECK(mcme_image_write_png(path, &img));
+    }
+
+    wire = mcme_wire_new();
+
+    /* A directory that is not a world: refused, its own words. */
+    g_chunk_done_calls = 0;
+    g_chunk_done_ok = true;
+    CHECK(mcme_chunktask_start(wire, "/tmp/mcme_gui_no_world_dir",
+                               dir, 0, 5, 5, 5, on_chunk_done, NULL));
+    while (g_chunk_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_chunk_done_calls == 1);
+    CHECK(!g_chunk_done_ok);
+    CHECK(g_chunk_done_text[0] != '\0');
+    mcme_clear_error();
+
+    if (golden) {
+        /* The battery's probe: the golden's sections read as the
+           format's air — the spec rides the answer, and the pack's
+           cube dresses it. */
+        g_chunk_done_calls = 0;
+        g_chunk_done_ok = false;
+        CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
+                                   dir, 0, 5, 5, 5, on_chunk_done,
+                                   NULL));
+        while (g_chunk_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_chunk_done_calls == 1);
+        CHECK(g_chunk_done_ok);
+        CHECK(strcmp(g_chunk_done_spec, "minecraft:air") == 0);
+        CHECK(g_chunk_done_verts >= 4);
+        CHECK(g_chunk_done_atlas);
+
+        /* The nether: no DIM-1 in this world, so the chunk is not
+           stored — the refusal, through the wire. */
+        g_chunk_done_calls = 0;
+        g_chunk_done_ok = true;
+        CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
+                                   dir, 1, 5, 5, 5, on_chunk_done,
+                                   NULL));
+        while (g_chunk_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_chunk_done_calls == 1);
+        CHECK(!g_chunk_done_ok);
+        CHECK(g_chunk_done_text[0] != '\0');
+        mcme_clear_error();
+    } else {
+        printf("  SKIP golden world probes (tests/golden absent)\n");
+    }
+
+    mcme_wire_free(wire);
+
+    snprintf(path, sizeof(path), "%s/pack.mcmeta", dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block/cube.json",
+             dir);
+    unlink(path);
+    snprintf(path, sizeof(path),
+             "%s/assets/minecraft/blockstates/air.json", dir);
+    unlink(path);
+    snprintf(path, sizeof(path),
+             "%s/assets/minecraft/textures/block/opaque.png", dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/minecraft/blockstates", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/minecraft/textures/block",
+             dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/models", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/mc", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/minecraft/textures", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets/minecraft", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/assets", dir);
+    rmdir(path);
+    rmdir(dir);
+}
+
 static double *darray(size_t n)
 {
     double *p = calloc(n, sizeof *p);
@@ -905,6 +1081,7 @@ int mcme_gui_selftest(void)
     test_wake();
     test_packtask();
     test_meshtask();
+    test_chunktask();
     test_stage();
     test_camera();
 

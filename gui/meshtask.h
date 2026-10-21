@@ -51,4 +51,10 @@ bool mcme_meshtask_start_block(McmeWire *wire, const char *pack_dir,
 
 void mcme_meshresult_free(McmeMeshResult *result);
 
+/* G9 shares the page: the meshtask's own atlas over the index's
+ * whole table, the slot table for the mesh's textures — the chunk
+ * worker dresses its world block exactly like a picked one. */
+void mcme_meshtask_pack_atlas(McmeMeshResult *r,
+                              const McmeTextureIndex *tex);
+
 #endif

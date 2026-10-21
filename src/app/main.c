@@ -1911,48 +1911,15 @@ static int parse_block_spec(const char *verb, const char *spec,
                             char *name, size_t name_cap,
                             const McmeTag **states)
 {
-    const char *open = strchr(spec, '{');
-    size_t spec_len = strlen(spec);
-    size_t name_len;
+    char why[512];
 
-    if (open == NULL) {
-        name_len = spec_len;
-        *states = NULL;
-    } else {
-        name_len = (size_t)(open - spec);
-        if (spec_len == 0 || spec[spec_len - 1] != '}') {
-            mcme_set_error("%s: block '%s' has '{' without a "
-                           "closing '}'", verb, spec);
-            return MCME_EXIT_USAGE;
-        }
-        McmeTag *tag = NULL;
-        if (!mcme_nbt_parse_snbt(arena, open,
-                                 spec_len - name_len, &tag)) {
-            char why[256];
-            snprintf(why, sizeof why, "%s", mcme_last_error());
-            mcme_set_error("%s: states of block '%s' do not "
-                           "parse: %s", verb, spec, why);
-            return MCME_EXIT_USAGE;
-        }
-        if (tag == NULL || tag->type != MCME_TAG_Compound) {
-            mcme_set_error("%s: states of block '%s' are not "
-                           "a compound", verb, spec);
-            return MCME_EXIT_USAGE;
-        }
-        *states = tag;
-    }
-
-    if (name_len == 0) {
-        mcme_set_error("%s: block '%s' has an empty name", verb, spec);
-        return MCME_EXIT_USAGE;
-    }
-    if (name_len >= name_cap) {
-        mcme_set_error("%s: block name '%s' is too long", verb, spec);
-        return MCME_EXIT_USAGE;
-    }
-    memcpy(name, spec, name_len);
-    name[name_len] = '\0';
-    return MCME_OK;
+    if (mcme_block_parse_spec(spec, arena, name, name_cap, states))
+        return MCME_OK;
+    /* The core's own message under the family's own name — the
+       texts these verbs have always printed (G9's move). */
+    snprintf(why, sizeof why, "%s", mcme_last_error());
+    mcme_set_error("%s: %s", verb, why);
+    return MCME_EXIT_USAGE;
 }
 
 /* A coordinate as a whole block position. strtol, not atoi: the
@@ -2520,93 +2487,21 @@ static int cmd_region_compact(int argc, char **argv)
  * The caller frees `*arena` when it is done with `*doc`; `file` is
  * the region file the chunk came from, which the write side needs.
  */
-static int java_chunk_doc(const McmeWorldInfo *info, int32_t dimension,
-                          long x, long y, long z, McmeArena **arena,
-                          McmeNbtDoc *doc, char *file, size_t file_cap)
+/* The verbs' road to one block's spec goes through the core now
+   (G9): the status the store answered, the exit code the family
+   has always given it — and the "chunk: ..." message it set,
+   standing verbatim. */
+static int world_block_exit(McmeWorldBlockStatus st)
 {
-    const char *dim_dir = NULL;
-    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
-        return MCME_EXIT_USAGE;
+    switch (st) {
+    case MCME_WORLDBLOCK_OK:          return MCME_OK;
+    case MCME_WORLDBLOCK_NOT_FOUND:   return MCME_EXIT_NOT_FOUND;
+    case MCME_WORLDBLOCK_BAD_FORMAT:  return MCME_EXIT_BAD_FORMAT;
+    case MCME_WORLDBLOCK_IO:          return MCME_EXIT_IO;
+    case MCME_WORLDBLOCK_USAGE:       return MCME_EXIT_USAGE;
+    case MCME_WORLDBLOCK_INTERNAL:    return MCME_EXIT_INTERNAL;
     }
-    int cx = (int)(x >> 4), cz = (int)(z >> 4);
-    int rx, rz;
-    mcme_region_of(cx, cz, &rx, &rz);
-
-    if (mcme_region_path(file, file_cap, info->path, dim_dir,
-                         rx, rz) == NULL) {
-        mcme_set_error("chunk: the path to the chunk of block "
-                       "(%ld, %ld, %ld) is too long", x, y, z);
-        return MCME_EXIT_INTERNAL;
-    }
-
-    if (!mcme_fs_exists(file)) {
-        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
-                       "is not stored in this world", x, y, z);
-        return MCME_EXIT_NOT_FOUND;
-    }
-    McmeRegion reg;
-    if (!mcme_region_open(&reg, file)) {
-        return MCME_EXIT_BAD_FORMAT;   /* open said what and where */
-    }
-    if (!mcme_region_chunk_present(&reg, cx, cz)) {
-        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
-                       "is not stored in this world", x, y, z);
-        mcme_region_close(&reg);
-        return MCME_EXIT_NOT_FOUND;
-    }
-
-    McmeBuffer nbt;
-    mcme_buffer_init(&nbt);
-    bool read = mcme_region_read_chunk(&reg, cx, cz, NULL, &nbt);
-    mcme_region_close(&reg);
-    if (!read) {
-        char why[256];
-        snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
-                       "does not read: %s", x, y, z, why);
-        mcme_buffer_free(&nbt);
-        return MCME_EXIT_BAD_FORMAT;
-    }
-
-    *arena = mcme_arena_new();
-    if (*arena == NULL) {
-        mcme_set_error("chunk: out of memory");
-        mcme_buffer_free(&nbt);
-        return MCME_EXIT_INTERNAL;
-    }
-    bool parsed = mcme_nbt_parse(doc, *arena, nbt.data, nbt.len, false);
-    mcme_buffer_free(&nbt);
-    if (!parsed) {
-        char why[256];
-        snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld) "
-                       "does not decode: %s", x, y, z, why);
-        mcme_arena_free(*arena);
-        *arena = NULL;
-        return MCME_EXIT_BAD_FORMAT;
-    }
-    return MCME_OK;
-}
-
-static int java_get_block(const McmeWorldInfo *info, int32_t dimension,
-                          long x, long y, long z, McmeBuffer *spec)
-{
-    McmeArena *arena = NULL;
-    McmeNbtDoc doc;
-    char file[MCME_REGION_PATH_MAX];
-    int rc = java_chunk_doc(info, dimension, x, y, z, &arena, &doc,
-                            file, sizeof file);
-    if (rc == MCME_OK
-            && !mcme_java_block_spec(doc.root, (int)x, (int)y, (int)z,
-                                     spec)) {
-        char why[256];
-        snprintf(why, sizeof why, "%s", mcme_last_error());
-        mcme_set_error("chunk: the chunk of block (%ld, %ld, %ld): %s",
-                       x, y, z, why);
-        rc = MCME_EXIT_BAD_FORMAT;
-    }
-    if (arena != NULL) mcme_arena_free(arena);
-    return rc;
+    return MCME_EXIT_INTERNAL;
 }
 
 static int java_set_block(const McmeWorldInfo *info, int32_t dimension,
@@ -2623,8 +2518,9 @@ static int java_set_block(const McmeWorldInfo *info, int32_t dimension,
     McmeArena *arena = NULL;
     McmeNbtDoc doc;
     char file[MCME_REGION_PATH_MAX];
-    int rc = java_chunk_doc(info, dimension, x, y, z, &arena, &doc,
-                            file, sizeof file);
+    int rc = world_block_exit(mcme_java_chunk_doc(
+        info->path, dimension, x, y, z, &arena, &doc,
+        file, sizeof file));
     if (rc == MCME_OK) {
         bool changed = false;
         McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
@@ -2749,101 +2645,8 @@ static int java_fill(const McmeWorldInfo *info, int32_t dimension,
  * spec. Reading takes no LOCK — the game can hold the world open
  * while a block is read.
  */
-static int bedrock_get_block(const McmeWorldInfo *info,
-                             int32_t dimension,
-                             long x, long y, long z, McmeBuffer *spec)
-{
-    uint8_t key[14];
-    size_t key_len = 0;
-    if (!mcme_bedrock_subchunk_key((int32_t)x, (int32_t)y,
-                                   (int32_t)z, dimension,
-                                   key, sizeof key, &key_len)) {
-        return MCME_EXIT_USAGE;
-    }
-
-    McmeBuffer payload;
-    mcme_buffer_init(&payload);
-    bool deleted = false;
-    int rc;
-    McmeLevelDb *db = NULL;
-    if (!mcme_leveldb_open(&db, info->db_path)) {
-        rc = MCME_EXIT_IO;
-    } else if (!mcme_leveldb_has(db, key, key_len)) {
-        mcme_leveldb_close(db);
-        mcme_set_error("chunk: the subchunk of block (%ld, %ld, %ld) "
-                       "is not stored in this world", x, y, z);
-        rc = MCME_EXIT_NOT_FOUND;
-    } else {
-        bool got = mcme_leveldb_get(db, key, key_len, &payload, &deleted);
-        mcme_leveldb_close(db);
-        if (!got) {
-            rc = MCME_EXIT_IO;       /* the store's own error stands */
-        } else if (deleted) {
-            mcme_set_error("chunk: the subchunk of block "
-                           "(%ld, %ld, %ld) is deleted in this world",
-                           x, y, z);
-            rc = MCME_EXIT_NOT_FOUND;
-        } else {
-            rc = MCME_OK;
-        }
-    }
-
-    McmeArena *arena = NULL;
-    if (rc == MCME_OK) {
-        arena = mcme_arena_new();
-        if (arena == NULL) {
-            mcme_set_error("chunk: out of memory");
-            rc = MCME_EXIT_INTERNAL;
-        }
-    }
-    if (rc == MCME_OK) {
-        McmeBedrockSubchunk sc;
-        if (!mcme_bedrock_subchunk_decode(&sc, arena,
-                                          payload.data, payload.len)) {
-            char why[256];
-            snprintf(why, sizeof why, "%s", mcme_last_error());
-            mcme_set_error("chunk: subchunk of block (%ld, %ld, %ld) "
-                           "does not decode: %s", x, y, z, why);
-            rc = MCME_EXIT_BAD_FORMAT;
-        } else if (sc.layer_count == 0) {
-            /* The all-air marker: the position holds air. */
-            if (!mcme_buffer_append_cstr(spec, "minecraft:air")) {
-                rc = MCME_EXIT_INTERNAL;
-            }
-        } else {
-            long lx = x % 16, ly = y % 16, lz = z % 16;
-            if (lx < 0) lx += 16;
-            if (ly < 0) ly += 16;
-            if (lz < 0) lz += 16;
-            size_t u = (size_t)lx * 256 + (size_t)lz * 16 + (size_t)ly;
-            const McmeBedrockLayer *layer = &sc.layers[0];
-            uint16_t idx = layer->indices[u];
-            if (idx >= layer->palette_len
-                    || layer->palette[idx].root == NULL) {
-                mcme_set_error("chunk: the index at block (%ld, %ld, "
-                               "%ld) is %u, outside its palette of "
-                               "%zu entries", x, y, z, idx,
-                               layer->palette_len);
-                rc = MCME_EXIT_BAD_FORMAT;
-            } else {
-                const McmeTag *entry = layer->palette[idx].root;
-                if (!mcme_bedrock_block_spec(entry, spec)) {
-                    char why[256];
-                    snprintf(why, sizeof why, "%s",
-                             mcme_last_error());
-                    mcme_set_error("chunk: the palette entry at "
-                                   "block (%ld, %ld, %ld): %s",
-                                   x, y, z, why);
-                    rc = MCME_EXIT_BAD_FORMAT;
-                }
-            }
-        }
-    }
-
-    if (arena != NULL) mcme_arena_free(arena);
-    mcme_buffer_free(&payload);
-    return rc;
-}
+/* The Bedrock read lives in the core now too — mcme_world_block_spec
+   dispatches on the world's kind (G9). */
 
 static int cmd_chunk_set(int argc, char **argv)
 {
@@ -2969,13 +2772,9 @@ static int cmd_chunk_get(int argc, char **argv)
 
     McmeBuffer spec;
     mcme_buffer_init(&spec);
-    int rc;
-    if (info.kind == MCME_WORLD_JAVA) {
-        /* The chunk document, its palettes, one position. */
-        rc = java_get_block(&info, dimension, x, y, z, &spec);
-    } else {
-        rc = bedrock_get_block(&info, dimension, x, y, z, &spec);
-    }
+    /* The store's own answer, through the core's one road (G9). */
+    int rc = world_block_exit(
+        mcme_world_block_spec(&info, dimension, x, y, z, &spec));
 
     if (rc == MCME_OK) {
         if (g_opts.json) {
@@ -3084,9 +2883,8 @@ static int cmd_chunk_mesh(int argc, char **argv)
         long sx = s ? x + k_dx[s - 1] : x;
         long sy = s ? y + k_dy[s - 1] : y;
         long sz = s ? z + k_dz[s - 1] : z;
-        int rc = info.kind == MCME_WORLD_JAVA
-            ? java_get_block(&info, dimension, sx, sy, sz, &specs[s])
-            : bedrock_get_block(&info, dimension, sx, sy, sz, &specs[s]);
+        int rc = world_block_exit(mcme_world_block_spec(
+            &info, dimension, sx, sy, sz, &specs[s]));
         if (rc == MCME_OK) {
             /* The buffer is bytes, not a C string; the prelude
                wants one. */
@@ -3477,9 +3275,9 @@ static int sub_java_layers(const McmeWorldInfo *info,
             McmeArena *arena = NULL;
             McmeNbtDoc doc;
             char file[MCME_REGION_PATH_MAX];
-            int crc = java_chunk_doc(info, dimension, cx * 16L,
-                                     cy * 16L, cz * 16L, &arena, &doc,
-                                     file, sizeof file);
+            int crc = world_block_exit(mcme_java_chunk_doc(
+                info->path, dimension, cx * 16L, cy * 16L,
+                cz * 16L, &arena, &doc, file, sizeof file));
             if (crc == MCME_EXIT_NOT_FOUND) {
                 if (s == SUB_TARGET) return crc;
                 continue;           /* the world's edge: air */

@@ -7,6 +7,80 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The map's first block: the store's answer, through the window
+
+### Built
+
+- G9 + D56: the window can ask a world — `--world DIR --at X Y Z
+  [--dimension N]` — and once the pack's answer lands, a worker
+  reads the spec the store spells at those coordinates, meshes it
+  through the blockmesh layer's total answer, and the world's own
+  block stands in the viewport: `world=ok spec=minecraft:air,
+  drew=1 tex=1` on the golden world's probe, `world=refused` with
+  the store's own words when there is nothing there.
+- The read moved into the core whole (src/world/world_block.c):
+  java_chunk_doc, java_get_block and bedrock_get_block walked out
+  of src/app/main.c unchanged — same "chunk: ..." messages, same
+  answers — behind mcme_world_block_spec and a status vocabulary
+  (McmeWorldBlockStatus) the verbs map to their exit codes. The
+  verbs' dispatch sites collapsed to one call; the battery's 107
+  pins stayed green through the move.
+- The spec parser moved beside it (src/resource/blockspec.c):
+  mcme_block_parse_spec carries the body whole, the verbs keep a
+  thin wrapper that wears its own verb — the printed texts stay
+  byte-identical.
+- gui/chunktask.{c,h}: the worker probes the world, reads the one
+  spec, parses it the way the verbs parse it, splits the
+  namespace, opens the pack's three indices and calls
+  mcme_mesh_for_block — a block the pack does not know (air is)
+  is the missing cube, never a refusal (D33's total) — and the
+  meshtask's own page dresses it: mcme_meshtask_pack_atlas is
+  shared, not copied.
+- The ask rides the pack answer: one home per session (D52); the
+  answer carries the mesh generation, so open_pack's bump and
+  every pick's bump retire a world answer still on the road. The
+  smoke's frame gate covers the world path too: a world block
+  that never reaches a frame is a failed gate, same as a model.
+- Selftest +22 (1389): the golden's air through the wire with
+  the spec pinned, the nether refusal, a directory that is not a
+  world; the core world suite pins the same probes at the
+  battery's own coordinates ((5,5,5) and (15,255,15) air,
+  (40,5,5) not-found, the nether not-found, a layoutless
+  dimension silent-usage) and the resource suite pins the
+  parser's dialect and every refusal.
+
+### Notes
+
+- The extended gate earned its keep on the first run: it wedged
+  where a settle-only gate would have waved the answer through.
+  The worker's embedded McmeMeshResult was zero-initialized and
+  its own `ok` never set, so set_mesh skipped the stage — the
+  settle line said world=ok while the viewport held no mesh, and
+  only the draw wait disagreed.
+- append_cstr carries no NUL (core.h says so): the spec pins are
+  length + memcmp, the worker strndup's the length — the CLI
+  fwrite's the same bytes.
+- A red herring for the file: two rebuilds failed silently behind
+  `> /dev/null`, and the stale binary played "nondeterministic
+  wedge" for three runs — print the build's rc, always.
+- `mcme blockmesh <fixture> minecraft:air` answers the missing
+  cube (6 faces, 4 verts a side) — the record, not a guess: that
+  is what the window shows for the golden's air.
+- Gates: battery 107/107 rc=0 (twice — once per binary);
+  ./rebuild.sh test PASS, tests/ clean; --selftest PASS 1389;
+  smokes (wayland, nvidia-stubbed llvmpipe): window / pack /
+  model / dialog rc=0, model refusal rc=1, world golden rc=0,
+  world absent rc=1, `--at` alone rc=1 with its usage, nether
+  rc=1, x11 window rc=0 — 0,0,0,0,1,0,1,1,1,0.
+
+### Next
+
+- The block in situ: mesh-level cull against the six real
+  neighbours (D37's clauses where the chunk builder puts them),
+  so a block shows only the faces the world would keep; or the
+  whole chunk's iteration over that; or the world dialog — open
+  a world without the argv.
+
 ## 2026-10-21 — The hand on the glass: drag turns, scroll walks
 
 ### Built
