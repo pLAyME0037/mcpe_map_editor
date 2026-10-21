@@ -3736,3 +3736,53 @@ clean.
 spec and the walk carries states), or the display ever needs the
 reference's rotation/merge shown differently from the CLI's mesh
 (then a pin pins the difference instead of this note).
+
+## D55 — The camera in the user's hand
+
+**Chosen.** The viewport's camera becomes the user's own: an orbit
+(yaw, pitch, distance) that opens as the fixed three-quarter still
+the window always drew — same constants, same picture — and the
+gestures take it over from there. The orbit's math is its own pure
+unit (`gui/camera.h`): no GTK, no GL, selftest-pinned headless
+beside the staging half. The viewport holds the camera as its own
+datum beside the GL state; Gtk's drag and scroll are thin adapters
+(cumulative offsets to deltas) handing the deltas to one public
+road (`mcme_viewport_drag` / `mcme_viewport_zoom`), which mutates
+the orbit and queues the frame — and the smoke drives that same
+road, reading the orbit back in the settle line as evidence
+(`cam=yaw,pitch,dist`).
+
+**Why.** A fixed three-quarter still shows one face of one block;
+the chunk behind the glass (the destination) is worth nothing you
+cannot look around. Input is the window's own presentation duty —
+D49's line held to its end: the reference has no camera, so
+nothing pins this but honesty of defaults and clamps. The
+continuity rule is the one that matters: the picture at open never
+moved — the hand merely took over the constants that were already
+there.
+
+**Rejected.**
+- *The camera in main.c's globals*: the viewport draws it; split
+  state across files costs a sync it does not need.
+- *Gesture events reaching the render state directly*: the
+  adapters translate, the one road applies — the smoke and the
+  pointer walk the same code or neither is proven.
+- *Unbounded pitch*: past ~80° the view inverts — confusion, not
+  capability. The clamp is part of the answer.
+
+**How verified.** Selftest +124: the default camera's matrix
+equals the old fixed composition element for element (the
+continuity pin), NULL answers the default (the house's total
+function), the aspect rides, the drag's slope and both tilt
+clamps, the zoom's clamps exact at both ends (1.2, 8.0), and a
+finite frame at every reachable extreme. Smokes: every form's
+settle line carries `cam=1.08,0.66,2.01` — the scripted drag and
+zoom drove the road — with pack=ok, models=6 blocks=17, mesh
+ok/refused as asked, drew/tex/gl_failed as before, rc unchanged
+(0, 0, 0, 1, 0). Battery 19/19; `./rebuild.sh test` PASS;
+`git status tests/` clean.
+
+**Reverses if:** the chunk view needs a walking camera (then the
+orbit grows a position and the road grows a pan — the adapter
+pattern stays), or a gesture needs finer resolution than pixel
+deltas (then the adapters carry more, the road still applies).

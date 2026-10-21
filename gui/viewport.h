@@ -45,6 +45,16 @@ bool mcme_viewport_stage(const McmeMesh *mesh, const McmeAtlas *atlas,
  * the viewport as it was. */
 void mcme_viewport_set_mesh(GtkWidget *viewport, McmeMeshResult *result);
 
+/* G8: the camera in the user's hand. Drag (deltas, pixels) and zoom
+ * (steps, > 0 walks in) mutate the orbit and queue the frame the
+ * new view needs — the gesture handlers' road and the smoke's, one
+ * road. The current orbit reads back for the smoke's evidence line;
+ * false when the widget carries no camera. */
+void mcme_viewport_drag(GtkWidget *viewport, double dx, double dy);
+void mcme_viewport_zoom(GtkWidget *viewport, int steps);
+bool mcme_viewport_camera(const GtkWidget *viewport, float *yaw_out,
+                          float *pitch_out, float *dist_out);
+
 /* True once a frame carrying a mesh has been drawn; true when any GL
  * step went wrong (context, shader, upload, or draw); true once the
  * page's texture has landed on the GPU. The smoke gates read all

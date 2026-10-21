@@ -22,6 +22,11 @@
  *             interleaved vertex stream (position, tint) and one
  *             rebased index stream — and the refusal of a face that
  *             points past its bucket's vertices.
+ *   camera  — G8's hand, headless: the default orbit's matrix IS
+ *             the old fixed still's, element for element (the
+ *             picture a pack opens to never moved); the drag's
+ *             slope and tilt clamps; the zoom's clamps; a finite
+ *             frame at every extreme the clamps allow.
  *
  * The core queue (src/core/event_queue.c) has no glib in it and its own
  * tests can not see a main context; these checks stand where the two
@@ -31,6 +36,7 @@
 
 #include "selftest.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +47,7 @@
 
 #include "mcme/core.h"
 #include "mcme/resource.h"
+#include "camera.h"
 #include "meshtask.h"
 #include "packtask.h"
 #include "viewport.h"
@@ -763,6 +770,133 @@ static void test_stage(void)
     mcme_mesh_free(&m); /* hand-built arrays free like the core's */
 }
 
+/* out = a * b, column-major — the reference composition's own
+   multiply, written here so the continuity pin below stands on the
+   old fixed camera's arithmetic, not on the unit under test. */
+static void m4_mul_t(float out[16], const float a[16], const float b[16])
+{
+    float r[16];
+
+    for (int c = 0; c < 4; ++c)
+        for (int rr = 0; rr < 4; ++rr) {
+            r[c * 4 + rr] = 0.0f;
+            for (int k = 0; k < 4; ++k)
+                r[c * 4 + rr] += a[k * 4 + rr] * b[c * 4 + k];
+        }
+    memcpy(out, r, sizeof r);
+}
+
+/* G8: the hand's math, pinned headless beside the staging half.
+   The continuity pin is the one that matters — the default camera's
+   matrix is the fixed still's, element for element: the picture a
+   pack opens to never moved, the drag just took it over. */
+static void test_camera(void)
+{
+    McmeCamera cam;
+    float m[16], ref[16];
+    const float aspect = 16.0f / 9.0f;
+
+    /* The still, composed the way the old fixed camera did it:
+       project * tilt(0.42) * turn(0.6) * center-back(2.6). */
+    {
+        float p[16] = {0}, rx[16] = {0}, ry[16] = {0}, t[16] = {0};
+        float tmp[16];
+        const float f = 1.0f / tanf(0.45f);
+        const float tilt = 0.42f, turn = 0.6f;
+        const float near = 0.1f, far = 10.1f;
+
+        p[0] = f / aspect;
+        p[5] = f;
+        p[10] = (far + near) / (near - far);
+        p[11] = -1.0f;
+        p[14] = (2.0f * far * near) / (near - far);
+        rx[0] = 1.0f;
+        rx[5] = cosf(tilt); rx[6] = sinf(tilt);
+        rx[9] = -sinf(tilt); rx[10] = cosf(tilt); rx[15] = 1.0f;
+        ry[0] = cosf(turn); ry[2] = -sinf(turn); ry[5] = 1.0f;
+        ry[8] = sinf(turn); ry[10] = cosf(turn); ry[15] = 1.0f;
+        t[0] = t[5] = t[10] = t[15] = 1.0f;
+        t[12] = t[13] = -0.5f; t[14] = -2.6f;
+        m4_mul_t(tmp, rx, ry);
+        m4_mul_t(ref, p, tmp);
+        m4_mul_t(ref, ref, t);
+    }
+
+    mcme_camera_default(&cam);
+    CHECK(cam.yaw == 0.6f && cam.pitch == 0.42f && cam.dist == 2.6f);
+    mcme_camera_mvp(&cam, aspect, m);
+    for (int i = 0; i < 16; ++i)
+        CHECK(fabsf(m[i] - ref[i]) < 1e-5f);
+
+    /* NULL is the default camera — the total-function rule. */
+    {
+        float mn[16];
+
+        mcme_camera_mvp(NULL, aspect, mn);
+        for (int i = 0; i < 16; ++i)
+            CHECK(mn[i] == m[i]);
+    }
+
+    /* The aspect rides: a wider window shrinks x's scale and the
+       world keeps its size — f/aspect * the turn's first element
+       is one constant across windows. */
+    {
+        float wide[16], tall[16];
+
+        mcme_camera_mvp(&cam, 2.0f, wide);
+        mcme_camera_mvp(&cam, 1.0f, tall);
+        CHECK(fabsf(wide[0] * 2.0f - tall[0]) < 1e-5f);
+    }
+
+    /* The drag: yaw grows with dx at the documented slope, the
+       other axis untouched. */
+    mcme_camera_default(&cam);
+    mcme_camera_drag(&cam, 100.0, 0.0);
+    CHECK(fabsf(cam.yaw - 1.2f) < 1e-5f);
+    CHECK(cam.pitch == 0.42f);
+
+    /* The tilt clamps at the horizon either way — past ~80° the
+       view inverts, which is confusion, not capability. */
+    mcme_camera_drag(&cam, 0.0, 100000.0);
+    CHECK(cam.pitch == 1.4f);
+    mcme_camera_drag(&cam, 0.0, -200000.0);
+    CHECK(cam.pitch == -1.4f);
+
+    /* The walk: in shrinks, out grows, clamped at both ends and
+       never through zero. */
+    mcme_camera_default(&cam);
+    mcme_camera_zoom(&cam, 3);
+    CHECK(cam.dist < 2.6f && cam.dist >= 1.2f);
+    mcme_camera_zoom(&cam, -6);
+    CHECK(cam.dist > 2.6f && cam.dist <= 8.0f);
+    mcme_camera_zoom(&cam, 10000);
+    CHECK(cam.dist == 1.2f); /* walked in hard: the near clamp */
+    mcme_camera_zoom(&cam, -1000000);
+    CHECK(cam.dist == 8.0f); /* walked back hard: the far clamp */
+
+    /* The hand changes the frame — and every extreme it can reach
+       still answers a finite matrix (no NaN ever reaches the GPU). */
+    {
+        float before[16];
+        int changed = 0;
+
+        mcme_camera_default(&cam);
+        mcme_camera_mvp(&cam, aspect, before);
+        mcme_camera_drag(&cam, 80.0, 40.0);
+        mcme_camera_zoom(&cam, 2);
+        mcme_camera_mvp(&cam, aspect, m);
+        for (int i = 0; i < 16; ++i)
+            if (m[i] != before[i]) changed = 1;
+        CHECK(changed);
+
+        mcme_camera_drag(&cam, 0.0, 99999.0);
+        mcme_camera_zoom(&cam, -99999);
+        mcme_camera_mvp(&cam, aspect, m);
+        for (int i = 0; i < 16; ++i)
+            CHECK(isfinite(m[i]));
+    }
+}
+
 int mcme_gui_selftest(void)
 {
     test_fifo();
@@ -772,6 +906,7 @@ int mcme_gui_selftest(void)
     test_packtask();
     test_meshtask();
     test_stage();
+    test_camera();
 
     /* The binary's default turns LeakSanitizer off for GTK's caches;
      * the wire's own allocations are asserted here, where nothing has

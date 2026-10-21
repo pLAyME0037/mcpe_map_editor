@@ -6,10 +6,13 @@
  *
  * The camera is this frontend's own dress of the mesh's numbers (D49
  * extended to geometry): the mesh arrives in block units 0..1, and
- * the viewport centers it, turns it a fixed three-quarter tilt, and
- * projects it — presentation constants, not data. No face culling:
- * the builder's winding is its own business and the depth buffer
- * settles visibility either way.
+ * the viewport centers it, turns it, and projects it — presentation,
+ * not data. G8 puts it in the user's hand: the orbit (camera.h, pure
+ * math the selftest pins headless) opens as the fixed three-quarter
+ * still that stood before, and the gestures take it over — the
+ * drag's deltas and the scroll's steps drive the one road the smoke
+ * drives too. No face culling: the builder's winding is its own
+ * business and the depth buffer settles visibility either way.
  */
 
 #include "viewport.h"
@@ -22,10 +25,12 @@
 #include <epoxy/gl.h>
 #include <gtk/gtk.h>
 
+#include "camera.h"
 #include "mcme/resource.h"
 #include "meshtask.h"
 
 #define MCME_VIEWPORT_KEY "mcme.viewport"
+#define MCME_CAMERA_KEY "mcme.camera"
 
 /* ----------------------------------------------------------------------
  * Staging — the pure half
@@ -195,55 +200,9 @@ static GLuint compile(GLenum type, const char *src)
     return s;
 }
 
-/* out = a * b, column-major (GL's), out may alias a or b. */
-static void m4_mul(float out[16], const float a[16], const float b[16])
-{
-    float r[16];
-
-    for (int c = 0; c < 4; ++c)
-        for (int rr = 0; rr < 4; ++rr) {
-            r[c * 4 + rr] = 0.0f;
-            for (int k = 0; k < 4; ++k)
-                r[c * 4 + rr] += a[k * 4 + rr] * b[c * 4 + k];
-        }
-    memcpy(out, r, sizeof r);
-}
-
-/* The fixed camera: project * tilt * turn * center — the mesh's
-   0..1 block units dressed into view (presentation, not data). */
-static void build_mvp(float m[16], float aspect)
-{
-    float p[16] = {0}, rx[16] = {0}, ry[16] = {0}, t[16] = {0};
-    float tmp[16];
-    const float fovy = 0.9f;              /* ~52 degrees */
-    const float tilt = 0.42f;             /* around x     */
-    const float turn = 0.6f;              /* around y     */
-    const float near = 0.1f, far = 10.1f;
-    const float f = 1.0f / tanf(fovy * 0.5f);
-
-    p[0] = f / aspect;
-    p[5] = f;
-    p[10] = (far + near) / (near - far);
-    p[11] = -1.0f;
-    p[14] = (2.0f * far * near) / (near - far);
-
-    rx[0] = 1.0f;
-    rx[5] = cosf(tilt); rx[6] = sinf(tilt);
-    rx[9] = -sinf(tilt); rx[10] = cosf(tilt);
-    rx[15] = 1.0f;
-
-    ry[0] = cosf(turn); ry[2] = -sinf(turn);
-    ry[5] = 1.0f;
-    ry[8] = sinf(turn); ry[10] = cosf(turn);
-    ry[15] = 1.0f;
-
-    t[0] = t[5] = t[10] = t[15] = 1.0f;
-    t[12] = -0.5f; t[13] = -0.5f; t[14] = -2.6f;
-
-    m4_mul(tmp, rx, ry);
-    m4_mul(m, p, tmp);
-    m4_mul(m, m, t);
-}
+/* The camera's math — m4_mul, the projection, the orbit's
+   composition — lives in camera.h's unit now: G8 gave the fixed
+   camera's constants to the default state and put the hand on it. */
 
 static void on_realize(GtkGLArea *area, gpointer user)
 {
@@ -351,8 +310,12 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user)
 
     if (v->nidx > 0 && w > 0 && h > 0) {
         float mvp[16];
+        McmeCamera *cam =
+            g_object_get_data(G_OBJECT(area), MCME_CAMERA_KEY);
 
-        build_mvp(mvp, (float)w / (float)h);
+        /* The frame's matrix is the camera's own answer — the
+           default state draws the still the window opened with. */
+        mcme_camera_mvp(cam, (float)w / (float)h, mvp);
         glUseProgram(v->program);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, v->tex);
@@ -399,16 +362,76 @@ static void state_free(gpointer data)
     g_free(v);
 }
 
+/* The gestures adapt input to the hand's one road: Gtk's drag
+   offsets are cumulative from the gesture's start, so the deltas
+   are taken here (the camera keeps the last seen offset) and the
+   public drag applies them. */
+static void on_drag_begin(GtkGestureDrag *g, gdouble x, gdouble y,
+                          gpointer user)
+{
+    McmeCamera *cam = g_object_get_data(G_OBJECT(user),
+                                        MCME_CAMERA_KEY);
+
+    (void)g; (void)x; (void)y;
+    if (cam == NULL) return;
+    cam->last_x = 0.0;
+    cam->last_y = 0.0;
+}
+
+static void on_drag_update(GtkGestureDrag *g, gdouble off_x,
+                           gdouble off_y, gpointer user)
+{
+    McmeCamera *cam = g_object_get_data(G_OBJECT(user),
+                                        MCME_CAMERA_KEY);
+    double dx, dy;
+
+    (void)g;
+    if (cam == NULL) return;
+    dx = off_x - cam->last_x;
+    dy = off_y - cam->last_y;
+    cam->last_x = off_x;
+    cam->last_y = off_y;
+    mcme_viewport_drag(GTK_WIDGET(user), dx, dy);
+}
+
+static gboolean on_scroll(GtkEventControllerScroll *c, gdouble dx,
+                          gdouble dy, gpointer user)
+{
+    (void)c;
+
+    /* One notch a step; a horizontal scroll rides the same wheel
+       (trackpads push both). */
+    mcme_viewport_zoom(GTK_WIDGET(user),
+                       (int)lround(dy != 0.0 ? dy : dx));
+    return TRUE;
+}
+
 GtkWidget *mcme_viewport_new(void)
 {
     GtkWidget *area = gtk_gl_area_new();
     ViewportState *v = g_new0(ViewportState, 1);
+    McmeCamera *cam = g_new(McmeCamera, 1);
+    GtkGesture *drag;
+    GtkEventController *scroll;
 
     gtk_gl_area_set_has_depth_buffer(GTK_GL_AREA(area), TRUE);
     g_object_set_data_full(G_OBJECT(area), MCME_VIEWPORT_KEY, v, state_free);
+    mcme_camera_default(cam);
+    g_object_set_data_full(G_OBJECT(area), MCME_CAMERA_KEY, cam, g_free);
     g_signal_connect(area, "realize", G_CALLBACK(on_realize), v);
     g_signal_connect(area, "render", G_CALLBACK(on_render), v);
     g_signal_connect(area, "unrealize", G_CALLBACK(on_unrealize), v);
+    /* The hand: the drag turns, the scroll walks — both through the
+       public road below, which queues the frame the new view
+       needs. The camera rides beside the GL state, its own datum. */
+    drag = gtk_gesture_drag_new();
+    g_signal_connect(drag, "drag-begin", G_CALLBACK(on_drag_begin), area);
+    g_signal_connect(drag, "drag-update", G_CALLBACK(on_drag_update), area);
+    gtk_widget_add_controller(area, GTK_EVENT_CONTROLLER(drag));
+    scroll = gtk_event_controller_scroll_new(
+        GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+    g_signal_connect(scroll, "scroll", G_CALLBACK(on_scroll), area);
+    gtk_widget_add_controller(area, GTK_EVENT_CONTROLLER(scroll));
     return area;
 }
 
@@ -467,4 +490,43 @@ bool mcme_viewport_textured(const GtkWidget *viewport)
     const ViewportState *v = viewport_state(viewport);
 
     return v != NULL && v->textured;
+}
+
+/* The hand — one road for the gestures and the smoke alike: mutate
+   the orbit, ask for the frame the new view needs. */
+void mcme_viewport_drag(GtkWidget *viewport, double dx, double dy)
+{
+    McmeCamera *cam;
+
+    if (viewport == NULL) return;
+    cam = g_object_get_data(G_OBJECT(viewport), MCME_CAMERA_KEY);
+    if (cam == NULL) return;
+    mcme_camera_drag(cam, dx, dy);
+    gtk_gl_area_queue_render(GTK_GL_AREA(viewport));
+}
+
+void mcme_viewport_zoom(GtkWidget *viewport, int steps)
+{
+    McmeCamera *cam;
+
+    if (viewport == NULL) return;
+    cam = g_object_get_data(G_OBJECT(viewport), MCME_CAMERA_KEY);
+    if (cam == NULL) return;
+    mcme_camera_zoom(cam, steps);
+    gtk_gl_area_queue_render(GTK_GL_AREA(viewport));
+}
+
+bool mcme_viewport_camera(const GtkWidget *viewport, float *yaw_out,
+                          float *pitch_out, float *dist_out)
+{
+    const McmeCamera *cam =
+        viewport == NULL ? NULL
+                         : g_object_get_data(G_OBJECT(viewport),
+                                             MCME_CAMERA_KEY);
+
+    if (cam == NULL) return false;
+    if (yaw_out != NULL) *yaw_out = cam->yaw;
+    if (pitch_out != NULL) *pitch_out = cam->pitch;
+    if (dist_out != NULL) *dist_out = cam->dist;
+    return true;
 }

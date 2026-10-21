@@ -7,6 +7,63 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The hand on the glass: drag turns, scroll walks
+
+### Built
+
+- G8 + D55: the viewport's camera is no longer a constant —
+  it is an orbit (yaw, pitch, distance) in the user's hand.
+  Drag turns the block, scroll walks in and out, and the
+  picture a pack opens to is exactly the still it always
+  was: the fixed camera's constants are the default state
+  now, and the continuity pin holds the matrix element for
+  element — the hand took over, the picture never moved.
+- The orbit's math lives in its own pure unit (gui/camera.h):
+  no GTK, no GL, selftest-pinned headless beside the staging
+  half — the drag's slope, the tilt clamped at ~80° (no
+  inversion), the distance clamped to [1.2, 8.0], a finite
+  frame at every reachable extreme, NULL as the default
+  camera (the house's total function).
+- The viewport carries the camera as its own datum beside
+  the GL state; Gtk's drag and scroll controllers are thin
+  adapters (cumulative offsets to deltas) over one public
+  road — mcme_viewport_drag / mcme_viewport_zoom — that
+  mutates the orbit and queues the frame. The smoke drives
+  that same road before its run, so every frame it draws is
+  through the hand, and the settle line reads the orbit back
+  as evidence: cam=1.08,0.66,2.01 in every form.
+- Selftest +124 (1367): the continuity pin (the default
+  matrix IS the old fixed composition), the drag slope, both
+  clamps exact at the extremes, the aspect ride, and the
+  frame changed-and-finite after the hand.
+
+### Notes
+
+- Two catches at the gate, one pin and one unit: walking in
+  hard hits the NEAR clamp (my first pin expected the far
+  one), and folding in/out through 1/grow risks a float
+  divide-by-zero at underflow — the walk now multiplies one
+  direction only, capped past the clamps' reach, which keeps
+  both extremes exact and the sanitizer quiet.
+- GTK4 has no gtk_gl_area_queue_draw — it is queue_render,
+  the same call set_mesh makes; caught at the first build.
+- The drag adapter keeps its last-seen offset in the camera
+  unit itself (Gtk reports offsets cumulative from the
+  gesture's start) — the bookkeeping rides with the state it
+  serves, and drag-begin zeroes it for the next gesture.
+- Gates: --selftest PASS 1367 rc=0; smokes (wayland,
+  nvidia-stubbed llvmpipe): window-only rc=0, pack-only rc=0
+  with cam=1.08,0.66,2.01, pack+model rc=0 with mesh=ok
+  drew=1 tex=1, --open refusal rc=1, an x11 pack+model rc=0;
+  battery 19/19; ./rebuild.sh test PASS; git status tests/
+  clean.
+
+### Next
+
+- The first chunk through the window — the hand can turn it
+  when it lands; or the standing whole-pack page as that
+  view's foundation. D40's record still flipping.
+
 ## 2026-10-21 — The block half: the picker's twin, one layer down
 
 ### Built

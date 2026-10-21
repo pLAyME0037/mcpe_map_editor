@@ -114,17 +114,23 @@ static void maybe_smoke_quit(void)
         else if (mcme_viewport_gl_failed(g_viewport)) g_exit_code = 2;
         else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
-    fprintf(stderr,
-            "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
-            "drew=%d tex=%d gl_failed=%d\n",
-            g_pack_ok ? "ok" : "refused",
-            g_models_seen,
-            g_blocks_seen,
-            g_mesh_ns == NULL ? "not-asked"
-                              : (g_mesh_ok ? "ok" : "refused"),
-            mcme_viewport_drew(g_viewport),
-            mcme_viewport_textured(g_viewport),
-            mcme_viewport_gl_failed(g_viewport));
+    {
+        float cyaw = 0, cpitch = 0, cdist = 0;
+
+        mcme_viewport_camera(g_viewport, &cyaw, &cpitch, &cdist);
+        fprintf(stderr,
+                "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
+                "drew=%d tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f\n",
+                g_pack_ok ? "ok" : "refused",
+                g_models_seen,
+                g_blocks_seen,
+                g_mesh_ns == NULL ? "not-asked"
+                                  : (g_mesh_ok ? "ok" : "refused"),
+                mcme_viewport_drew(g_viewport),
+                mcme_viewport_textured(g_viewport),
+                mcme_viewport_gl_failed(g_viewport),
+                cyaw, cpitch, cdist);
+    }
     g_application_quit(G_APPLICATION(g_app));
 }
 
@@ -457,6 +463,11 @@ static void on_activate(GtkApplication *app, gpointer user)
     }
 
     if (g_smoke) {
+        /* G8: the camera takes the hand — the smoke drives the same
+           road the gestures do, so every frame this run draws
+           through the dragged view. */
+        mcme_viewport_drag(g_viewport, 80.0, 40.0);
+        mcme_viewport_zoom(g_viewport, 2);
         if (g_pack_arg || g_open_dir) {
             g_timeout_add(50, smoke_poll, app);
             g_timeout_add(3000, smoke_timeout, app);
