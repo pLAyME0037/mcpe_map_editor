@@ -3844,3 +3844,83 @@ and GUI (then the context belongs to the caller and the
 promotion splits into reader + formatter), or a second client
 wants a coarser answer than one spec per position (then the
 status gains a reason the caller can branch on).
+
+## D57 — The faces the world would keep
+
+**Chosen.** The builder's cull becomes one question asked
+everywhere. `mcme_cull_drops(self, neighbour)` (resource.h over
+src/resource/mesh.c) carries D37's two clauses over transparency
+alone — the neighbour opaque, or the chained translucent pair —
+and every surface asks it: atlas.c's per-side table walk
+(mcme_atlas_mesh_dirs, its inline clause refactored onto the
+predicate, behaviour untouched — the battery adjudicates), and the
+new mesh-level answer `mcme_mesh_cull_dirs(mesh, beside[6])`,
+which drops whole side buckets in place. The bucket IS the
+clause's granularity: every face in a side bucket carries that
+side's cullface (D32), so all its faces share one neighbour and
+one answer; the none bucket never drops; dropped buckets are
+released. The neighbour cells come from one table too:
+`mcme_cull_offset(dir, &dx, &dy, &dz)` carries the builder's
+CULL_MAP (chunk_builder_cy.pyx 49-55) — the three identical
+static copies in main.c (chunk mesh's, both sub-chunk
+composers') collapse onto it. The chunk worker now reads seven
+cells (the target's refusal stands; a side outside the stored
+world reads air — the verbs' rule), meshes each neighbour
+through the same open pack indices for the one transparency the
+clauses read, and culls before delivery: the culled mesh crosses
+the wire (D50's seam — the viewport stays cull-unaware), with
+both halves of the count on the result (faces kept/total) for
+the settle line to print.
+
+**Why.** D3 once more: the clause was one decision away from
+becoming two implementations the moment the GUI needed it — the
+atlas table is the reference's builder surface, the GUI stages
+meshes, and a staged bucket draws whether the world would keep it
+or not. One predicate, both surfaces. The zero-face answer then
+needed the smoke gate to grow a distinction, and it got one: a
+world answer whose cull kept nothing is the world saying nothing
+stands there — it settles without a frame (exit 0, faces=0/6) —
+while the model path's empty mesh keeps its old contract (a
+smoke argument's mistake, caught by the backstop), because there
+the empty answer is not something anyone asked for.
+
+**Rejected.**
+- *Culling in the viewport*: the seam (D50) — staging is
+  data-in, frame-out; world semantics in the render layer put
+  the store where the GL lives.
+- *Per-face filtering below the bucket*: faces in a side bucket
+  share one cullface and one neighbour, so the drop is per-side
+  whole — the reference's rows are all-or-nothing per side, and
+  a culled side carries no table keys at all.
+- *The world's empty answer failing the gate*: the old rule ("a
+  mesh that never reaches a frame is not settled") would exit 1
+  on a correct answer — an all-air world through a pack that
+  resolves air opaque legitimately draws nothing.
+- *Promoting cmd_chunk_mesh's composition whole*: the worker
+  composes the same seven core calls itself (G9's line); only
+  the cull's two questions are shared, because those are the
+  reference's rules.
+
+**How verified.** Resource suite +test_cull: the clause's nine
+answers, the CULL_MAP's six cells and the self cell, a
+mixed-beside bucket pattern (the six sides six answers) with the
+none bucket standing, the chained pair alone, the neighbour's
+flag deciding clause one regardless of self's shape, the null
+arguments. Battery 107/107 rc=0 after the predicate refactor and
+the three table collapses. GUI selftest +12 = 1401: the
+golden's air through the wire now pins 0/6 (the pack's opaque
+cube culled against its own opaque neighbours) and a
+slab-shaped air pins 6/6 (partial on both counts — neither
+clause fires, the reference's own air record). Smokes over a
+scripted pattern world (golden copy, chunk set: grass_block
+ringed by two melon_stem partials, air-opaque elsewhere):
+`world=ok spec=minecraft:grass_block faces=2/6 drew=1 tex=1`;
+the all-air world `world=ok spec=minecraft:air faces=0/6
+drew=0`, settled without a frame; and the CLI agrees on the
+same worlds (chunk mesh's surviving table columns: two, none).
+
+**Reverses if:** the reference's cull ever reads more than the
+transparency flag (then the predicate grows the question and
+both surfaces keep sharing it), or a face's cull direction stops
+agreeing with its bucket (then the mesh cull goes per-face while
+the predicate stands).

@@ -9,16 +9,27 @@
  * result: the smoke's evidence and the loop thread's label, the
  * world's own answer in its own words.
  *
- * The block arrives unculled — a lone block shows every face, the
- * way `blockmesh` answers (D37's cull belongs to the chunk view
- * that follows, where the neighbours stand beside it). Data
- * crosses; no core call ever happens off the worker (the G2
+ * Since G10 the block arrives CULLED to its world: the worker also
+ * reads the six neighbours standing on the builder's CULL_MAP
+ * cells (mcme_cull_offset — a side outside the stored world is
+ * air, the verbs' rule) and meshes each for the one transparency
+ * the clauses read, then drops the sides mcme_cull_drops rejects
+ * (mcme_mesh_cull_dirs — the same predicate `mcme_atlas_mesh_dirs`
+ * walks, D37's two clauses over transparency alone). The mesh
+ * crossing carries exactly the faces the world would show: a
+ * block buried in opaque neighbours crosses empty, and `faces`
+ * counts both halves of the answer for the settle line to print.
+ * A lone block in a picker is not in situ and stays uncalled — it
+ * rides meshtask, never this road.
+ *
+ * Data crosses; no core call ever happens off the worker (the G2
  * discipline, kept).
  */
 #ifndef MCME_GUI_CHUNKTASK_H
 #define MCME_GUI_CHUNKTASK_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "meshtask.h" /* McmeMeshResult, McmeTextureIndex */
@@ -27,6 +38,8 @@ typedef struct {
     bool ok;
     char *text;  /* the refusal when !ok — the store's own words */
     char *spec;  /* the world's answer: "ns:name{states}" when ok */
+    size_t faces;       /* the faces the world's sides keep      */
+    size_t faces_total; /* the mesh's faces before the cull       */
     McmeMeshResult *mesh; /* owned; handed to the viewport, NULLed */
 } McmeChunkResult;
 

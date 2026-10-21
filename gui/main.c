@@ -40,8 +40,12 @@
  *   --world DIR --at X Y Z [--dimension N]
  *                ask the world for one block: after the pack's answer
  *                lands, the worker reads the spec the store spells at
- *                those coordinates and meshes it into the viewport
- *                (G9). The dimension is a number here — the CLI
+ *                those coordinates, reads the six neighbours standing
+ *                beside it, and meshes it culled to them (G10) into
+ *                the viewport — a buried block lands as the empty
+ *                mesh the world itself would draw, and both halves
+ *                of the face count (kept/total) ride the settle
+ *                line. The dimension is a number here — the CLI
  *                spells the names — and the three flags come as one
  *                question: together or refused. A refusal's own
  *                words land in the mesh label.
@@ -51,8 +55,11 @@
  *                pack's argument to `mcme blockmesh`'s builder half)
  *
  * Smoke exit codes: 0 — the pack opened and (if asked) the model
- * meshed and a frame carried it; 1 — a refusal, or the mesh never
- * reached a frame; 2 — GL trouble (context, shader, upload, draw).
+ * meshed and a frame carried it, or the world answered with faces
+ * to show; 1 — a refusal, or the mesh never reached a frame (a
+ * world answer whose cull kept zero faces settles without one —
+ * the world said nothing stands there); 2 — GL trouble (context,
+ * shader, upload, draw).
  */
 
 #include <stdio.h>
@@ -99,6 +106,8 @@ static int32_t g_world_dim;        /* --dimension: the number the CLI
 static long g_wx, g_wy, g_wz;      /* --at: where to stand            */
 static bool g_chunk_settled, g_chunk_ok;
 static char *g_spec_seen;          /* the world's answer, its words   */
+static size_t g_chunk_faces;       /* the cull's kept faces (G10)     */
+static size_t g_chunk_faces_total; /* the mesh's own, before it       */
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -118,8 +127,15 @@ static void maybe_smoke_quit(void)
     if (!g_smoke || !g_pack_settled) return;
     if (!g_mesh_settled) return;
     if (g_world_dir != NULL && !g_chunk_settled) return;
+    /* A built mesh awaits its frame — unless the world's answer
+       legitimately holds none (G10): a cull that kept zero faces
+       is the world saying nothing stands here, and the empty mesh
+       settles without a draw. The model ask keeps its old
+       contract: an empty mesh there is a smoke argument's mistake,
+       and the backstop catches it. */
     if ((g_mesh_ns != NULL && g_mesh_ok) ||
-        (g_world_dir != NULL && g_chunk_ok)) {
+        (g_world_dir != NULL && g_chunk_ok &&
+         g_chunk_faces > 0)) {
         if (!mcme_viewport_drew(g_viewport) &&
             !mcme_viewport_gl_failed(g_viewport))
             return; /* a built mesh awaits its frame; the poll asks */
@@ -136,7 +152,8 @@ static void maybe_smoke_quit(void)
     if (g_world_dir != NULL) {
         if (!g_chunk_ok) g_exit_code = 1;
         else if (mcme_viewport_gl_failed(g_viewport)) g_exit_code = 2;
-        else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
+        else if (g_chunk_faces > 0 &&
+                 !mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
     {
         float cyaw = 0, cpitch = 0, cdist = 0;
@@ -144,8 +161,8 @@ static void maybe_smoke_quit(void)
         mcme_viewport_camera(g_viewport, &cyaw, &cpitch, &cdist);
         fprintf(stderr,
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
-                "world=%s spec=%s drew=%d tex=%d gl_failed=%d "
-                "cam=%.2f,%.2f,%.2f\n",
+                "world=%s spec=%s faces=%zu/%zu drew=%d tex=%d "
+                "gl_failed=%d cam=%.2f,%.2f,%.2f\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -154,6 +171,8 @@ static void maybe_smoke_quit(void)
                 g_world_dir == NULL ? "not-asked"
                                     : (g_chunk_ok ? "ok" : "refused"),
                 g_chunk_ok && g_spec_seen != NULL ? g_spec_seen : "-",
+                g_chunk_faces,
+                g_chunk_faces_total,
                 mcme_viewport_drew(g_viewport),
                 mcme_viewport_textured(g_viewport),
                 mcme_viewport_gl_failed(g_viewport),
@@ -261,6 +280,8 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
     if (result->ok) {
         g_free(g_spec_seen);
         g_spec_seen = g_strdup(result->spec);
+        g_chunk_faces = result->faces;
+        g_chunk_faces_total = result->faces_total;
         mcme_viewport_set_mesh(g_viewport, result->mesh); /* takes it */
         result->mesh = NULL;
     } else {
@@ -275,6 +296,8 @@ static void start_chunk_ask(void)
 {
     g_chunk_settled = false;
     g_chunk_ok = false;
+    g_chunk_faces = 0;
+    g_chunk_faces_total = 0;
     if (mcme_chunktask_start(g_wire, g_world_dir, g_pack_dir,
                              g_world_dim, g_wx, g_wy, g_wz,
                              on_chunk_result,

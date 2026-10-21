@@ -7,6 +7,59 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The block in situ: the faces the world would keep
+
+### Built
+
+- G10 + D57: the cull reaches the window — the block in situ.
+  The builder's two clauses become one predicate
+  (mcme_cull_drops, resource.h over src/resource/mesh.c) asked by
+  every surface: atlas.c's per-side table walk refactored onto
+  it, and the new mesh-level answer mcme_mesh_cull_dirs, which
+  drops whole side buckets in place — a side bucket's faces all
+  carry that side's cullface (D32), so the clause is per-side
+  whole; the none bucket never drops. The neighbour cells come
+  from the core too: mcme_cull_offset carries the builder's
+  CULL_MAP (chunk_builder_cy.pyx 49-55), and main.c's three
+  identical static copies (chunk mesh, both sub-chunk
+  composers') collapsed onto it — the battery's 107 pins
+  adjudicated the move.
+- gui/chunktask.{c,h}: the worker reads seven cells now — the
+  target's refusal stands, a side outside the stored world reads
+  air (the verbs' rule) — meshes each neighbour through the same
+  open pack indices for the one transparency the clauses read,
+  and culls before the wire: the viewport stages exactly the
+  faces the world would show, never learning what a neighbour is
+  (D50's seam). Both halves of the count ride the result and the
+  settle line prints them: faces=2/6.
+- The smoke gate grew the distinction the answer needed: a world
+  result whose cull kept zero faces settles WITHOUT a frame —
+  the world said nothing stands there (exit 0, faces=0/6,
+  drew=0) — while the model path's empty mesh keeps its old
+  backstop contract. CLI/GUI parity rides the smoke: the same
+  world+pack through `chunk mesh --json` counts the same
+  survivors (its table columns on two sides, then none).
+- Selftest +12 = 1401: the wire's 0/6 — the pack's opaque cube
+  culled against its own opaque neighbours — and, with the
+  pack's air rewritten as a slab, 6/6: partial on both counts,
+  neither clause fires, the reference's own air record. The
+  resource suite pins test_cull: the clause's nine answers, the
+  map's six cells and the self cell, the mixed-beside bucket
+  pattern with the none bucket standing, the chained pair.
+
+### Notes
+
+- The all-air world probe flipped from drew=1 to faces=0/6
+  drew=0, and that is the rule, not a regression: the smoke pack
+  has no air model, so air resolves to the missing BLOCK —
+  opaque (D33), and opaque neighbours cull. The battery's
+  crafted pack HAS a partial air (its FIXTURE_FLAGS pin it), so
+  its all-air probes keep their faces; the pack's answer is the
+  record either way.
+- melon_stem classifies partial and redstone_wire opaque in the
+  fixture pack — recorded from the CLI's own beside lines, never
+  guessed — and the smoke's pattern uses them to reach 2/6.
+
 ## 2026-10-21 — The map's first block: the store's answer, through the window
 
 ### Built

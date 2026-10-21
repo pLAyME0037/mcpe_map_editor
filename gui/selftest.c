@@ -625,6 +625,8 @@ static bool g_chunk_done_ok;
 static char g_chunk_done_spec[512];
 static char g_chunk_done_text[512];
 static size_t g_chunk_done_verts;
+static size_t g_chunk_done_faces;
+static size_t g_chunk_done_faces_total;
 static bool g_chunk_done_atlas;
 
 /* Loop thread, via the wire's visit — the shape on_mesh_result has,
@@ -637,10 +639,14 @@ static void on_chunk_done(void *userdata, McmeChunkResult *result)
     g_chunk_done_spec[0] = '\0';
     g_chunk_done_text[0] = '\0';
     g_chunk_done_verts = 0;
+    g_chunk_done_faces = 0;
+    g_chunk_done_faces_total = 0;
     g_chunk_done_atlas = false;
     if (result->ok) {
         snprintf(g_chunk_done_spec, sizeof g_chunk_done_spec, "%s",
                  result->spec != NULL ? result->spec : "");
+        g_chunk_done_faces = result->faces;
+        g_chunk_done_faces_total = result->faces_total;
         if (result->mesh != NULL) {
             for (int d = 0; d < 7; ++d)
                 if (result->mesh->mesh.present[d])
@@ -742,7 +748,12 @@ static void test_chunktask(void)
         CHECK(g_chunk_done_calls == 1);
         CHECK(g_chunk_done_ok);
         CHECK(strcmp(g_chunk_done_spec, "minecraft:air") == 0);
-        CHECK(g_chunk_done_verts >= 4);
+        /* The pack's air is an opaque cube, and every neighbour's
+           is: the cull keeps nothing — the wire's own 0/6 (G10,
+           the clauses firing on the neighbour's flag alone). */
+        CHECK(g_chunk_done_faces == 0);
+        CHECK(g_chunk_done_faces_total == 6);
+        CHECK(g_chunk_done_verts == 0);
         CHECK(g_chunk_done_atlas);
 
         /* The nether: no DIM-1 in this world, so the chunk is not
@@ -758,6 +769,42 @@ static void test_chunktask(void)
         CHECK(!g_chunk_done_ok);
         CHECK(g_chunk_done_text[0] != '\0');
         mcme_clear_error();
+
+        /* The clauses' other answer (G10): the pack's air as a
+           slab — partial on both counts, so neither clause fires
+           and every face stands, the reference's own air record
+           (partial). Same world, same probe; only the pack's own
+           selection changed. */
+        snprintf(path, sizeof(path),
+                 "%s/assets/minecraft/blockstates/air.json", dir);
+        write_file(path, "{\"variants\":{\"\":{\"model\":"
+                         "\"mc:block/slab\"}}}\n");
+        snprintf(path, sizeof(path),
+                 "%s/assets/mc/models/block/slab.json", dir);
+        write_file(path,
+            "{\"textures\":{\"a\":\"block/opaque\"},\"elements\":"
+            "[{\"from\":[0,0,0],\"to\":[16,6,16],\"faces\":"
+            "{\"down\":{\"texture\":\"#a\",\"cullface\":\"down\"},"
+            "\"up\":{\"texture\":\"#a\",\"cullface\":\"up\"},"
+            "\"north\":{\"texture\":\"#a\",\"cullface\":\"north\"},"
+            "\"east\":{\"texture\":\"#a\",\"cullface\":\"east\"},"
+            "\"south\":{\"texture\":\"#a\",\"cullface\":\"south\"},"
+            "\"west\":{\"texture\":\"#a\",\"cullface\":\"west\"}}}]}\n");
+
+        g_chunk_done_calls = 0;
+        g_chunk_done_ok = false;
+        CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
+                                   dir, 0, 5, 5, 5, on_chunk_done,
+                                   NULL));
+        while (g_chunk_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_chunk_done_calls == 1);
+        CHECK(g_chunk_done_ok);
+        CHECK(strcmp(g_chunk_done_spec, "minecraft:air") == 0);
+        CHECK(g_chunk_done_faces == 6);
+        CHECK(g_chunk_done_faces_total == 6);
+        CHECK(g_chunk_done_verts == 24);
+        CHECK(g_chunk_done_atlas);
     } else {
         printf("  SKIP golden world probes (tests/golden absent)\n");
     }
@@ -767,6 +814,9 @@ static void test_chunktask(void)
     snprintf(path, sizeof(path), "%s/pack.mcmeta", dir);
     unlink(path);
     snprintf(path, sizeof(path), "%s/assets/mc/models/block/cube.json",
+             dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/models/block/slab.json",
              dir);
     unlink(path);
     snprintf(path, sizeof(path),

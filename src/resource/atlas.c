@@ -470,17 +470,14 @@ bool mcme_atlas_mesh_dirs(const McmeAtlas *atlas, const McmeMesh *mesh,
     for (int i = 0; i < 7; ++i) {
         if (!mesh->present[i]) continue;
 
-        /* The cull clauses (D37), the builder's two skip clauses
-           over transparency alone: a bucket whose faces carry a
-           cullface drops whole when the neighbour standing on
-           ITS side is opaque, or when that neighbour and the
-           mesh are both translucent. The none bucket never culls
-           — its faces have no cull direction, so the builder's
-           test does not run for them. */
+        /* The cull clauses (D37) through the one predicate the
+           mesh-level cull shares (G10): a bucket whose faces carry
+           a cullface drops whole when its neighbour answers the
+           drop — opaque, or the chained translucent pair. The none
+           bucket never culls — its faces have no cull direction,
+           so the builder's test does not run for them. */
         if (i != MCME_CULL_NONE &&
-            (beside[i] == MCME_TRANSPARENCY_OPAQUE ||
-             (beside[i] == MCME_TRANSPARENCY_TRANSLUCENT &&
-              mesh->transparency == MCME_TRANSPARENCY_TRANSLUCENT)))
+            mcme_cull_drops(mesh->transparency, beside[i]))
             continue;
 
         const McmeMeshBucket *b = &mesh->buckets[i];

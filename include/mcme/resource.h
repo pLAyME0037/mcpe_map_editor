@@ -619,6 +619,21 @@ bool mcme_mesh_merge(const McmeMesh *const *parts, size_t count,
                      McmeMesh *out);
 
 /*
+ * The world's cull at mesh level (G10): the sides' own answer over
+ * this mesh. Every face in a side bucket carries that side's
+ * cullface (D32), so the whole bucket drops when mcme_cull_drops
+ * says its neighbour does not survive beside it, and the none
+ * bucket never drops. The survivors are exactly the rows
+ * `mcme_atlas_mesh_dirs` keeps — the same clauses through the one
+ * predicate, both surfaces since G10. Dropped buckets are
+ * released, `present` false; the texture list and the
+ * transparency stand. Rewritten in place; false only on a null
+ * argument.
+ */
+bool mcme_mesh_cull_dirs(McmeMesh *mesh,
+                         const McmeTransparency beside[MCME_CULL_NONE]);
+
+/*
  * One spec text as the verbs have always parsed it (G9, moved from
  * the CLI whole): the block's name, then optional {SNBT states} —
  * the dialect `chunk get` prints and `chunk set` accepts. `states`
@@ -761,7 +776,33 @@ bool mcme_atlas_bounds(const McmeAtlas *atlas, const char *name,
  * missing BLOCK: opaque, and it culls. The mesh's own
  * transparency is D32's classification; `beside` is the
  * neighbour's, the same enum.
+ *
+ * Since G10 every surface asks the clauses through the two
+ * questions below: whether a face drops (the predicate), and
+ * which neighbour stands on a side's cell (the builder's map).
  */
+
+/*
+ * The clauses as one question, asked of two transparencies (G10):
+ * does this face drop? True when `neighbour` is opaque, or when
+ * neighbour and self are both translucent — the chained `== 1 ==
+ * 1`, nothing else read. Air or a partial on either side answers
+ * false: the clause fires neither. The none bucket never asks —
+ * the caller checks its direction first, the builder's `if
+ * cull_id:`.
+ */
+bool mcme_cull_drops(McmeTransparency self,
+                     McmeTransparency neighbour);
+
+/*
+ * The builder's CULL_MAP as one cell (G10,
+ * chunk_builder_cy.pyx 49-55): the neighbour each cull direction
+ * reads — DOWN, UP, NORTH, EAST, SOUTH, WEST answer their one
+ * offset, dx/dy/dz out. MCME_CULL_NONE and any direction outside
+ * the six answer zeros: the block's own cell, what a caller asks
+ * for the self side. NULL takes nothing.
+ */
+void mcme_cull_offset(int dir, int *dx, int *dy, int *dz);
 
 /* One cull bucket's rows in atlas space — one row per vertex of
    the face stream (six per face: the two triangles the builder

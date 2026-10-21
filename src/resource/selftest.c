@@ -2772,6 +2772,143 @@ static void test_block_spec(void)
     mcme_arena_free(arena);
 }
 
+/* The cull's own questions and the mesh-level answer to them (G10):
+   D37's two clauses over transparency alone, the builder's CULL_MAP
+   one cell per side, and the side buckets that drop because of
+   them — the same faces `mcme_atlas_mesh_dirs` keeps, asked at the
+   mesh's own level. */
+static void test_cull(void)
+{
+    static const McmeTransparency k_t[3] = {
+        MCME_TRANSPARENCY_OPAQUE, MCME_TRANSPARENCY_TRANSLUCENT,
+        MCME_TRANSPARENCY_PARTIAL
+    };
+    int dx, dy, dz;
+    int i;
+
+    /* mcme_cull_drops: all nine answers of the two clauses — the
+       neighbour's flag, or the chained translucent pair. */
+    for (int s = 0; s < 3; ++s)
+        for (int n = 0; n < 3; ++n) {
+            bool want = n == 0 || (n == 1 && s == 1);
+
+            CHECK(mcme_cull_drops(k_t[s], k_t[n]) == want);
+        }
+
+    /* mcme_cull_offset: the builder's CULL_MAP
+       (chunk_builder_cy.pyx 49-55) — one cell per side, and the
+       self cell zero. */
+    {
+        static const int k_dx[MCME_CULL_NONE] = { 0, 0,  0, 1, 0, -1 };
+        static const int k_dy[MCME_CULL_NONE] = { -1, 1, 0, 0, 0,  0 };
+        static const int k_dz[MCME_CULL_NONE] = { 0, 0, -1, 0, 1,  0 };
+
+        for (int d = 0; d < MCME_CULL_NONE; ++d) {
+            mcme_cull_offset(d, &dx, &dy, &dz);
+            CHECK(dx == k_dx[d] && dy == k_dy[d] && dz == k_dz[d]);
+        }
+        mcme_cull_offset(MCME_CULL_NONE, &dx, &dy, &dz);
+        CHECK(dx == 0 && dy == 0 && dz == 0);
+        mcme_cull_offset(-1, &dx, &dy, &dz);
+        CHECK(dx == 0 && dy == 0 && dz == 0);
+    }
+
+    /* The mesh-level cull over the missing block's own cube — six
+       one-face buckets, opaque — with a mixed beside: the six
+       sides six answers (D38's independence), the none bucket
+       standing. */
+    {
+        McmeMesh m;
+        McmeTransparency beside[MCME_CULL_NONE] = {
+            MCME_TRANSPARENCY_OPAQUE,       /* down drops         */
+            MCME_TRANSPARENCY_PARTIAL,      /* up stands          */
+            MCME_TRANSPARENCY_TRANSLUCENT,  /* north stands: the
+                                               chained pair needs
+                                               self translucent    */
+            MCME_TRANSPARENCY_OPAQUE,       /* east drops         */
+            MCME_TRANSPARENCY_PARTIAL,      /* south stands       */
+            MCME_TRANSPARENCY_TRANSLUCENT   /* west stands        */
+        };
+        size_t faces = 0, verts = 0;
+
+        CHECK(mcme_mesh_missing_block(&m));
+        CHECK(m.transparency == MCME_TRANSPARENCY_OPAQUE);
+        for (i = 0; i < 7; ++i) CHECK(m.present[i]);
+        CHECK(mcme_mesh_cull_dirs(&m, beside));
+        for (i = 0; i < MCME_CULL_NONE; ++i) {
+            bool dropped = (i == 0 || i == 3);
+
+            CHECK(m.present[i] == !dropped);
+            if (dropped)
+                CHECK(m.buckets[i].vert_count == 0 &&
+                      m.buckets[i].face_count == 0);
+        }
+        CHECK(m.present[MCME_CULL_NONE]);
+        for (i = 0; i < 7; ++i)
+            if (m.present[i]) {
+                faces += m.buckets[i].face_count;
+                verts += m.buckets[i].vert_count;
+            }
+        CHECK(faces == 2);
+        CHECK(verts == 8);
+        CHECK(m.transparency == MCME_TRANSPARENCY_OPAQUE);
+        /* The drop is stable: the second run keeps the answer. */
+        CHECK(mcme_mesh_cull_dirs(&m, beside));
+        faces = 0;
+        for (i = 0; i < 7; ++i)
+            if (m.present[i]) faces += m.buckets[i].face_count;
+        CHECK(faces == 2);
+        mcme_mesh_free(&m);
+    }
+
+    /* The chained pair on its own: a translucent block ringed by
+       translucent neighbours drops every side; partial neighbours
+       never drop its faces — the clause needs the pair. And the
+       neighbour's flag alone decides the other clause: a partial
+       block's faces drop beside opaque all the same (the cull
+       reads flags, never shapes). */
+    {
+        McmeMesh m;
+        McmeTransparency beside[MCME_CULL_NONE];
+
+        CHECK(mcme_mesh_missing_block(&m));
+        m.transparency = MCME_TRANSPARENCY_TRANSLUCENT;
+        for (i = 0; i < MCME_CULL_NONE; ++i)
+            beside[i] = MCME_TRANSPARENCY_TRANSLUCENT;
+        CHECK(mcme_mesh_cull_dirs(&m, beside));
+        for (i = 0; i < MCME_CULL_NONE; ++i) CHECK(!m.present[i]);
+        CHECK(m.present[MCME_CULL_NONE]);
+        mcme_mesh_free(&m);
+
+        CHECK(mcme_mesh_missing_block(&m));
+        m.transparency = MCME_TRANSPARENCY_TRANSLUCENT;
+        for (i = 0; i < MCME_CULL_NONE; ++i)
+            beside[i] = MCME_TRANSPARENCY_PARTIAL;
+        CHECK(mcme_mesh_cull_dirs(&m, beside));
+        for (i = 0; i < 7; ++i) CHECK(m.present[i]);
+        mcme_mesh_free(&m);
+
+        CHECK(mcme_mesh_missing_block(&m));
+        m.transparency = MCME_TRANSPARENCY_PARTIAL;
+        for (i = 0; i < MCME_CULL_NONE; ++i)
+            beside[i] = MCME_TRANSPARENCY_OPAQUE;
+        CHECK(mcme_mesh_cull_dirs(&m, beside));
+        for (i = 0; i < MCME_CULL_NONE; ++i) CHECK(!m.present[i]);
+        CHECK(m.present[MCME_CULL_NONE]);
+        mcme_mesh_free(&m);
+    }
+
+    /* The null arguments. */
+    {
+        McmeMesh m;
+        McmeTransparency beside[MCME_CULL_NONE] = { 0 };
+
+        CHECK(!mcme_mesh_cull_dirs(NULL, beside));
+        memset(&m, 0, sizeof m);
+        CHECK(!mcme_mesh_cull_dirs(&m, NULL));
+    }
+}
+
 int mcme_test_resource(void)
 {
     g_failed = 0;
@@ -2783,5 +2920,6 @@ int mcme_test_resource(void)
     test_blockmeshes();
     test_atlases();
     test_atlas_uv();
+    test_cull();
     return g_failed;
 }

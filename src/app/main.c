@@ -2871,18 +2871,18 @@ static int cmd_chunk_mesh(int argc, char **argv)
 
     /* The neighbour each side reads, DOWN through WEST — the
        builder's CULL_MAP (chunk_builder_cy.pyx 49-55) one face at
-       a time, the same offsets the cull test walks. */
-    static const int k_dx[MCME_CULL_NONE] = { 0, 0,  0, 1, 0, -1 };
-    static const int k_dy[MCME_CULL_NONE] = { -1, 1, 0, 0, 0,  0 };
-    static const int k_dz[MCME_CULL_NONE] = { 0, 0, -1, 0, 1,  0 };
+       a time, the same offsets the cull test walks; the core's one
+       table since G10 (mcme_cull_offset). */
 
     McmeBuffer specs[7];
     char *text[7] = { 0 };
     for (int s = 0; s < 7; ++s) {
+        int dx = 0, dy = 0, dz = 0;
+        if (s != 0) mcme_cull_offset(s - 1, &dx, &dy, &dz);
         mcme_buffer_init(&specs[s]);
-        long sx = s ? x + k_dx[s - 1] : x;
-        long sy = s ? y + k_dy[s - 1] : y;
-        long sz = s ? z + k_dz[s - 1] : z;
+        long sx = x + dx;
+        long sy = y + dy;
+        long sz = z + dz;
         int rc = world_block_exit(mcme_world_block_spec(
             &info, dimension, sx, sy, sz, &specs[s]));
         if (rc == MCME_OK) {
@@ -3117,19 +3117,19 @@ static int sub_bedrock_layers(const McmeWorldInfo *info,
                               SubchunkLayer out[SUB_LAYERS],
                               McmeArena *arena)
 {
-    static const int k_dx[6] = { 0, 0,  0, 1, 0, -1 };
-    static const int k_dy[6] = { -1, 1, 0, 0, 0,  0 };
-    static const int k_dz[6] = { 0, 0, -1, 0, 1,  0 };
-
     McmeLevelDb *db = NULL;
     if (!mcme_leveldb_open(&db, info->db_path)) {
         return MCME_EXIT_IO;        /* the store's own error stands */
     }
     int rc = MCME_OK;
     for (int s = 0; s < SUB_LAYERS && rc == MCME_OK; ++s) {
-        int cx = sx + (s ? k_dx[s - 1] : 0);
-        int cy = sy + (s ? k_dy[s - 1] : 0);
-        int cz = sz + (s ? k_dz[s - 1] : 0);
+        /* The seven cells: the CULL_MAP's one table (G10) — s 0 is
+           the sub-chunk itself. */
+        int dx = 0, dy = 0, dz = 0;
+        if (s != 0) mcme_cull_offset(s - 1, &dx, &dy, &dz);
+        int cx = sx + dx;
+        int cy = sy + dy;
+        int cz = sz + dz;
         out[s].specs = NULL;
         out[s].spec_count = 0;
         out[s].indices = NULL;
@@ -3248,10 +3248,6 @@ static int sub_java_layers(const McmeWorldInfo *info,
                            SubchunkLayer out[SUB_LAYERS],
                            McmeArena **arenas, int *arena_count)
 {
-    static const int k_dx[6] = { 0, 0,  0, 1, 0, -1 };
-    static const int k_dy[6] = { -1, 1, 0, 0, 0,  0 };
-    static const int k_dz[6] = { 0, 0, -1, 0, 1,  0 };
-
     /* The chunks loaded so far: the sides share them three ways
        down the middle column, and each is parsed once. */
     McmeNbtDoc docs[SUB_LAYERS];
@@ -3261,9 +3257,13 @@ static int sub_java_layers(const McmeWorldInfo *info,
 
     int rc = MCME_OK;
     for (int s = 0; s < SUB_LAYERS && rc == MCME_OK; ++s) {
-        int cx = sx + (s ? k_dx[s - 1] : 0);
-        int cy = sy + (s ? k_dy[s - 1] : 0);
-        int cz = sz + (s ? k_dz[s - 1] : 0);
+        /* The seven cells: the CULL_MAP's one table (G10) — s 0 is
+           the sub-chunk itself. */
+        int dx = 0, dy = 0, dz = 0;
+        if (s != 0) mcme_cull_offset(s - 1, &dx, &dy, &dz);
+        int cx = sx + dx;
+        int cy = sy + dy;
+        int cz = sz + dz;
         out[s].specs = NULL;
         out[s].spec_count = 0;
         out[s].indices = NULL;

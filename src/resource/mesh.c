@@ -159,6 +159,55 @@ void mcme_mesh_free(McmeMesh *mesh)
     mesh->transparency = MCME_TRANSPARENCY_PARTIAL;
 }
 
+/* The cull's one question (D37): the builder's two clauses over
+   transparency alone — the neighbour's flag, or the chained pair
+   of translucent flags. Air or a partial on either side fires
+   neither. */
+bool mcme_cull_drops(McmeTransparency self,
+                     McmeTransparency neighbour)
+{
+    return neighbour == MCME_TRANSPARENCY_OPAQUE ||
+           (neighbour == MCME_TRANSPARENCY_TRANSLUCENT &&
+            self == MCME_TRANSPARENCY_TRANSLUCENT);
+}
+
+/* The builder's CULL_MAP (chunk_builder_cy.pyx 49-55): the cell
+   each cull direction reads, DOWN through WEST — one table for
+   every composer of the seven cells (the verbs' grid walks, the
+   chunk worker, G10). NONE (and any direction outside the six)
+   answers zeros: the block's own cell. */
+void mcme_cull_offset(int dir, int *dx, int *dy, int *dz)
+{
+    static const int k_dx[MCME_CULL_NONE] = { 0, 0,  0, 1, 0, -1 };
+    static const int k_dy[MCME_CULL_NONE] = { -1, 1, 0, 0, 0,  0 };
+    static const int k_dz[MCME_CULL_NONE] = { 0, 0, -1, 0, 1,  0 };
+
+    if (dx == NULL || dy == NULL || dz == NULL) return;
+    if (dir < 0 || dir >= MCME_CULL_NONE) {
+        *dx = 0;
+        *dy = 0;
+        *dz = 0;
+        return;
+    }
+    *dx = k_dx[dir];
+    *dy = k_dy[dir];
+    *dz = k_dz[dir];
+}
+
+bool mcme_mesh_cull_dirs(McmeMesh *mesh,
+                         const McmeTransparency beside[MCME_CULL_NONE])
+{
+    if (mesh == NULL || beside == NULL) return false;
+    for (int i = 0; i < MCME_CULL_NONE; ++i) {
+        if (mesh->present[i] &&
+            mcme_cull_drops(mesh->transparency, beside[i])) {
+            bucket_free(&mesh->buckets[i]);
+            mesh->present[i] = false;
+        }
+    }
+    return true;
+}
+
 static void ctx_free(BuildCtx *ctx)
 {
     for (size_t i = 0; i < ctx->count; ++i) {
