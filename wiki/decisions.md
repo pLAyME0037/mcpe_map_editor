@@ -3589,3 +3589,48 @@ to dress faces with something beyond slot-bounds lerp
 (per-face rotations beyond what the mesher already baked, a
 second texture binding) — then the staging's uv math grows
 with it, still pure, still pinned.
+
+## D52 — One pack session, stale answers dropped whole
+
+**Chosen.** The window owns one pack session: an owned directory
+and a generation counter. Every opener — argv at startup, the
+header's Open… button through a GtkFileDialog, the smoke gate's
+`--open` — lands in the same function (`open_pack`), which swaps
+the directory, bumps the generation, and restarts the chain (the
+pack task, then the mesh task when a model was asked). Every task
+carries its generation as its userdata; an answer from before the
+last open is freed and dropped whole — it neither labels the
+screen nor settles the smoke — and the in-flight worker count
+follows posts, not screen time. The viewport keeps the last good
+block until the new chain settles.
+
+**Why.** Two opens can race (an impatient user, a slow pack), and
+mixed answers are the wrong-block-behind-the-right-label failure:
+a summary from the old pack labelling the new one, a model meshed
+against the wrong directory. Dropping whole is the only safe move
+— D12's never-half-write applied to the screen. One session also
+matches what the window shows: one pack, one block, no tabs.
+
+**Rejected.**
+- *Queueing opens*: a slow first pack would delay the second —
+  the user asked for the second one.
+- *Cancelling in-flight work*: the wire has no cancel (the
+  worker finishes and its answer is dropped); real cancellation
+  would need worker cooperation the core does not offer.
+- *A session per pack*: nothing on screen shows two packs, and
+  the replaceable state (the page, the mesh) is exactly what a
+  re-open should retire.
+
+**How verified.** The smoke matrix settles identically through
+both openers: `--open` pack-only rc=0, `--open` + model rc=0 with
+`pack=ok mesh=ok drew=1 tex=1 gl_failed=0`, `--open` refusal rc=1;
+the argv forms unchanged (pack-only rc=0, +model rc=0, the same
+settle line); misuse refused (`--open` without `--smoke` rc=1);
+an x11 `--open`+model rc=0; `./mcgui --selftest` PASS 1195 (the
+glue is GTK-bound — the pipeline underneath it is what the
+selftest pins); battery 19/19; `./rebuild.sh test` PASS.
+
+**Reverses if:** the window ever holds two packs at once (tabs, a
+split view) — then the session becomes a list and staleness is
+per-session state; or the wire grows real cancellation — then
+superseded work is stopped instead of dropped.

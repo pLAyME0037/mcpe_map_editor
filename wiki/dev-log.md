@@ -7,6 +7,69 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The window lets go of the command line
+
+### Built
+
+- G5: the header's Open… button asks a GtkFileDialog (GTK
+  4.24's async `select_folder`) for a directory, and the
+  answer lands in `open_pack` — the one function every opener
+  now calls (argv at startup, the dialog, the smoke gate's
+  new `--open DIR`, which is the dialog's answer without the
+  dialog). The session's directory is owned and swapped, the
+  chain restarts from the pack, and the viewport keeps the
+  last good block until the new chain settles.
+- D52: the generation counter. Every task carries the
+  session generation as its userdata; an answer from before
+  the last open is freed and dropped whole — it neither
+  labels the screen nor settles the smoke — and the
+  in-flight count follows posts, not screen time. A pack
+  switched mid-flight cannot cross its wires.
+- Argument binding flips with the opener: with `--open` the
+  lone positional is the model; without it they are
+  pack-then-model (G3's order, kept). One bug caught by the
+  gates on the way: the first binding rejected the model
+  positional outright (`--open dir mc:block/cull6` answered
+  "--open stands in for the pack directory").
+- No new selftest checks, honestly: the open path IS the
+  pipeline the selftest already pins (packtask, meshtask,
+  the wire); what G5 adds is GTK glue, and the gates that
+  can see it are the `--open` smokes, which settle exactly
+  like the argv forms.
+
+### Notes
+
+- `GTK_DIALOG_FILE` does not exist — the cast macro follows
+  the type's `G_DECLARE_FINAL_TYPE` prefix: `GTK_FILE_DIALOG`
+  (first build error, one word).
+- The stale-drop path must still decrement `g_tasks`: the
+  teardown loop counts posts, and a dropped answer is a
+  landed worker. Found while writing, not by a gate — the
+  symptom (a never-exiting process after a mid-flight
+  re-open) has no gate that exercises it. Recorded here as
+  the rule for the next lifetime change: every early return
+  in a task callback pays the decrement.
+- The public index APIs open/lookup/load only — no
+  enumeration — so a block picker (the window listing what
+  the pack can mesh) needs a core enumeration seam pinned
+  to the index's own directory order first. Noted, not
+  invented.
+- Gates: `--selftest` PASS 1195 rc=0; smokes (wayland,
+  nvidia-stubbed llvmpipe): window-only rc=0, argv
+  pack-only rc=0, argv+model rc=0 with `pack=ok mesh=ok
+  drew=1 tex=1 gl_failed=0`, `--open` pack-only rc=0,
+  `--open`+model rc=0 with the same settle line, `--open`
+  refusal rc=1, `--open` without `--smoke` rc=1; an x11
+  `--open`+model rc=0; battery 19/19; `./rebuild.sh test`
+  PASS; `git status tests/` clean.
+
+### Next
+
+- A block picker needs the core's model enumeration first
+  (a seam of its own — the index's directory order, pinned),
+  or the viewport grows a camera the user drives, or the
+  standing whole-pack page as the chunk view's foundation.
+
 ## 2026-10-21 — The block appears: textures behind the glass
 
 ### Built

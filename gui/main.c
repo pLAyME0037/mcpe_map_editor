@@ -6,12 +6,18 @@
  * the pack on a worker through the core's mcme_pack_open (the function
  * `mcme pack info` dispatches to), the wire wakes the loop, and the
  * visit — the only thread allowed to touch GTK (D6) — renders the same
- * four lines the command prints. G3 lays D6's other half: with a model
+ * four lines the command prints. G3 laid D6's other half: with a model
  * argument the same window also meshes it (mcme_mesh_build, the builder
  * the CLI's mesh verbs all end at, D32) on the worker after the pack's
  * answer lands, stages the delivered mesh on the visit, and the GL
  * area's render callback — the one place any gl* call happens — uploads
- * and draws it.
+ * and draws it. G5 ends the command line's grip: the header's Open…
+ * button asks a GtkFileDialog for a directory, and the answer lands in
+ * open_pack — the one function every opener calls (argv at startup,
+ * the dialog, the smoke gate's --open) — which owns the session's
+ * directory and re-runs the chain against it. A pack switched
+ * mid-flight cannot cross its wires: every task carries the session
+ * generation and stale answers are dropped whole.
  *
  * Flags:
  *   --selftest   run the wire's checks (no display needed) and exit
@@ -19,6 +25,9 @@
  *                given; with a pack, once both halves settle — the
  *                pack's answer AND the viewport's frame (when a model
  *                was asked) — under a 3 s never-hang backstop
+ *   --open DIR   the dialog's answer without the dialog (smoke gates):
+ *                open_pack runs at startup exactly where the callback
+ *                would land it
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -41,7 +50,9 @@
 #include "wire.h"
 
 static gboolean g_smoke;
-static const char *g_pack_dir;
+static const char *g_pack_arg;    /* argv's directory, borrowed       */
+static const char *g_open_dir;    /* --open: the dialog without it    */
+static char *g_pack_dir;          /* the session's directory, owned   */
 static const char *g_mesh_ns;    /* the model split at ':'            */
 static const char *g_mesh_path;
 static char g_mesh_ns_buf[256];
@@ -49,10 +60,12 @@ static McmeWire *g_wire;         /* the shell's standing wire (D6)    */
 static GtkApplication *g_app;
 static int g_exit_code;
 static int g_tasks;              /* workers that may still post       */
+static int g_pack_gen;           /* session generation: stale falls   */
 static bool g_pack_settled, g_pack_ok;
 static bool g_mesh_settled, g_mesh_ok;
 static GtkWidget *g_viewport;
 static GtkWidget *g_mesh_label;
+static GtkWidget *g_pack_label;
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -119,40 +132,18 @@ static gboolean smoke_quit(gpointer data)
 }
 
 /* The loop thread — the wire's visit, and the only thread that may
- * touch a widget. */
-static void on_mesh_result(void *userdata, McmeMeshResult *result);
-
-static void on_pack_result(void *userdata, McmePackResult *result)
-{
-    GtkWidget *label = userdata;
-
-    gtk_label_set_text(GTK_LABEL(label),
-                       result->text ? result->text : "(no memory)");
-    g_pack_ok = result->ok;
-    g_pack_settled = true;
-    if (result->ok && g_mesh_ns != NULL) {
-        /* The mesh's worker starts only now: the core's error slot is
-           one global, so at any time one worker calls core code and
-           copies its answer out (the G2 discipline, kept). */
-        if (mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns,
-                                g_mesh_path, on_mesh_result, NULL)) {
-            g_tasks++;
-        } else {
-            g_mesh_settled = true;
-            gtk_label_set_text(GTK_LABEL(g_mesh_label),
-                               "mesh task: no memory");
-        }
-    } else {
-        g_mesh_settled = true; /* no model asked, or the pack refused */
-    }
-    mcme_packresult_free(result);
-    g_tasks--;
-    maybe_smoke_quit();
-}
-
+ * touch a widget. Both callbacks carry the session generation as
+ * their userdata: an answer from before the last open belongs to a
+ * pack no longer on screen and is dropped whole. */
 static void on_mesh_result(void *userdata, McmeMeshResult *result)
 {
-    (void)userdata;
+    int gen = GPOINTER_TO_INT(userdata);
+
+    if (gen != g_pack_gen) {
+        g_tasks--; /* a post is a post: the count follows workers */
+        mcme_meshresult_free(result);
+        return;
+    }
     g_mesh_ok = result->ok;
     g_mesh_settled = true;
     if (result->ok) {
@@ -170,54 +161,152 @@ static void on_mesh_result(void *userdata, McmeMeshResult *result)
     maybe_smoke_quit();
 }
 
+static void on_pack_result(void *userdata, McmePackResult *result)
+{
+    int gen = GPOINTER_TO_INT(userdata);
+
+    if (gen != g_pack_gen) {
+        g_tasks--; /* a post is a post: the count follows workers */
+        mcme_packresult_free(result);
+        return;
+    }
+    gtk_label_set_text(GTK_LABEL(g_pack_label),
+                       result->text ? result->text : "(no memory)");
+    g_pack_ok = result->ok;
+    g_pack_settled = true;
+    if (result->ok && g_mesh_ns != NULL) {
+        /* The mesh's worker starts only now: the core's error slot is
+           one global, so at any time one worker calls core code and
+           copies its answer out (the G2 discipline, kept). */
+        if (mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns,
+                                g_mesh_path, on_mesh_result,
+                                GINT_TO_POINTER(g_pack_gen))) {
+            g_tasks++;
+        } else {
+            g_mesh_settled = true;
+            gtk_label_set_text(GTK_LABEL(g_mesh_label),
+                               "mesh task: no memory");
+        }
+    } else {
+        g_mesh_settled = true; /* no model asked, or the pack refused */
+    }
+    mcme_packresult_free(result);
+    g_tasks--;
+    maybe_smoke_quit();
+}
+
+/* The one pack session: every opener lands here — argv at startup,
+ * the dialog's answer, the smoke gate's --open. The directory is
+ * owned, the chain restarts from the pack, and the generation bump
+ * retires any answer still on the road from the previous pack — its
+ * callback frees it, still counting the post. The viewport keeps the
+ * last good block until the new chain settles. */
+static void open_pack(const char *dir)
+{
+    int gen;
+
+    g_free(g_pack_dir);
+    g_pack_dir = g_strdup(dir);
+    gen = ++g_pack_gen;
+    g_pack_settled = false;
+    g_pack_ok = false;
+    g_mesh_settled = false;
+    g_mesh_ok = false;
+    gtk_label_set_text(GTK_LABEL(g_pack_label), "reading the pack…");
+    if (g_mesh_ns != NULL)
+        gtk_label_set_text(GTK_LABEL(g_mesh_label), "meshing…");
+    if (mcme_packtask_start(g_wire, g_pack_dir, on_pack_result,
+                            GINT_TO_POINTER(gen))) {
+        g_tasks++;
+    } else {
+        g_pack_settled = true;
+        g_mesh_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_pack_label),
+                           "pack task: no memory");
+    }
+}
+
+/* GtkFileDialog's answer, on the loop thread: the chosen directory
+ * lands in open_pack exactly where argv and --open land theirs. */
+static void on_folder_picked(GObject *source, GAsyncResult *res,
+                             gpointer user_data)
+{
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+    GError *err = NULL;
+    GFile *file = gtk_file_dialog_select_folder_finish(dialog, res, &err);
+
+    (void)user_data;
+    if (file != NULL) {
+        char *path = g_file_get_path(file);
+
+        if (path != NULL) {
+            open_pack(path);
+            g_free(path);
+        }
+        g_object_unref(file);
+    }
+    g_clear_error(&err);
+    g_object_unref(dialog);
+}
+
+static void on_open_clicked(GtkButton *btn, gpointer user_data)
+{
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+
+    (void)btn;
+    gtk_file_dialog_set_title(dialog, "Open a pack directory");
+    gtk_file_dialog_select_folder(dialog, GTK_WINDOW(user_data), NULL,
+                                  on_folder_picked, NULL);
+}
+
 static void on_activate(GtkApplication *app, gpointer user)
 {
     GtkWidget *win = gtk_application_window_new(app);
     GtkWidget *bar = gtk_header_bar_new();
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *label = gtk_label_new(g_pack_dir
-                                     ? "reading the pack…"
-                                     : "the shell is up — no world open");
+    GtkWidget *open = gtk_button_new_with_label("Open…");
 
     (void)user;
     g_viewport = mcme_viewport_new();
     gtk_widget_set_vexpand(g_viewport, TRUE);
     g_mesh_label = gtk_label_new(g_mesh_ns ? "meshing…" : "");
+    g_pack_label = gtk_label_new((g_pack_arg || g_open_dir)
+                                 ? "reading the pack…"
+                                 : "the shell is up — no world open");
 
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(bar),
                                     gtk_label_new("mcme"));
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(bar), open);
+    g_signal_connect(open, "clicked", G_CALLBACK(on_open_clicked), win);
     gtk_window_set_titlebar(GTK_WINDOW(win), bar);
     gtk_window_set_default_size(GTK_WINDOW(win), 960, 640);
-    gtk_widget_set_halign(label, GTK_ALIGN_CENTER);
-    gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(g_pack_label, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(g_pack_label, GTK_ALIGN_CENTER);
     {
         /* No gtk_label_set_monospace in this GTK4; the Pango way. */
         PangoAttrList *attrs = pango_attr_list_new();
 
         pango_attr_list_insert(attrs, pango_attr_family_new("monospace"));
-        gtk_label_set_attributes(GTK_LABEL(label), attrs);
+        gtk_label_set_attributes(GTK_LABEL(g_pack_label), attrs);
         pango_attr_list_unref(attrs);
     }
     gtk_box_append(GTK_BOX(box), g_viewport);
     gtk_box_append(GTK_BOX(box), g_mesh_label);
-    gtk_box_append(GTK_BOX(box), label);
+    gtk_box_append(GTK_BOX(box), g_pack_label);
     gtk_window_set_child(GTK_WINDOW(win), box);
     gtk_window_present(GTK_WINDOW(win));
 
-    if (g_pack_dir) {
-        if (mcme_packtask_start(g_wire, g_pack_dir, on_pack_result,
-                                label)) {
-            g_tasks++;
-        } else {
-            g_pack_settled = true;
-            gtk_label_set_text(GTK_LABEL(label), "pack task: no memory");
-        }
+    if (g_open_dir != NULL) {
+        open_pack(g_open_dir); /* the dialog's answer, no dialog */
+    } else if (g_pack_arg != NULL) {
+        open_pack(g_pack_arg);
     } else {
         g_pack_settled = true; /* nothing to wait for */
+        g_mesh_settled = true;
     }
 
     if (g_smoke) {
-        if (g_pack_dir) {
+        if (g_pack_arg || g_open_dir) {
             g_timeout_add(50, smoke_poll, app);
             g_timeout_add(3000, smoke_timeout, app);
         } else {
@@ -231,6 +320,8 @@ int main(int argc, char **argv)
     GtkApplication *app;
     const char *model = NULL;
     const char *colon;
+    const char *pos[2];
+    int npos = 0;
     int rc;
 
     for (int i = 1; i < argc; ++i) {
@@ -238,23 +329,42 @@ int main(int argc, char **argv)
             return mcme_gui_selftest();
         } else if (strcmp(argv[i], "--smoke") == 0) {
             g_smoke = TRUE;
+        } else if (strcmp(argv[i], "--open") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "mcgui: --open wants a directory\n");
+                return 1;
+            }
+            g_open_dir = argv[++i];
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
-                            "[pack-dir [ns:model]]\n");
+                            "[--open dir] [pack-dir [ns:model]]\n");
             return 1;
-        } else if (g_pack_dir == NULL) {
-            g_pack_dir = argv[i];
-        } else if (model == NULL) {
-            model = argv[i];
+        } else if (npos < 2) {
+            pos[npos++] = argv[i];
         } else {
             fprintf(stderr, "mcgui: one pack directory and one model\n");
             return 1;
         }
     }
 
-    if (model != NULL && g_pack_dir == NULL) {
-        fprintf(stderr, "mcgui: a model needs a pack directory\n");
+    if (g_open_dir != NULL && !g_smoke) {
+        fprintf(stderr, "mcgui: --open is the smoke gate's dialog\n");
         return 1;
+    }
+    /* With --open the dialog stands in for the directory, so the one
+       positional left is the model; without it they are pack then
+       model (the G3 order, kept). A model needs a pack either way —
+       the binding makes that structural. */
+    if (g_open_dir != NULL) {
+        if (npos > 1) {
+            fprintf(stderr, "mcgui: --open stands in for the pack "
+                            "directory\n");
+            return 1;
+        }
+        model = npos > 0 ? pos[0] : NULL;
+    } else {
+        g_pack_arg = npos > 0 ? pos[0] : NULL;
+        model = npos > 1 ? pos[1] : NULL;
     }
     if (model != NULL) {
         size_t ns_len;
@@ -296,5 +406,6 @@ int main(int argc, char **argv)
 
     g_object_unref(app);
     mcme_wire_free(g_wire);
+    g_free(g_pack_dir);
     return g_exit_code ? g_exit_code : rc;
 }
