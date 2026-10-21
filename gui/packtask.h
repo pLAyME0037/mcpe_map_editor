@@ -21,6 +21,11 @@ typedef struct {
        refused or the list would not build (never half a list). */
     char **models;
     size_t model_count;
+    /* The twin, one layer down (G7): every blockstate file as
+       "ns:name", the blockstate index's own walk order — the block
+       picker's rows, fed to mcme_mesh_for_block. */
+    char **blocks;
+    size_t block_count;
 } McmePackResult;
 
 typedef void (*McmePackDoneFn)(void *userdata, McmePackResult *result);

@@ -74,6 +74,7 @@ typedef struct {
     char *pack_dir;
     char *ns;
     char *path;
+    bool  by_block; /* G7: the blockmesh layer, not the model one */
 } MeshWork;
 
 typedef struct {
@@ -87,10 +88,25 @@ static void *mesh_work(void *work_ud)
     McmeMeshResult *r = g_new0(McmeMeshResult, 1);
     McmeModelIndex *models = NULL;
     McmeTextureIndex *textures = NULL;
+    McmeBlockstateIndex *blockstates = NULL;
+    bool built;
 
-    if (mcme_model_index_open(w->pack_dir, &models) &&
-        mcme_texture_index_open(w->pack_dir, &textures) &&
-        mcme_mesh_build(models, textures, w->ns, w->path, &r->mesh)) {
+    if (!mcme_model_index_open(w->pack_dir, &models) ||
+        !mcme_texture_index_open(w->pack_dir, &textures)) {
+        built = false;
+    } else if (w->by_block) {
+        /* G7's twin: the blockmesh layer's total answer (D33) — an
+           unknown block is the missing mesh, not a refusal, and a
+           bare name carries no states. */
+        built = mcme_blockstate_index_open(w->pack_dir, &blockstates) &&
+                mcme_mesh_for_block(blockstates, models, textures,
+                                    w->ns, w->path, NULL, 0,
+                                    &r->mesh);
+    } else {
+        built = mcme_mesh_build(models, textures, w->ns, w->path,
+                                &r->mesh);
+    }
+    if (built) {
         r->ok = true;
         mesh_atlas(r, textures);
     } else {
@@ -103,6 +119,7 @@ static void *mesh_work(void *work_ud)
             r->text = g_strdup("the pack's indices would not open");
         }
     }
+    mcme_blockstate_index_close(blockstates);
     mcme_texture_index_close(textures);
     mcme_model_index_close(models);
     g_free(w->pack_dir);
@@ -120,9 +137,10 @@ static void mesh_deliver(void *done_ud, void *result)
     g_free(d);
 }
 
-bool mcme_meshtask_start(McmeWire *wire, const char *pack_dir,
-                         const char *ns, const char *path,
-                         McmeMeshDoneFn done, void *userdata)
+static bool meshtask_start(McmeWire *wire, const char *pack_dir,
+                           const char *ns, const char *path,
+                           bool by_block, McmeMeshDoneFn done,
+                           void *userdata)
 {
     MeshWork *w;
     MeshDone *d;
@@ -141,6 +159,7 @@ bool mcme_meshtask_start(McmeWire *wire, const char *pack_dir,
     w->pack_dir = g_strdup(pack_dir);
     w->ns = g_strdup(ns);
     w->path = g_strdup(path);
+    w->by_block = by_block;
     d->fn = done;
     d->userdata = userdata;
 
@@ -153,4 +172,20 @@ bool mcme_meshtask_start(McmeWire *wire, const char *pack_dir,
         return false;
     }
     return true;
+}
+
+bool mcme_meshtask_start(McmeWire *wire, const char *pack_dir,
+                         const char *ns, const char *path,
+                         McmeMeshDoneFn done, void *userdata)
+{
+    return meshtask_start(wire, pack_dir, ns, path, false, done,
+                          userdata);
+}
+
+bool mcme_meshtask_start_block(McmeWire *wire, const char *pack_dir,
+                               const char *ns, const char *name,
+                               McmeMeshDoneFn done, void *userdata)
+{
+    return meshtask_start(wire, pack_dir, ns, name, true, done,
+                          userdata);
 }

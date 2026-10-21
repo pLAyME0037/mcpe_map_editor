@@ -12,8 +12,9 @@
 #include "mcme/resource.h" /* mcme_pack_open — the CLI's dispatch target */
 #include "task.h"
 
-/* The pack's models, joined "ns:path" in the index's own walk order.
-   A list that will not build whole is no list at all. */
+/* One index's rows, joined "ns:x" in its own walk order. A list that
+ * will not build whole is no list at all. The two index types have
+ * no shared face in C — the twin below keeps its own copy. */
 static void pack_models(McmePackResult *r, const char *dir)
 {
     McmeModelIndex *models = NULL;
@@ -48,6 +49,40 @@ static void pack_models(McmePackResult *r, const char *dir)
     mcme_model_index_close(models);
 }
 
+static void pack_blocks(McmePackResult *r, const char *dir)
+{
+    McmeBlockstateIndex *blocks = NULL;
+    size_t n, built = 0;
+
+    if (!mcme_blockstate_index_open(dir, &blocks)) return;
+    n = mcme_blockstate_count(blocks);
+    if (n == 0) {
+        mcme_blockstate_index_close(blocks);
+        return;
+    }
+    r->blocks = g_try_malloc((n + 1) * sizeof *r->blocks);
+    if (r->blocks != NULL) {
+        while (built < n) {
+            const char *ns = NULL, *name = NULL;
+
+            if (!mcme_blockstate_at(blocks, built, &ns, &name)) break;
+            r->blocks[built] = g_strdup_printf("%s:%s", ns, name);
+            if (r->blocks[built] == NULL) break;
+            built++;
+        }
+    }
+    if (built == n && r->blocks != NULL) {
+        r->blocks[n] = NULL;
+        r->block_count = n;
+    } else {
+        for (size_t i = 0; i < built; ++i) g_free(r->blocks[i]);
+        g_free(r->blocks);
+        r->blocks = NULL;
+        r->block_count = 0;
+    }
+    mcme_blockstate_index_close(blocks);
+}
+
 McmePackResult *mcme_pack_summarize(const char *dir)
 {
     McmePackResult *r = g_new0(McmePackResult, 1);
@@ -74,6 +109,7 @@ McmePackResult *mcme_pack_summarize(const char *dir)
                               pack->has_icon ? "yes" : "no");
     mcme_pack_free(pack);
     pack_models(r, dir);
+    pack_blocks(r, dir);
     return r;
 }
 

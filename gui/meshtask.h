@@ -41,6 +41,14 @@ bool mcme_meshtask_start(McmeWire *wire, const char *pack_dir,
                          const char *ns, const char *path,
                          McmeMeshDoneFn done, void *userdata);
 
+/* G7's twin: the same worker over the blockmesh layer — namespace
+ * and bare block name, no states, mcme_mesh_for_block's total
+ * answer (D33: an unknown block is the missing mesh, not a
+ * refusal). */
+bool mcme_meshtask_start_block(McmeWire *wire, const char *pack_dir,
+                               const char *ns, const char *name,
+                               McmeMeshDoneFn done, void *userdata);
+
 void mcme_meshresult_free(McmeMeshResult *result);
 
 #endif

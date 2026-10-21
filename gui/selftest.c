@@ -222,6 +222,8 @@ static int g_pack_done_calls;
 static bool g_pack_done_ok;
 static size_t g_pack_done_models;
 static bool g_pack_done_has_pick;
+static size_t g_pack_done_blocks;
+static bool g_pack_done_has_pickblock;
 
 /* Loop thread, via the wire's visit — the shape on_pack_result has. */
 static void on_pack_done(void *userdata, McmePackResult *result)
@@ -235,6 +237,12 @@ static void on_pack_done(void *userdata, McmePackResult *result)
         if (result->models[i] != NULL &&
             strcmp(result->models[i], "mc:block/pick") == 0)
             g_pack_done_has_pick = true;
+    g_pack_done_blocks = result->block_count;
+    g_pack_done_has_pickblock = false;
+    for (size_t i = 0; i < result->block_count; ++i)
+        if (result->blocks[i] != NULL &&
+            strcmp(result->blocks[i], "mc:pickblock") == 0)
+            g_pack_done_has_pickblock = true;
     mcme_packresult_free(result);
 }
 
@@ -263,9 +271,16 @@ static void test_packtask(void)
     snprintf(path, sizeof(path), "%s/assets/mc/models/block/pick.json",
              dir);
     write_file(path, "{\"textures\":{\"a\":\"t/a\"}}\n");
+    /* One blockstate, so the twin list has something too (G7). */
+    snprintf(path, sizeof(path), "%s/assets/mc/blockstates", dir);
+    CHECK(mcme_fs_mkdir_p(path));
+    snprintf(path, sizeof(path),
+             "%s/assets/mc/blockstates/pickblock.json", dir);
+    write_file(path, "{\"variants\":{\"\":{\"model\":\"mc:block/pick\"}}}\n");
 
-    /* The summarize: the core's read, the CLI's four lines, and the
-       pack's one model as "ns:path" (D53's list, walk order). */
+    /* The summarize: the core's read, the CLI's four lines, and both
+       lists — the pack's one model as "ns:path", its one blockstate
+       as "ns:name" (D53/G7, each index's own walk order). */
     r = mcme_pack_summarize(dir);
     CHECK(r != NULL);
     if (r != NULL) {
@@ -276,10 +291,14 @@ static void test_packtask(void)
         CHECK(r->models != NULL && r->models[0] != NULL &&
               strcmp(r->models[0], "mc:block/pick") == 0);
         CHECK(r->models != NULL && r->models[1] == NULL);
+        CHECK(r->block_count == 1);
+        CHECK(r->blocks != NULL && r->blocks[0] != NULL &&
+              strcmp(r->blocks[0], "mc:pickblock") == 0);
+        CHECK(r->blocks != NULL && r->blocks[1] == NULL);
         mcme_packresult_free(r);
     }
 
-    /* The refusal, named, with no list at all. */
+    /* The refusal, named, with no lists at all. */
     r = mcme_pack_summarize("/tmp/mcme-no-such-pack-dir");
     CHECK(r != NULL);
     if (r != NULL) {
@@ -287,6 +306,8 @@ static void test_packtask(void)
         CHECK(r->text != NULL && r->text[0] != '\0');
         CHECK(r->model_count == 0);
         CHECK(r->models == NULL);
+        CHECK(r->block_count == 0);
+        CHECK(r->blocks == NULL);
         mcme_packresult_free(r);
     }
 
@@ -297,6 +318,8 @@ static void test_packtask(void)
     g_pack_done_ok = false;
     g_pack_done_models = 99;
     g_pack_done_has_pick = false;
+    g_pack_done_blocks = 99;
+    g_pack_done_has_pickblock = false;
     CHECK(mcme_packtask_start(wire, dir, on_pack_done, NULL));
     while (g_pack_done_calls == 0)
         g_main_context_iteration(NULL, TRUE);
@@ -304,9 +327,13 @@ static void test_packtask(void)
     CHECK(g_pack_done_ok);
     CHECK(g_pack_done_models == 1);
     CHECK(g_pack_done_has_pick);
+    CHECK(g_pack_done_blocks == 1);
+    CHECK(g_pack_done_has_pickblock);
     mcme_wire_free(wire);
 
     unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/blockstates", dir);
+    rmdir(path);
     snprintf(path, sizeof(path), "%s/assets/mc/models/block", dir);
     rmdir(path);
     snprintf(path, sizeof(path), "%s/assets/mc/models", dir);
@@ -405,6 +432,13 @@ static void test_meshtask(void)
     snprintf(path, sizeof(path), "%s/assets/minecraft/textures/block",
              dir);
     CHECK(mcme_fs_mkdir_p(path));
+    /* The blockmesh layer's row (G7): one blockstate naming the cube
+       the model runs mesh — a bare name, no states. */
+    snprintf(path, sizeof(path), "%s/assets/mc/blockstates", dir);
+    CHECK(mcme_fs_mkdir_p(path));
+    snprintf(path, sizeof(path), "%s/assets/mc/blockstates/test.json",
+             dir);
+    write_file(path, "{\"variants\":{\"\":{\"model\":\"mc:block/cube\"}}}\n");
 
     /* A full cube with all six cull faces, textured block/opaque —
        the shape the CLI's own blockmesh fixture meshes (cull6). */
@@ -476,6 +510,35 @@ static void test_meshtask(void)
     CHECK(g_mesh_done_slot0 > 0);
     CHECK(g_mesh_done_bounds_ok);
 
+    /* G7's twin: the blockmesh layer's walk (D33) — the block's ""
+       variant picks the cube the model run meshed, and the page
+       rides with it the same road. */
+    g_mesh_done_calls = 0;
+    g_mesh_done_ok = false;
+    g_mesh_done_verts = 0;
+    g_mesh_done_atlas = false;
+    CHECK(mcme_meshtask_start_block(wire, dir, "mc", "test",
+                                    on_mesh_done, NULL));
+    while (g_mesh_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_mesh_done_calls == 1);
+    CHECK(g_mesh_done_ok);
+    CHECK(g_mesh_done_verts >= 4);
+    CHECK(g_mesh_done_atlas);
+
+    /* The total answer (D33): an unknown block is the missing mesh,
+       not a refusal — the block-level answer never fails the pack. */
+    g_mesh_done_calls = 0;
+    g_mesh_done_ok = false;
+    g_mesh_done_verts = 0;
+    CHECK(mcme_meshtask_start_block(wire, dir, "mc", "nosuchblock",
+                                    on_mesh_done, NULL));
+    while (g_mesh_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_mesh_done_calls == 1);
+    CHECK(g_mesh_done_ok);
+    CHECK(g_mesh_done_verts >= 4);
+
     /* A face whose texture the pack does not hold is not a full
        block: the mesh answers, and the missing image is its texture
        — the page's seeded first slot. */
@@ -523,9 +586,14 @@ static void test_meshtask(void)
     snprintf(path, sizeof(path), "%s/assets/mc/models/block/partial.json",
              dir);
     unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/blockstates/test.json",
+             dir);
+    unlink(path);
     snprintf(path, sizeof(path),
              "%s/assets/minecraft/textures/block/opaque.png", dir);
     unlink(path);
+    snprintf(path, sizeof(path), "%s/assets/mc/blockstates", dir);
+    rmdir(path);
     snprintf(path, sizeof(path), "%s/assets/mc/models/block", dir);
     rmdir(path);
     snprintf(path, sizeof(path), "%s/assets/mc/models", dir);

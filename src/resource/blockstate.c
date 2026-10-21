@@ -214,6 +214,24 @@ void mcme_blockstate_index_close(McmeBlockstateIndex *index)
     free(index);
 }
 
+size_t mcme_blockstate_count(const McmeBlockstateIndex *index)
+{
+    return index ? index->count : 0;
+}
+
+bool mcme_blockstate_at(const McmeBlockstateIndex *index, size_t i,
+                        const char **ns_out, const char **name_out)
+{
+    if (!index || i >= index->count) {
+        if (ns_out) *ns_out = NULL;
+        if (name_out) *name_out = NULL;
+        return false;
+    }
+    if (ns_out) *ns_out = index->entries[i].ns;
+    if (name_out) *name_out = index->entries[i].name;
+    return true;
+}
+
 /* ========================================================================
  * Selection
  * ======================================================================== */

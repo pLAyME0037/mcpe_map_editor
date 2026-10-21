@@ -146,6 +146,20 @@ bool mcme_blockstate_index_open(const char *pack_dir,
 void mcme_blockstate_index_close(McmeBlockstateIndex *index);
 
 /*
+ * What the index holds — the model index's enumeration, one layer
+ * down (D53): how many blockstate files it parsed, and the
+ * (namespace, name) of the i-th in its own walk order (per
+ * namespace directory, readdir, the fs's own). The reference
+ * exposes no enumeration surface, so nothing pins this order but
+ * the walk itself. Null index: count 0, every `at` false; an
+ * out-of-range `at` answers false and names NULL in both outs.
+ */
+size_t mcme_blockstate_count(const McmeBlockstateIndex *index);
+
+bool mcme_blockstate_at(const McmeBlockstateIndex *index, size_t i,
+                        const char **ns_out, const char **name_out);
+
+/*
  * Answers which model(s) `<namespace>:<base_name>` selects under
  * `states`, filling `*out` (which the caller releases with
  * mcme_blockstate_free). Returns false only on a null argument; a

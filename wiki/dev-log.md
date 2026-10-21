@@ -7,6 +7,67 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-21 — The block half: the picker's twin, one layer down
+
+### Built
+
+- G7 + D54: the window lists blocks, not just models. The
+  blockstate index — one parse-layer below the models, files
+  keyed by (namespace, name) — answers count and entries in
+  its own walk order (`mcme_blockstate_count`,
+  `mcme_blockstate_at`); the pack answer carries "ns:name"
+  rows beside "ns:path" ones; the box's top row holds two
+  dropdowns — blocks left, models right — and either pick is
+  a mesh request.
+- The mesh task grew a block mode: `mcme_meshtask_start_block`
+  opens the blockstate index too and walks
+  `mcme_mesh_for_block` — the total block-level answer (D33)
+  the CLI's `blockmesh` verb ends at. A bare name carries no
+  states; an unknown block is the missing cube, not a
+  refusal — the pack cannot fail this question.
+- The chain is mode-aware: `g_mesh_by_block` remembers which
+  layer the last ask came from, so a re-open re-runs it
+  through the same road, and the shown selection mirrors into
+  the right dropdown. Both pickers share one sync guard and
+  one mesh generation — the last pick wins, stale meshes
+  fall, whichever layer they came from.
+- The settle line grew `blocks=`: the fixture pack answers
+  `models=6 blocks=17`, both counts through the roads the
+  dropdowns ride. Selftest +39: both lists in the pack answer
+  (NULL-ended), the refusal carrying neither, the block-mode
+  worker meshing a ""-variant blockstate, and the unknown
+  block's total answer — 1243 checks. Core selftest pins the
+  new enumeration (including the skipped unparseable file
+  staying un-enumerated).
+
+### Notes
+
+- The two list builders in packtask.c are deliberate copies:
+  the two index types have no shared face in C, and a cast
+  through a fake vtable would cost more honesty than twenty
+  plain lines. When a third index joins, reconsider.
+- `mcme_mesh_for_block` was already the shared implementation
+  — the CLI's `build_block_mesh` is a static that parses the
+  spec and calls it. A picker row has no spec to parse, so the
+  GUI calls the core entry directly: two calls, zero
+  duplicated CLI logic (D3's line, held).
+- The ""-variant with no states selects because of the core's
+  own recorded rule ("a states-less block selects the first
+  key") — the fixture rides the rule the pins already pin.
+- Gates: `--selftest` PASS 1243 rc=0; smokes (wayland,
+  nvidia-stubbed llvmpipe): window-only rc=0, pack-only rc=0
+  with `models=6 blocks=17`, pack+model rc=0 with `pack=ok
+  models=6 blocks=17 mesh=ok drew=1 tex=1 gl_failed=0`,
+  `--open` refusal rc=1, an x11 pack+model rc=0; battery
+  19/19; `./rebuild.sh test` PASS; `git status tests/`
+  clean.
+
+### Next
+
+- The camera in the user's hand (orbit the block), or the
+  standing whole-pack page as the chunk view's foundation, or
+  the window's first chunk — D40's record keeps flipping.
+
 ## 2026-10-21 — The pack lists itself: a picker over the index
 
 ### Built

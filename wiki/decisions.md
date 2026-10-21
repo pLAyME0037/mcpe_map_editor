@@ -3686,3 +3686,53 @@ list becomes the blockstate index's answer and the seam moves
 one layer down), or the walk order ever needs to match the
 reference's glob exactly (then the pin changes from "the
 walk's own" to a recorded reference order).
+
+## D54 — The twin, one layer down: blocks answer what the pack holds
+
+**Chosen.** The blockstate index exposes what it holds — count and
+(namespace, name) per file in its own walk order
+(`mcme_blockstate_count`, `mcme_blockstate_at`), the same honest
+rule as D53 one layer down. The pack answer carries "ns:name" rows
+beside the models; the window grows a second dropdown (blocks,
+left; models, right); a block pick walks `mcme_mesh_for_block`'s
+total answer (D33) — a bare name, no states, the missing block
+standing for the unknown — through the mesh task's block mode. The
+chain re-runs through the mode of the last ask
+(`g_mesh_by_block`), and a block pick bumps the same mesh
+generation a model pick does: the last pick wins either way.
+
+**Why.** D53 named this reversal in advance ("when the picker wants
+block names, the seam moves a layer down") — G7 is that move,
+deliberate. The core already held the total block-level answer the
+CLI's `blockmesh` verb dispatches to (`mcme_mesh_for_block`: the
+selection walked, applies meshed and turned, multipart merged); a
+bare picker name carries no properties, so no spec parsing stands
+between the row and the core — the GUI composes the same two calls
+the CLI does with zero duplicated CLI logic.
+
+**Rejected.**
+- *The GUI walking blockstates itself*: a second interpretation of
+  what a block is could disagree with what the index would mesh.
+- *Properties in the picker*: a bare name's default selection is
+  the honest first answer; properties are the CLI's spec surface
+  (`block[facing=east]`) and belong to a later seam.
+- *One dropdown with a mode switch*: the CLI has two verbs
+  (`mesh`, `blockmesh`) and the window mirrors both, plainly —
+  models are D32's answer, blocks are D33's.
+
+**How verified.** Core selftest: the blockstate index's count,
+every entry's non-empty (ns, name), the unparseable file NOT
+enumerated (skipped whole, as the loader skips it), the known
+keys, out-of-range/null naming NULL — 5 suites PASS. GUI
+selftest 1243: both lists in the pack answer ("mc:block/pick",
+"mc:pickblock", NULL-ended), the block-mode worker meshing the
+"" variant, the unknown block's total answer (ok, the missing
+cube — never a refusal). Smokes: `models=6 blocks=17` on the
+fixture through every form (pack-only, pack+model rc=0, `--open`
+refusal rc=1, x11 rc=0); battery 19/19; `git status tests/`
+clean.
+
+**Reverses if:** the picker grows properties (then the row is a
+spec and the walk carries states), or the display ever needs the
+reference's rotation/merge shown differently from the CLI's mesh
+(then a pin pins the difference instead of this note).

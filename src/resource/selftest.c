@@ -236,6 +236,35 @@ static void test_blockstates(void)
               "index open: %s", mcme_last_error());
     if (!idx) { mcme_clear_error(); return; }
 
+    /* --- what the index holds, in its own walk order --- */
+
+    CHECK(mcme_blockstate_count(idx) > 0);
+    {
+        bool saw_stone = false, saw_stairs = false, saw_fence = false;
+        const char *ns = NULL, *name = NULL;
+
+        for (size_t i = 0; i < mcme_blockstate_count(idx); ++i) {
+            CHECK(mcme_blockstate_at(idx, i, &ns, &name));
+            CHECK(ns != NULL && ns[0] != '\0');
+            CHECK(name != NULL && name[0] != '\0');
+            /* The unparseable file was skipped whole: it is not
+               enumerated as a block the index would answer. */
+            CHECK(strcmp(name, "bad") != 0);
+            if (strcmp(name, "stone") == 0) saw_stone = true;
+            if (strcmp(name, "stairs") == 0) saw_stairs = true;
+            if (strcmp(name, "fence") == 0) saw_fence = true;
+        }
+        CHECK(saw_stone && saw_stairs && saw_fence);
+        /* Out of range and null: refused, both outs named NULL. */
+        ns = name = "untouched";
+        CHECK(!mcme_blockstate_at(idx, mcme_blockstate_count(idx),
+                                  &ns, &name));
+        CHECK(ns == NULL && name == NULL);
+        CHECK(!mcme_blockstate_at(NULL, 0, &ns, &name));
+        CHECK(ns == NULL && name == NULL);
+    }
+    CHECK(mcme_blockstate_count(NULL) == 0);
+
     /* --- variants --- */
     expect_models(idx, "stone", NULL, 0,
                   (const char *const[]){ "mc:block/stone" }, 1, false);

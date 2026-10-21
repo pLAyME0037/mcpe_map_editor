@@ -22,7 +22,11 @@
  * holds (D53's enumeration, "ns:path" in the index's own walk order)
  * into a dropdown, and a pick is a mesh request with its own
  * generation — the last pick wins, stale meshes fall like stale
- * packs.
+ * packs. G7 is the twin one layer down: the blockstate index answers
+ * its own walk (D53 extended), the pack answer carries "ns:name"
+ * rows beside the models, and a block pick walks the blockmesh
+ * layer's total answer (mcme_mesh_for_block, D33) instead — a bare
+ * name, no states, the missing block standing for the unknown.
  *
  * Flags:
  *   --selftest   run the wire's checks (no display needed) and exit
@@ -69,12 +73,16 @@ static int g_mesh_gen;           /* selection generation: stale falls */
 static bool g_pack_settled, g_pack_ok;
 static bool g_mesh_settled, g_mesh_ok;
 static bool g_picker_sync;       /* populate must not fire the pick  */
+static bool g_mesh_by_block;     /* the chain re-runs through which  */
 static size_t g_models_seen;     /* the pack answer's model count    */
+static size_t g_blocks_seen;     /* the pack answer's block count    */
 static GtkWidget *g_viewport;
 static GtkWidget *g_mesh_label;
 static GtkWidget *g_pack_label;
 static GtkWidget *g_picker;
 static GtkStringList *g_models;
+static GtkWidget *g_block_picker;
+static GtkStringList *g_blocks;
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -107,10 +115,11 @@ static void maybe_smoke_quit(void)
         else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
     fprintf(stderr,
-            "mcgui: smoke: pack=%s models=%zu mesh=%s drew=%d tex=%d "
-            "gl_failed=%d\n",
+            "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
+            "drew=%d tex=%d gl_failed=%d\n",
             g_pack_ok ? "ok" : "refused",
             g_models_seen,
+            g_blocks_seen,
             g_mesh_ns == NULL ? "not-asked"
                               : (g_mesh_ok ? "ok" : "refused"),
             mcme_viewport_drew(g_viewport),
@@ -172,6 +181,33 @@ static void on_mesh_result(void *userdata, McmeMeshResult *result)
     maybe_smoke_quit();
 }
 
+/* One list's rows and one shown selection — the populate never fires
+ * a pick (the sync guard), and the shown row is the model the chain
+ * is about to mesh, in the list its mode asks. */
+static void picker_fill(GtkStringList *list, GtkWidget *dd,
+                        char **rows, size_t n)
+{
+    gtk_string_list_splice(list, 0,
+                           g_list_model_get_n_items(G_LIST_MODEL(list)),
+                           NULL);
+    for (size_t i = 0; i < n; ++i)
+        gtk_string_list_append(list, rows[i]);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(dd),
+                               GTK_INVALID_LIST_POSITION);
+}
+
+static void picker_mirror(GtkStringList *list, GtkWidget *dd,
+                          const char *want)
+{
+    for (guint i = 0;
+         i < g_list_model_get_n_items(G_LIST_MODEL(list)); ++i) {
+        if (strcmp(gtk_string_list_get_string(list, i), want) == 0) {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(dd), i);
+            break;
+        }
+    }
+}
+
 static void on_pack_result(void *userdata, McmePackResult *result)
 {
     int gen = GPOINTER_TO_INT(userdata);
@@ -185,39 +221,35 @@ static void on_pack_result(void *userdata, McmePackResult *result)
                        result->text ? result->text : "(no memory)");
     g_pack_ok = result->ok;
     g_pack_settled = true;
-    /* The picker's rows: the pack's own models, walk order (D53).
-       The populate must not fire a pick, and the shown selection is
-       the model the chain is about to mesh — when the pack holds it. */
+    /* The pickers' rows: the pack's own models and blocks, each
+       index's walk order (D53, G7). */
     g_models_seen = result->ok ? result->model_count : 0;
+    g_blocks_seen = result->ok ? result->block_count : 0;
     g_picker_sync = true;
-    gtk_string_list_splice(g_models, 0,
-                           g_list_model_get_n_items(G_LIST_MODEL(g_models)),
-                           NULL);
-    for (size_t i = 0; i < result->model_count; ++i)
-        gtk_string_list_append(g_models, result->models[i]);
-    gtk_drop_down_set_selected(GTK_DROP_DOWN(g_picker),
-                               GTK_INVALID_LIST_POSITION);
+    picker_fill(g_models, g_picker, result->models, result->model_count);
+    picker_fill(g_blocks, g_block_picker, result->blocks,
+                result->block_count);
     if (result->ok && g_mesh_ns != NULL) {
         char want[512];
 
         snprintf(want, sizeof want, "%s:%s", g_mesh_ns, g_mesh_path);
-        for (guint i = 0;
-             i < g_list_model_get_n_items(G_LIST_MODEL(g_models)); ++i) {
-            if (strcmp(gtk_string_list_get_string(g_models, i), want)
-                == 0) {
-                gtk_drop_down_set_selected(GTK_DROP_DOWN(g_picker), i);
-                break;
-            }
-        }
+        picker_mirror(g_mesh_by_block ? g_blocks : g_models,
+                      g_mesh_by_block ? g_block_picker : g_picker,
+                      want);
     }
     g_picker_sync = false;
     if (result->ok && g_mesh_ns != NULL) {
         /* The mesh's worker starts only now: the core's error slot is
            one global, so at any time one worker calls core code and
            copies its answer out (the G2 discipline, kept). */
-        if (mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns,
-                                g_mesh_path, on_mesh_result,
-                                GINT_TO_POINTER(g_mesh_gen))) {
+        bool started = g_mesh_by_block
+            ? mcme_meshtask_start_block(g_wire, g_pack_dir, g_mesh_ns,
+                                        g_mesh_path, on_mesh_result,
+                                        GINT_TO_POINTER(g_mesh_gen))
+            : mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns,
+                                  g_mesh_path, on_mesh_result,
+                                  GINT_TO_POINTER(g_mesh_gen));
+        if (started) {
             g_tasks++;
         } else {
             g_mesh_settled = true;
@@ -258,33 +290,50 @@ static bool split_model(const char *s, char **ns_out, char **path_out)
     return true;
 }
 
-/* The picker's row: the selection is the new mesh request, and its
- * own generation retires any mesh still on the road (the pack's
- * answers already retire on the pack's). */
-static void on_model_picked(GtkDropDown *dd, GParamSpec *ps,
-                            gpointer user)
+/* One pick, either list: the row is "ns:path" (a model) or
+ * "ns:name" (a block — the same colon shape), the split is the
+ * CLI's, and the request carries the mesh generation: the last pick
+ * wins and stale meshes fall like stale packs. */
+static void picked_mesh(GtkStringList *list, guint pos, bool by_block)
 {
-    guint pos = gtk_drop_down_get_selected(dd);
-
-    (void)ps;
-    (void)user;
     if (g_picker_sync || pos == GTK_INVALID_LIST_POSITION) return;
-    if (!split_model(gtk_string_list_get_string(g_models, pos),
+    if (!split_model(gtk_string_list_get_string(list, pos),
                      &g_mesh_ns, &g_mesh_path))
         return; /* a row without a colon: nothing to mesh */
 
+    g_mesh_by_block = by_block;
     g_mesh_settled = false;
     g_mesh_ok = false;
     gtk_label_set_text(GTK_LABEL(g_mesh_label), "meshing…");
-    if (mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns, g_mesh_path,
-                            on_mesh_result,
-                            GINT_TO_POINTER(++g_mesh_gen))) {
+    if ((by_block
+         ? mcme_meshtask_start_block(g_wire, g_pack_dir, g_mesh_ns,
+                                     g_mesh_path, on_mesh_result,
+                                     GINT_TO_POINTER(++g_mesh_gen))
+         : mcme_meshtask_start(g_wire, g_pack_dir, g_mesh_ns,
+                               g_mesh_path, on_mesh_result,
+                               GINT_TO_POINTER(++g_mesh_gen)))) {
         g_tasks++;
     } else {
         g_mesh_settled = true;
         gtk_label_set_text(GTK_LABEL(g_mesh_label),
                            "mesh task: no memory");
     }
+}
+
+static void on_model_picked(GtkDropDown *dd, GParamSpec *ps,
+                            gpointer user)
+{
+    (void)ps;
+    (void)user;
+    picked_mesh(g_models, gtk_drop_down_get_selected(dd), false);
+}
+
+static void on_block_picked(GtkDropDown *dd, GParamSpec *ps,
+                            gpointer user)
+{
+    (void)ps;
+    (void)user;
+    picked_mesh(g_blocks, gtk_drop_down_get_selected(dd), true);
 }
 
 /* The one pack session: every opener lands here — argv at startup,
@@ -368,8 +417,12 @@ static void on_activate(GtkApplication *app, gpointer user)
                                  : "the shell is up — no world open");
     g_models = gtk_string_list_new(NULL);
     g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
+    g_blocks = gtk_string_list_new(NULL);
+    g_block_picker = gtk_drop_down_new(G_LIST_MODEL(g_blocks), NULL);
     g_signal_connect(g_picker, "notify::selected",
                      G_CALLBACK(on_model_picked), NULL);
+    g_signal_connect(g_block_picker, "notify::selected",
+                     G_CALLBACK(on_block_picked), NULL);
 
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(bar),
                                     gtk_label_new("mcme"));
