@@ -7,6 +7,82 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-22 — The fill crosses the border: both kinds behind one button
+
+### Built
+
+- G17 + D64: the parity debt D62 named is paid. The GUI's
+  Fill writes Java worlds — through the CLI's own road,
+  promoted whole into the core (G11's rule):
+  `mcme_java_fill_check_world` / `mcme_java_fill_world`
+  (src/world/java_chunk.c) take the world, the dimension and
+  the box; the dimension layout first (a dimension no Java
+  layout has refuses with USAGE before any file opens), then
+  one pass over the region files the box's chunks land in —
+  the span cross, the per-file clamp — the check pass over
+  every file writing nothing, the fill pass editing through
+  mcme_java_fill at `time(NULL)`. The CLI's java_fill is now
+  the thin boundary it always was: check, then fill, the
+  fill's own failure wrapped in "chunk: ", the check's message
+  standing; refusal_exit's mapping untouched — the battery's
+  exit-code pins adjudicate.
+- The GUI worker's dispatch: probe → the verbs' parser (both
+  kinds one grammar — the parser's words beat the directory's,
+  as the CLI's do) → the kind's road: Bedrock unchanged
+  (entry + set_block under the LOCK), Java through the two new
+  functions on the one-cell box (McmeBox of the guarded
+  int32s). No LOCK on the Java side: a Java world is region
+  files, no single store to hold one on. The refusal crosses
+  the wire in the file's own words (G7 kept); the door's
+  sentence for a directory that is neither kind becomes "that
+  directory is not a world mcme can write" — "not a Bedrock
+  world" cannot stand once Java writes.
+- Gates: GUI selftest **1549 → 1558** (+9): the old
+  Java-at-the-door pin replaced by the road's own — the
+  not-stored chunk (40,5,5 — the core selftest's own
+  not-found coordinate) refusing with "is not stored" and the
+  golden copy's bytes standing, then the write at (5,5,5)
+  landing and `mcme_world_block_spec` reading back exactly
+  `minecraft:stone` (D62's re-read, across the border), both
+  on a mkdtemp COPY of the java golden (the fixture never
+  opened for writing — the battery's rule kept); the
+  empty-spec pin's inequality retargeted to the new door
+  sentence. Smokes: the java fill smoke on a fresh copy —
+  **`spec=minecraft:stone faces=6/6 cells=1 drew=1 fill=ok`**
+  rc=0, the re-ask showing the world's NEW answer across the
+  border (the lane's D62 rule rides); the not-stored refusal
+  smoke `world=refused fill=refused` rc=1. Every standing
+  gate re-confirmed at its wiki numbers — all-air block 0/6
+  cells 0, all-air section 0/24576 cells 0, slab 24576/24576
+  cells 4096 pick=0,80,1, stone 1536/24576 cells 1352
+  pick=1,80,1, the three refusals rc=1, the bedrock fill
+  smoke `fill=ok` + `chunk get` answering minecraft:stone,
+  x11 slab drew=1 pick=0,80,1, and G16's block-door gates
+  (unknown block → the missing cube, model positional
+  `ask=model`, pack-only `ask=none`, both refusals rc=1).
+  Battery 107/107, 0 FAIL; core selftest 6 suites green.
+
+### Notes
+
+- The promotion kept one truth about the transaction: the
+  span cross and the per-file clamp live in the core now, the
+  verb keeps only what a verb owns — its prefix and its exit
+  codes (the G11 shape, third use). What the CLI printed
+  before survives where the ref can see it; the one drift —
+  the path-too-long refusal loses its "chunk: " prefix in the
+  CHECK pass — is unpinned and unreachable through the verbs'
+  usage, recorded in D64.
+- The java fill smoke's `faces=6/6`: the golden's neighbours
+  around (5,5,5) all mesh as non-opaque through p12 (adjudicated,
+  not derived — the block at the cell is the missing cube since
+  p12 holds no stone blockstate).
+- /tmp stood this session (g12w, g12w2, p12 from G16); the
+  all-air gates' pack was rebuilt as p12base = p12 minus
+  air.json (the fixture pack p12 grew from never persisted —
+  blocks=17 vs p12's 18, and the 0/6 + 0/24576 numbers
+  adjudicate the reconstruction).
+- Carried from G16: none.
+
 ## 2026-10-22 — The block's own row: the picker's twin takes its seat
 
 ### Built

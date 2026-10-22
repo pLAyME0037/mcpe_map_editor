@@ -2552,91 +2552,35 @@ static int java_set_block(const McmeWorldInfo *info, int32_t dimension,
 }
 
 /*
- * One pass over the region files the box's chunks land in: `apply`
- * false runs mcme_java_fill_check on every file and writes
- * nothing, true edits and writes every changed chunk. Two passes
- * in java_fill — check all, then write all — so a chunk the region
- * file does not have refuses the whole fill before any file has
- * changed.
- *
- * The per-file chunk span is the box's chunks crossed with the
- * region's 32x32. Refusals come back as exit codes; the check's
- * own message stands, the fill's is wrapped in "chunk: " the way
- * Bedrock's fill is.
- */
-static int java_fill_files(const McmeWorldInfo *info,
-                           const char *dim_dir,
-                           const McmeBox *box, const char *name,
-                           const McmeTag *states, bool apply)
-{
-    /* The box's chunks: floors of the corners — `>>` floors in C,
-       which is what a negative coordinate needs. */
-    int x1 = box->x1 < box->x2 ? box->x1 : box->x2;
-    int x2 = box->x1 < box->x2 ? box->x2 : box->x1;
-    int z1 = box->z1 < box->z2 ? box->z1 : box->z2;
-    int z2 = box->z1 < box->z2 ? box->z2 : box->z1;
-    int cx1 = x1 >> 4, cx2 = x2 >> 4;
-    int cz1 = z1 >> 4, cz2 = z2 >> 4;
-    int rx1 = cx1 >> 5, rx2 = cx2 >> 5;
-    int rz1 = cz1 >> 5, rz2 = cz2 >> 5;
-
-    for (int rz = rz1; rz <= rz2; ++rz) {
-        for (int rx = rx1; rx <= rx2; ++rx) {
-            char file[MCME_REGION_PATH_MAX];
-            if (mcme_region_path(file, sizeof file, info->path, dim_dir,
-                                 rx, rz) == NULL) {
-                mcme_set_error("chunk: the path to r.%d.%d is too long",
-                               rx, rz);
-                return MCME_EXIT_INTERNAL;
-            }
-            int fx1 = cx1 > rx * 32 ? cx1 : rx * 32;
-            int fx2 = cx2 < rx * 32 + 31 ? cx2 : rx * 32 + 31;
-            int fz1 = cz1 > rz * 32 ? cz1 : rz * 32;
-            int fz2 = cz2 < rz * 32 + 31 ? cz2 : rz * 32 + 31;
-            if (fx1 > fx2 || fz1 > fz2) continue;
-
-            McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
-            if (!apply) {
-                if (!mcme_java_fill_check(file, fx1, fx2, fz1, fz2, box,
-                                          name, states, &refusal)) {
-                    return refusal_exit(refusal);
-                }
-            } else {
-                bool changed = false;
-                if (!mcme_java_fill(file, fx1, fx2, fz1, fz2, box, name,
-                                    states, (uint32_t)time(NULL),
-                                    &changed, &refusal)) {
-                    char why[256];
-                    snprintf(why, sizeof why, "%s", mcme_last_error());
-                    mcme_set_error("chunk: %s", why);
-                    return refusal_exit(refusal);
-                }
-            }
-        }
-    }
-    return MCME_OK;
-}
-
-/*
  * The Java half of `chunk fill`: check every region file the box
  * touches first, then edit and write — a chunk the region file
  * does not have refuses the whole fill with nothing written,
  * where Bedrock creates the subchunks it needs. No LOCK: a Java
  * world is region files, no single store to take one on.
+ *
+ * Both passes moved whole into the core (G17, mcme_java_fill_check_world
+ * / mcme_java_fill_world); the CLI keeps only its boundary — the
+ * fill's own failure wrapped in "chunk: ", the check's message
+ * standing as it always did.
  */
 static int java_fill(const McmeWorldInfo *info, int32_t dimension,
                      const McmeBox *box, const char *name,
                      const McmeTag *states)
 {
-    const char *dim_dir = NULL;
-    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
-        return MCME_EXIT_USAGE;
+    McmeWriteRefusal refusal = MCME_WRITE_REFUSAL_NONE;
+
+    if (!mcme_java_fill_check_world(info, dimension, box, name, states,
+                                    &refusal)) {
+        return refusal_exit(refusal);
     }
-    int rc = java_fill_files(info, dim_dir, box, name, states, false);
-    if (rc == MCME_OK) {
-        rc = java_fill_files(info, dim_dir, box, name, states, true);
+    if (!mcme_java_fill_world(info, dimension, box, name, states,
+                              &refusal)) {
+        char why[256];
+        snprintf(why, sizeof why, "%s", mcme_last_error());
+        mcme_set_error("chunk: %s", why);
+        return refusal_exit(refusal);
     }
-    return rc;
+    return MCME_OK;
 }
 
 /*

@@ -4309,3 +4309,65 @@ picker's rows stop sharing the colon shape (then --block needs
 its own split and the mutual exclusion loses its single rule),
 or the settle line outgrows ad-hoc fields (then the settle
 wants a structured dump behind it, flags and all).
+
+## D64 — A debt named at a border is paid at a border
+
+**Chosen.** The parity debt D62 named ("the CLI's java_fill is
+the reference road, the GUI's turn coming") is paid by moving
+that road into the core whole, not by re-implementing it: the
+CLI's two-pass loop — the box's chunks crossed with each
+region's 32x32, clamped per file, check pass over every file
+writing nothing, fill pass editing through mcme_java_fill —
+becomes `mcme_java_fill_check_world` / `mcme_java_fill_world`
+(src/world/java_chunk.c), the dimension layout resolved inside
+(a dimension no Java layout has refuses with USAGE before any
+file opens). The CLI's java_fill keeps only its boundary: call
+check, call fill, wrap the fill's own failure in "chunk: ",
+map refusals to exit codes — the messages it printed before,
+unchanged where the ref can see them. The GUI's fill worker
+grows the same call pair on the one-cell box behind the same
+button, both kinds through the verbs' one parser.
+
+**Why.** The CLI already had the road and the ref battery had
+its 8 checks; inventing a Java writer for the GUI (G15's
+rejected shape) would have been a second, unpinned truth about
+what "check every file before writing any" means. The G11
+promotion rule again: the loop moves whole into the core, the
+caller keeps only what a caller owns — its prefix, its exit
+codes. One road, one contract (java_chunk.h's), both front
+doors; the GUI's side keeps D12 whole — the check pass refusing
+the whole fill with nothing written, in the file's own words
+("fill: chunk (x, z) is not stored in this world").
+
+**Rejected.** Calling the CLI's road through cli.h (cli.h is
+not-mine, and the GUI links the core, not the app layer — the
+promotion was the only road that keeps one truth); a Java
+writer invented in the GUI (the G15 rejection stands: invention
+is the debt paid in the wrong currency); per-file calls from
+the worker (the span cross is the road; duplicating it in gui/
+would put the transaction's shape in two places).
+
+**Evidence.** Core selftest 6 suites green; ref_java_fill 8/8
+on the promoted loop (the CLI's exit-code and "not stored" pins
+adjudicate the boundary); GUI selftest 1549 → 1558 (+9: the
+Java write read back as minecraft:stone through
+mcme_world_block_spec on a mkdtemp copy, the not-stored chunk
+refusing with the golden copy's bytes standing, the empty-spec
+pin retargeted to the new door sentence); the java fill smoke
+`fill=ok spec=minecraft:stone` — the re-ask showing the world's
+NEW answer across the border — and the refusal smoke
+`fill=refused rc=1`; every standing gate at its wiki numbers;
+battery 107/107, 0 FAIL. Message drift, recorded: the
+path-too-long refusal loses its "chunk: " prefix in the CHECK
+pass only (the core speaks "fill: the path to r.X.Y is too
+long"); unpinned — the ref greps "not stored" and exit codes —
+and unreachable through the verbs' usage.
+
+**Reverses if:** the core ever grows a store single enough to
+hold a LOCK across region files (then the "no single store to
+hold one on" sentence at the GUI's Java branch is stale), or
+the CLI's fill verb outgrows the two-call boundary (then the
+wrapper is no longer the whole of what a verb owns), or Java
+gains a third kind of world layout worth its own directory
+rules (then the dimension gate inside the core functions wants
+a second look).

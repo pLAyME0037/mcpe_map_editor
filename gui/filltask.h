@@ -1,22 +1,29 @@
 /*
  * G15's worker: the lane's first writer. The bar's cell (or the
- * --fill flag's chain) becomes one cell written to a Bedrock
- * world's store — the CLI `chunk fill`'s road down to a single
- * cell: the world's own probe, the verbs' shared block-spec parser
+ * --fill flag's chain) becomes one cell written to the world it
+ * stands in — both kinds behind one door (G17): the world's own
+ * probe, the verbs' shared block-spec parser
  * (mcme_block_parse_spec — the core's own, the CLI's wrapper and
- * this one the same grammar), the palette-entry document the
- * reference itself writes (mcme_bedrock_block_entry — name, states,
- * version 17694720, the version the reference assigns a block that
- * arrives without one), and mcme_bedrock_set_block, which opens the
- * store under its exclusive LOCK the way Minecraft opens one and
- * creates an unstored subchunk the reference's way before editing
- * it.
+ * this one the same grammar), then the road the kind names.
  *
- * A Java world is refused at the door: the GUI's writer opens on
- * the Bedrock store only — the CLI's java_fill is the reference
- * road, the GUI's turn coming. Every other refusal crosses the
- * wire in mcme_last_error()'s own words, the ask's never-a-naked
- * status rule kept (G7).
+ * Bedrock's is the CLI `chunk fill`'s down to a single cell: the
+ * palette-entry document the reference itself writes
+ * (mcme_bedrock_block_entry — name, states, version 17694720, the
+ * version the reference assigns a block that arrives without one),
+ * and mcme_bedrock_set_block, which opens the store under its
+ * exclusive LOCK the way Minecraft opens one and creates an
+ * unstored subchunk the reference's way before editing it.
+ *
+ * Java's is the CLI's own fill road, moved into the core whole
+ * (G17): the cell's box through mcme_java_fill_check_world then
+ * mcme_java_fill_world — every region file the chunk lands in
+ * checked before any is written, so a chunk the world does not
+ * have refuses the whole fill with nothing written anywhere. No
+ * LOCK there: a Java world is region files, no single store to
+ * hold one on.
+ *
+ * Every refusal crosses the wire in mcme_last_error()'s own
+ * words, the ask's never-a-naked status rule kept (G7).
  *
  * Data crosses; no core call happens off the worker (the G2
  * discipline, kept).

@@ -11,8 +11,9 @@
 
 #include <glib.h>
 
-#include "mcme/bedrock_write.h" /* the single-cell write doors */
+#include "mcme/bedrock_write.h" /* the single-cell write doors, McmeBox */
 #include "mcme/core.h"          /* mcme_last_error — one global, copied now */
+#include "mcme/java_chunk.h"    /* G17: the CLI's Java fill road, in core */
 #include "mcme/resource.h"      /* mcme_block_parse_spec — the verbs' parser */
 #include "mcme/world.h"
 #include "task.h"
@@ -74,17 +75,6 @@ static void *fill_work(void *data)
         r->text = refuse_text();
         goto out;
     }
-    if (info.kind == MCME_WORLD_JAVA) {
-        r->text = g_strdup("the fill writes Bedrock stores — this "
-                           "world is Java");
-        mcme_world_info_free(&info);
-        goto out;
-    }
-    if (info.kind != MCME_WORLD_BEDROCK || info.db_path == NULL) {
-        r->text = g_strdup("that directory is not a Bedrock world");
-        mcme_world_info_free(&info);
-        goto out;
-    }
 
     arena = mcme_arena_new();
     if (arena == NULL) {
@@ -93,28 +83,59 @@ static void *fill_work(void *data)
         goto out;
     }
     /* The verbs' own grammar, through the core's one parser — the
-       CLI's parse_block_spec wraps this very call. */
+       CLI's parse_block_spec wraps this very call. Both roads take
+       the same spec (G17); the parser's words beat the directory's
+       the way the CLI's do. */
     if (!mcme_block_parse_spec(w->block, arena, name, sizeof name,
                                &states)) {
         r->text = refuse_text();
         mcme_world_info_free(&info);
         goto out;
     }
-    /* The reference's own palette entry: name, states, version
-       17694720 — the document set_block writes. */
-    if (!mcme_bedrock_block_entry(arena, name, states, &entry)) {
-        r->text = refuse_text();
-        mcme_world_info_free(&info);
-        goto out;
-    }
-    /* One cell under the store's exclusive LOCK (the box road's
-       fill_check/fill pair opens the same door; set_block takes
-       the db/ directory and holds the LOCK for the call). The
-       document and the arena outlive the call by contract. */
-    if (!mcme_bedrock_set_block(info.db_path, (int32_t)w->x,
-                                (int32_t)w->y, (int32_t)w->z,
-                                w->dim, &entry, &refusal)) {
-        r->text = refuse_text();
+
+    if (info.kind == MCME_WORLD_JAVA) {
+        /* G17: the parity debt paid — the CLI's own road, now in
+           core: check every region file the cell's chunk lands in,
+           then edit and write; a chunk the world does not have
+           refuses the whole fill with nothing written anywhere
+           (java_chunk.h's contract). No LOCK: a Java world is
+           region files, no single store to hold one on. */
+        McmeBox box;
+
+        box.x1 = box.x2 = (int32_t)w->x;
+        box.y1 = box.y2 = (int32_t)w->y;
+        box.z1 = box.z2 = (int32_t)w->z;
+        if (!mcme_java_fill_check_world(&info, w->dim, &box, name,
+                                        states, &refusal) ||
+            !mcme_java_fill_world(&info, w->dim, &box, name, states,
+                                  &refusal)) {
+            r->text = refuse_text();
+            mcme_world_info_free(&info);
+            goto out;
+        }
+    } else if (info.kind == MCME_WORLD_BEDROCK &&
+               info.db_path != NULL) {
+        /* The reference's own palette entry: name, states, version
+           17694720 — the document set_block writes. */
+        if (!mcme_bedrock_block_entry(arena, name, states, &entry)) {
+            r->text = refuse_text();
+            mcme_world_info_free(&info);
+            goto out;
+        }
+        /* One cell under the store's exclusive LOCK (the box road's
+           fill_check/fill pair opens the same door; set_block takes
+           the db/ directory and holds the LOCK for the call). The
+           document and the arena outlive the call by contract. */
+        if (!mcme_bedrock_set_block(info.db_path, (int32_t)w->x,
+                                    (int32_t)w->y, (int32_t)w->z,
+                                    w->dim, &entry, &refusal)) {
+            r->text = refuse_text();
+            mcme_world_info_free(&info);
+            goto out;
+        }
+    } else {
+        r->text = g_strdup("that directory is not a world mcme can "
+                           "write");
         mcme_world_info_free(&info);
         goto out;
     }

@@ -215,4 +215,32 @@ bool mcme_java_fill(const char *file,
                     uint32_t ts, bool *changed,
                     McmeWriteRefusal *refusal);
 
+/*
+ * The whole box, one region file at a time — the two passes the
+ * CLI's `chunk fill` runs on a Java world, moved here whole (G17:
+ * the verb keeps only its boundary). Every file the box's chunks
+ * land in, located through the world's dimension layout
+ * (mcme_java_dimension_dir); the per-file chunk span is the box's
+ * chunks crossed with the region's 32x32, clamped per file.
+ *
+ * The check pass runs mcme_java_fill_check over every file and
+ * writes nothing; the fill pass edits and writes through
+ * mcme_java_fill — run the check first, so a chunk the world does
+ * not have refuses the whole fill with nothing written anywhere.
+ * A dimension no Java layout has refuses with USAGE before any
+ * file is opened; the refusals after that are the per-file ones,
+ * the file's own message standing (the fill pass's own failure is
+ * wrapped in "fill: chunk (x, z): " the way fill_chunks words it).
+ */
+bool mcme_java_fill_check_world(const McmeWorldInfo *info,
+                                int32_t dimension,
+                                const McmeBox *box,
+                                const char *name, const McmeTag *states,
+                                McmeWriteRefusal *refusal);
+bool mcme_java_fill_world(const McmeWorldInfo *info,
+                          int32_t dimension,
+                          const McmeBox *box,
+                          const char *name, const McmeTag *states,
+                          McmeWriteRefusal *refusal);
+
 #endif /* MCME_JAVA_CHUNK_H */

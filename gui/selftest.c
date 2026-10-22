@@ -1071,13 +1071,15 @@ static void cp_rf(const char *src, const char *dst)
     g_dir_close(d);
 }
 
-/* The lane's first writer (G15): one cell into a Bedrock store,
+/* The lane's first writer (G15, G17): one cell into a store,
    through the wire — the probe's own words when the directory is
-   not a world, the door's sentence for Java, the verbs' parser's
-   refusal for a spec it will not take, the key's own range, and
-   the write itself read back through the CLI's own spec road
-   (mcme_world_block_spec): the store's answer, not the writer's
-   claim. */
+   not a world, the verbs' parser's refusal for a spec it will not
+   take, the key's own range, and the write itself read back
+   through the CLI's own spec road (mcme_world_block_spec): the
+   store's answer, not the writer's claim. Both kinds write (G17):
+   Bedrock under the store's LOCK, Java through the CLI's own fill
+   road now in core — a chunk the region file does not have
+   refusing the whole fill in the file's own words. */
 static void test_filltask(void)
 {
     char dir[] = "/tmp/mcme_gui_fill_XXXXXX";
@@ -1135,22 +1137,56 @@ static void test_filltask(void)
        writing (the battery's own rule, kept). */
     cp_rf("tests/golden/worlds/bedrock", dir);
 
-    /* a Java world: refused at the door, the boundary in its own
-       words — the GUI's writer opens on the Bedrock store only */
+    /* a Java world (G17): the CLI's own fill road behind the same
+       button — a chunk the region file does not have refuses the
+       whole fill in the file's own words, and the write at a cell
+       the world has lands and reads back the same way Bedrock's
+       does. The golden is copied whole: the fixture is never
+       opened for writing (the battery's rule, kept). */
     if (mcme_fs_exists("tests/golden/worlds/java")) {
+        char jdir[] = "/tmp/mcme_gui_jfill_XXXXXX";
+
+        CHECK(mkdtemp(jdir) != NULL);
+        cp_rf("tests/golden/worlds/java", jdir);
+
+        /* (40, 5, 5) is a chunk the region file does not hold:
+           refused with nothing written anywhere */
         g_fill_done_calls = 0;
         g_fill_done_ok = true;
-        CHECK(mcme_filltask_start(wire, "tests/golden/worlds/java",
-                                  0, 5, 5, 5, "minecraft:stone",
-                                  on_fill_done, NULL));
+        CHECK(mcme_filltask_start(wire, jdir, 0, 40, 5, 5,
+                                  "minecraft:stone", on_fill_done,
+                                  NULL));
         while (g_fill_done_calls == 0)
             g_main_context_iteration(NULL, TRUE);
         CHECK(g_fill_done_calls == 1);
         CHECK(!g_fill_done_ok);
-        CHECK(strcmp(g_fill_done_text,
-                     "the fill writes Bedrock stores — this world "
-                     "is Java") == 0);
+        CHECK(strstr(g_fill_done_text, "is not stored") != NULL);
         mcme_clear_error();
+
+        /* the write itself: the cell lands in the chunk the world
+           has — and the store's own read says the block's name
+           back (the proof is the re-read, the GUI label's rule
+           whole) */
+        g_fill_done_calls = 0;
+        g_fill_done_ok = false;
+        CHECK(mcme_filltask_start(wire, jdir, 0, 5, 5, 5,
+                                  "minecraft:stone", on_fill_done,
+                                  NULL));
+        while (g_fill_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_fill_done_calls == 1);
+        CHECK(g_fill_done_ok);
+        CHECK(mcme_world_probe(&info, jdir));
+        CHECK(info.kind == MCME_WORLD_JAVA);
+        mcme_buffer_init(&spec);
+        CHECK(mcme_world_block_spec(&info, 0, 5, 5, 5, &spec)
+              == MCME_WORLDBLOCK_OK);
+        CHECK(spec.len == strlen("minecraft:stone"));
+        CHECK(spec.data != NULL &&
+              memcmp(spec.data, "minecraft:stone", spec.len) == 0);
+        mcme_buffer_free(&spec);
+        mcme_world_info_free(&info);
+        rm_rf(jdir);
     }
 
     /* a block spec the verbs' parser refuses — past the probe, so
@@ -1166,7 +1202,8 @@ static void test_filltask(void)
     CHECK(!g_fill_done_ok);
     CHECK(g_fill_done_text[0] != '\0');
     CHECK(strcmp(g_fill_done_text,
-                 "that directory is not a Bedrock world") != 0);
+                 "that directory is not a world mcme can "
+                 "write") != 0);
     mcme_clear_error();
 
     /* a sub-chunk this world deleted: refused at the write door,

@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>     /* time(NULL): the fill pass's chunk timestamps */
 
 #include "mcme/java_chunk.h"
 #include "mcme/region.h"   /* the fill's read and write: the region file
@@ -978,4 +979,111 @@ bool mcme_java_fill(const char *file,
 {
     return fill_chunks(file, cx1, cx2, cz1, cz2, box, name, states,
                        ts, true, changed, refusal);
+}
+
+/*
+ * One pass over the region files the box's chunks land in: apply
+ * false runs mcme_java_fill_check on every file and writes
+ * nothing, true edits and writes every changed chunk. Moved whole
+ * from the CLI's `chunk fill` (G17); the verb keeps only its
+ * boundary — the messages here carry no verb's prefix, the file's
+ * own words standing.
+ *
+ * The per-file chunk span is the box's chunks crossed with the
+ * region's 32x32. A refusal stops the pass where it stands; the
+ * caller decides whether a pass refusing means anything was
+ * written (the fill pass alone promises no cross-file
+ * transaction — mcme_java_fill's own note).
+ */
+static bool java_fill_world_pass(const McmeWorldInfo *info,
+                                 const char *dim_dir,
+                                 const McmeBox *box,
+                                 const char *name, const McmeTag *states,
+                                 bool apply, McmeWriteRefusal *refusal)
+{
+    /* The box's chunks: floors of the corners — `>>` floors in C,
+       which is what a negative coordinate needs. */
+    int x1 = box->x1 < box->x2 ? box->x1 : box->x2;
+    int x2 = box->x1 < box->x2 ? box->x2 : box->x1;
+    int z1 = box->z1 < box->z2 ? box->z1 : box->z2;
+    int z2 = box->z1 < box->z2 ? box->z2 : box->z1;
+    int cx1 = x1 >> 4, cx2 = x2 >> 4;
+    int cz1 = z1 >> 4, cz2 = z2 >> 4;
+    int rx1 = cx1 >> 5, rx2 = cx2 >> 5;
+    int rz1 = cz1 >> 5, rz2 = cz2 >> 5;
+
+    for (int rz = rz1; rz <= rz2; ++rz) {
+        for (int rx = rx1; rx <= rx2; ++rx) {
+            char file[MCME_REGION_PATH_MAX];
+            if (mcme_region_path(file, sizeof file, info->path, dim_dir,
+                                 rx, rz) == NULL) {
+                mcme_set_error("fill: the path to r.%d.%d is too long",
+                               rx, rz);
+                set_refusal(refusal, MCME_WRITE_REFUSAL_INTERNAL);
+                return false;
+            }
+            int fx1 = cx1 > rx * 32 ? cx1 : rx * 32;
+            int fx2 = cx2 < rx * 32 + 31 ? cx2 : rx * 32 + 31;
+            int fz1 = cz1 > rz * 32 ? cz1 : rz * 32;
+            int fz2 = cz2 < rz * 32 + 31 ? cz2 : rz * 32 + 31;
+            if (fx1 > fx2 || fz1 > fz2) continue;
+
+            if (apply) {
+                bool changed = false;
+                if (!mcme_java_fill(file, fx1, fx2, fz1, fz2, box, name,
+                                    states, (uint32_t)time(NULL),
+                                    &changed, refusal)) {
+                    return false;
+                }
+            } else {
+                if (!mcme_java_fill_check(file, fx1, fx2, fz1, fz2, box,
+                                          name, states, refusal)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+/* The two public halves share one shape: the world's dimension
+   layout first (a dimension no Java layout has refuses before any
+   file is opened), then the pass. */
+static bool fill_world_gate(const McmeWorldInfo *info,
+                            int32_t dimension, const McmeBox *box,
+                            const char *name, const McmeTag *states,
+                            bool apply, McmeWriteRefusal *refusal)
+{
+    const char *dim_dir = NULL;
+
+    set_refusal(refusal, MCME_WRITE_REFUSAL_NONE);
+    if (info == NULL || box == NULL || name == NULL) {
+        mcme_set_error("fill: null argument");
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+    if (!mcme_java_dimension_dir(dimension, &dim_dir)) {
+        set_refusal(refusal, MCME_WRITE_REFUSAL_USAGE);
+        return false;
+    }
+    return java_fill_world_pass(info, dim_dir, box, name, states,
+                                apply, refusal);
+}
+
+bool mcme_java_fill_check_world(const McmeWorldInfo *info,
+                                int32_t dimension, const McmeBox *box,
+                                const char *name, const McmeTag *states,
+                                McmeWriteRefusal *refusal)
+{
+    return fill_world_gate(info, dimension, box, name, states, false,
+                           refusal);
+}
+
+bool mcme_java_fill_world(const McmeWorldInfo *info,
+                          int32_t dimension, const McmeBox *box,
+                          const char *name, const McmeTag *states,
+                          McmeWriteRefusal *refusal)
+{
+    return fill_world_gate(info, dimension, box, name, states, true,
+                           refusal);
 }
