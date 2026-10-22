@@ -7,6 +7,74 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-22 — The light on the faces: the builder's fold in the window
+
+### Built
+
+- G12 + D59: the window stops drawing white — the builder's tint
+  fold (D36) reaches the picture. The wave and the brightness
+  table leave atlas.c as the one answer both surfaces read:
+  `mcme_tint_band(world_y)` (the triangular wave, 0.9 trough to
+  1.1 peak every 64 blocks, the negative walk numpy's remainder
+  takes) and `mcme_tint_brightness(cull_dir)` (the step of 0.15 —
+  down three, east/west two, north/south one, up and the
+  cullless none whole), and `mcme_mesh_shade_tints(mesh, base_y)`
+  folds a mesh's own tints in place: every present bucket's
+  vertices through brightness × band at the vertex's world
+  height, the row fold's expression in its order, so the window's
+  doubles and the battery's rows are the same numbers. The atlas
+  row fold now calls the exported pair — bit-identical output,
+  the battery 107/107 adjudicating the change.
+- gui/chunktask: one fold per answer on its way to the wire —
+  the block ask at the block's own y (its mesh the model's,
+  heights local), the section ask at the sub-chunk's floor (the
+  ask's y down to its own sixteen) over the merged mesh, whose
+  vertices stand at cell + local: integers plus dyadic model
+  heights, so base + (cell + local) and the table's
+  (cell world y) + local round the same double and one fold
+  reads every cell's own height. The picker's meshes stay raw:
+  no world stands behind a model, and the reference's model
+  verbs fold nothing either.
+- The parity chain, closed three deep: the battery pins the
+  CLI's table rows to the reference; the resource selftest pins
+  the exported wave (ten anchors — 0.9/1.0/1.1 at the turns,
+  -1 reading 0.90625, -32 reading 1.1), the brightness table,
+  and the mesh fold over cull6 at four bases against the wave
+  pins' own literals, plus the tinted multiply (tintface's
+  (0.5, 0.25, 0.125) under the wave's 0.90625 — the fold
+  multiplies, never overwrites); the GUI selftest pins the
+  staged tints per vertex — all 98304 of the slab section's and
+  the block ask's 24 — against the same pair at the ask's own
+  height. The CLI's corner cell answers the expected products
+  exactly: down {0.55}, north {0.85, 0.8553125}, west
+  {0.70, 0.704375}.
+- GUI selftest +2 = 1432; smokes re-confirmed (all-air section
+  0/24576, slab section 24576/24576, stone shell 1536/24576
+  with cells=1352 = the CLI's "1352 cells answered", the block
+  ask 0/6, x11 drew=1).
+
+### Notes
+
+- `./mcme selftest resource` had never run in a recorded gate,
+  and its first run for G12 surfaced 8 failures born at G10: the
+  cull section over the missing-block cube expected a none
+  bucket the six-cullface cube cannot carry and two survivors
+  where the six independent answers leave four. Adjudicated
+  identical at a HEAD worktree build; the test's numbers were
+  corrected to the contract every other pin holds (the section's
+  own comment already told it) — the code never moved. The
+  resource suite joins the standing gate order.
+- The smoke environment had to be rebuilt: the G11 /tmp
+  artifacts were gone (glstub's empty vendor stubs, the golden
+  copies, the slab pack — both its blockstate and its model, or
+  the mesh comes back empty). The stone-fill smoke needs the
+  slab pack: through the plain fixture pack the air around the
+  shell resolves opaque and every outward face culls — observed
+  again, 0/24576.
+- The world-ask smoke needs `--smoke`; without it the window
+  opens and waits (observed as a timeout hang, /proc showing the
+  main loop polling — nothing broken).
+
 ## 2026-10-21 — The whole section: the sub-chunk in the window
 
 ### Built

@@ -67,6 +67,19 @@ static int g_failed;
         }                                                               \
     } while (0)
 
+#define CHECK_MSG(cond, ...)                                            \
+    do {                                                                \
+        g_checks++;                                                     \
+        if (!(cond)) {                                                  \
+            g_failed++;                                                 \
+            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__,     \
+                    #cond);                                             \
+            fprintf(stderr, "    ");                                    \
+            fprintf(stderr, __VA_ARGS__);                               \
+            fprintf(stderr, "\n");                                      \
+        }                                                               \
+    } while (0)
+
 typedef struct {
     unsigned out[1200];
     unsigned n;
@@ -629,6 +642,13 @@ static size_t g_chunk_done_faces;
 static size_t g_chunk_done_faces_total;
 static size_t g_chunk_done_cells;
 static bool g_chunk_done_atlas;
+/* the tint fold's wiring pin (G12): when armed, every staged
+   vertex answers the direction's brightness and the band at the
+   ask's own height — the pack's raw tints are white, so anything
+   else is the fold misreading where it stands */
+static bool g_chunk_check_tints;
+static double g_chunk_tint_base;
+static size_t g_chunk_done_tint_bad;
 
 /* Loop thread, via the wire's visit — the shape on_mesh_result has,
    with the world's own words riding both answers. */
@@ -644,6 +664,7 @@ static void on_chunk_done(void *userdata, McmeChunkResult *result)
     g_chunk_done_faces_total = 0;
     g_chunk_done_cells = 0;
     g_chunk_done_atlas = false;
+    g_chunk_done_tint_bad = 0;
     if (result->ok) {
         snprintf(g_chunk_done_spec, sizeof g_chunk_done_spec, "%s",
                  result->spec != NULL ? result->spec : "");
@@ -656,6 +677,22 @@ static void on_chunk_done(void *userdata, McmeChunkResult *result)
                     g_chunk_done_verts +=
                         result->mesh->mesh.buckets[d].vert_count;
             g_chunk_done_atlas = result->mesh->has_atlas;
+            if (g_chunk_check_tints && result->mesh->ok) {
+                const McmeMesh *sm = &result->mesh->mesh;
+                for (int d = 0; d <= MCME_CULL_NONE; ++d) {
+                    if (!sm->present[d]) continue;
+                    const McmeMeshBucket *b = &sm->buckets[d];
+                    double bright = mcme_tint_brightness(d);
+                    for (size_t v = 0; v < b->vert_count; ++v) {
+                        double want = bright
+                            * mcme_tint_band(g_chunk_tint_base
+                                             + b->verts[v * 3 + 1]);
+                        for (int c = 0; c < 3; ++c)
+                            if (b->tint_verts[v * 3 + c] != want)
+                                g_chunk_done_tint_bad++;
+                    }
+                }
+            }
         }
     } else {
         snprintf(g_chunk_done_text, sizeof g_chunk_done_text, "%s",
@@ -824,6 +861,12 @@ static void test_chunktask(void)
             "\"south\":{\"texture\":\"#a\",\"cullface\":\"south\"},"
             "\"west\":{\"texture\":\"#a\",\"cullface\":\"west\"}}}]}\n");
 
+        /* the fold's wiring over the block ask (G12): the pack's
+           tints are white, so every staged vertex answers the
+           direction's brightness and the band at the block's own
+           height — 5, under the model's local 0 and 1 */
+        g_chunk_check_tints = true;
+        g_chunk_tint_base = 5.0;
         g_chunk_done_calls = 0;
         g_chunk_done_ok = false;
         CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
@@ -839,11 +882,21 @@ static void test_chunktask(void)
         CHECK(g_chunk_done_cells == 1);
         CHECK(g_chunk_done_verts == 24);
         CHECK(g_chunk_done_atlas);
+        CHECK_MSG(g_chunk_done_tint_bad == 0,
+                  "block ask: %zu vertices folded wrong",
+                  g_chunk_done_tint_bad);
+        g_chunk_check_tints = false;
 
         /* The WHOLE SUB-CHUNK over the same slab pack (G11): every
            cell is the pack's partial air, so nothing culls and the
            4096 cells all stand — the section ask's drawn extreme,
-           merged to one mesh at the sub-chunk's own origin. */
+           merged to one mesh at the sub-chunk's own origin.
+           Its own wiring pin (G12): the fold reads the
+           sub-chunk's floor — y 5 stands in section y 0 — under
+           every merged vertex at cell + local, all 98304 of
+           them through the direction's brightness and the band. */
+        g_chunk_check_tints = true;
+        g_chunk_tint_base = 0.0;
         g_chunk_done_calls = 0;
         g_chunk_done_ok = false;
         CHECK(mcme_chunktask_start(wire, "tests/golden/worlds/java",
@@ -859,6 +912,10 @@ static void test_chunktask(void)
         CHECK(g_chunk_done_cells == 4096);
         CHECK(g_chunk_done_verts == 4096u * 24u);
         CHECK(g_chunk_done_atlas);
+        CHECK_MSG(g_chunk_done_tint_bad == 0,
+                  "section ask: %zu vertices folded wrong",
+                  g_chunk_done_tint_bad);
+        g_chunk_check_tints = false;
 
         /* The pack's air back to its opaque cube: the section's
            other extreme — every cell buried in opaque neighbours,

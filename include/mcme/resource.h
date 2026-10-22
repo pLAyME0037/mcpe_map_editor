@@ -645,6 +645,33 @@ bool mcme_mesh_cull_dirs(McmeMesh *mesh,
                          const McmeTransparency beside[MCME_CULL_NONE]);
 
 /*
+ * The builder's tint fold, its two answers exported (G12): the
+ * band shade at a vertex's world height (D36's triangular wave —
+ * 0.9 at the trough, 1.1 at the peak, every 64 blocks, the
+ * negative walk numpy's remainder takes) and the cull direction's
+ * brightness (D36's step of 0.15 — down three, east/west two,
+ * north/south one, up and the cullless none whole). The one table
+ * mcme_atlas_mesh_dirs' rows and the window's own tints both read.
+ * `cull_dir` takes a McmeCullDir.
+ */
+double mcme_tint_band(double world_y);
+double mcme_tint_brightness(int cull_dir);
+
+/*
+ * The builder's tint fold over a mesh's own tints (G12): every
+ * present bucket's vertices through the direction's brightness
+ * and the band at the vertex's world height — `base_y` under the
+ * mesh's own coordinates, so a block ask passes the block's own y
+ * and a sub-chunk ask the sub-chunk's floor, its merged vertices
+ * standing at cell + local. The expression the table's row fold
+ * takes, in its order: the same doubles the battery pins the
+ * reference's rows against. Tints only — positions, uvs, faces,
+ * the texture list and the transparency stand. Rewritten in
+ * place; false only on a null argument.
+ */
+bool mcme_mesh_shade_tints(McmeMesh *mesh, double base_y);
+
+/*
  * One spec text as the verbs have always parsed it (G9, moved from
  * the CLI whole): the block's name, then optional {SNBT states} —
  * the dialect `chunk get` prints and `chunk set` accepts. `states`

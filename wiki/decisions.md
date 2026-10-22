@@ -3987,3 +3987,64 @@ follows the reference and the core keeps the road), or the GUI
 adopts D36's per-cell band shading (then the tint path grows
 beside the translate — the CLI already shades its rows through
 the atlas tints).
+
+## D59 — The window's colours: the builder's fold, once
+
+**Chosen.** The tint fold becomes core's one answer and the
+chunk worker applies it: `mcme_tint_band` (atlas.c's triangular
+wave) and `mcme_tint_brightness` (its brightness table) are
+exported, and `mcme_mesh_shade_tints(mesh, base_y)` folds a
+mesh's own tints in place — every present bucket's vertices
+through brightness(dir) × band(base_y + the vertex's height),
+the row fold's expression in its order. The atlas's row fold
+calls the same pair, so both surfaces multiply the same doubles.
+The worker folds once per answer on its way to the wire: the
+block ask passes the block's own y (its mesh the model's, heights
+local), the section ask passes the sub-chunk's floor after the
+merge (its vertices at cell + local — integers plus dyadic model
+heights, so the sum associates to exactly the table's
+(cell world y) + local and one fold reads every cell's height).
+The picker path stays raw.
+
+**Why.** The window was the one surface drawing the model's raw
+tints white; the reference folds every row twice before it
+prints (D36) and the battery has pinned those numbers for
+drops. One definition of the builder's colour means the picture
+and the rows differ only where one of them is wrong. The fold
+rides the WORKER, not the stage: the wire carries data-as-data
+(D50's seam), and the selftest's headless result sees the
+folded tints the window draws. Folding the section once after
+the merge rather than per cell before it is the same arithmetic
+(above) over one pass instead of 4096.
+
+**Rejected.** Folding in the viewport's staging (the seam G10
+sealed — the stage draws what the wire carries, and a
+stage-side fold would shade the picker too); a second
+band/brightness copy in the GUI (the builder's rules live
+once — every duplicated constant is a future divergence the
+battery cannot see); folding each cell before the translate
+(4096 folds, the same answers — the merge-after-translate keeps
+the heights sum-associable); shading the picker's meshes (no
+world stands behind a model — the reference's model verbs fold
+nothing, so raw IS the reference answer there); world-offset
+heights in the fold (the section renders at the origin, and
+band(base + local + cell) is exactly the table's height already).
+
+**How verified.** Resource selftest: the wave's ten anchors
+(0.9/1.0/1.1 at the turns, the negative walk -1 → 0.90625 and
+-32 → 1.1, -64 → 0.9 where fmod answers -0), the brightness
+table, the mesh fold over cull6 at four bases against the wave
+pins' literals with a hand-dropped bucket keeping its raw tints
+and geometry standing, the tinted multiply through
+mcme_mesh_build_tinted's (0.5, 0.25, 0.125). GUI selftest: every
+staged vertex of both slab asks against the pair at the ask's
+own height (block base 5, section base 0). Battery 107/107 with
+the CLI's rows bit-identical; the corner cell's table answers
+the fold's products exactly (down 0.55, north 0.85/0.8553125,
+west 0.7/0.704375).
+
+**Reverses if:** the reference's float32 rounding ever enters
+the comparison (then the doubles must pass through the same
+storage before they claim equality, and this drop's exact-
+product pins die with it), or the picker gains a world context
+(then its meshes fold at that height like the chunk path).

@@ -431,10 +431,17 @@ bool mcme_atlas_bounds(const McmeAtlas *atlas, const char *name,
 /* The builder's per-direction brightness (chunk_builder_cy.pyx: a
    step of 0.15 per side — down three steps, the east/west pair
    two, the north/south pair one, up and the cullless none bucket
-   none) — indexed by McmeCullDir, DOWN first. */
+   none) — indexed by McmeCullDir, DOWN first. Exported as
+   mcme_tint_brightness (G12): the one table the table's rows and
+   the window's own tints read. */
 static const double k_brightness[7] = {
     0.55, 1.0, 0.85, 0.70, 0.85, 0.70, 1.0
 };
+
+double mcme_tint_brightness(int cull_dir)
+{
+    return k_brightness[cull_dir];
+}
 
 /* The band shade at a vertex's world height: the builder's
    triangular wave — (y / 32) % 2, folded back over 1 where it
@@ -443,13 +450,37 @@ static const double k_brightness[7] = {
    The reference reads the wave with numpy's modulo, whose
    remainder carries the DIVISOR's sign; C's fmod keeps the
    dividend's, so the period is added back for a vertex below zero
-   (D36). */
-static double band_shade(double y)
+   (D36). Exported (G12): the one wave both surfaces read. */
+double mcme_tint_band(double y)
 {
     double t = fmod(y / 32.0, 2.0);
     if (t < 0.0) t += 2.0;
     if (t > 1.0) t = 2.0 - t;
     return 0.9 + 0.2 * t;
+}
+
+/* The fold over a mesh's own tints (G12): every present bucket's
+   vertices through the direction's brightness and the band at the
+   vertex's world height — the expression the row fold below
+   takes, in its order, so the window's picture and the battery's
+   rows carry the same doubles. base_y stands under the mesh's
+   own coordinates; tints only. */
+bool mcme_mesh_shade_tints(McmeMesh *mesh, double base_y)
+{
+    if (mesh == NULL) return false;
+    for (int i = 0; i <= MCME_CULL_NONE; ++i) {
+        if (!mesh->present[i]) continue;
+        McmeMeshBucket *b = &mesh->buckets[i];
+        double bright = k_brightness[i];
+        for (size_t v = 0; v < b->vert_count; ++v) {
+            double shade = mcme_tint_band(
+                base_y + b->verts[v * 3 + 1]);
+            double *tint = &b->tint_verts[v * 3];
+            for (int c = 0; c < 3; ++c)
+                tint[c] = tint[c] * bright * shade;
+        }
+    }
+    return true;
 }
 
 /* The two cull clauses per SIDE (D37's rule, D38's per-face
@@ -537,13 +568,16 @@ bool mcme_atlas_mesh_dirs(const McmeAtlas *atlas, const McmeMesh *mesh,
                    brightness, then the band shade at the vertex's
                    world height, the block's y under it (D36). The
                    reference rounds each fold through its float32
-                   storage; mcme's doubles hold the exact product. */
-                double shade = band_shade(
+                   storage; mcme's doubles hold the exact product.
+                   The exported pair answers here and over the
+                   window's own tints (G12) — one table both
+                   surfaces read. */
+                double shade = mcme_tint_band(
                     (double)block_y + b->verts[vert * 3 + 1]);
                 double *tint = &m->tints[row * 3];
                 for (int c = 0; c < 3; ++c)
                     tint[c] = b->tint_verts[vert * 3 + c] *
-                        k_brightness[i] * shade;
+                        mcme_tint_brightness(i) * shade;
             }
         }
     }

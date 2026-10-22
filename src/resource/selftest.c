@@ -1966,6 +1966,118 @@ static void test_blockmeshes(void)
         mcme_mesh_free(&m);
     }
 
+    /* --- the fold's own primitives (G12): the wave's anchors at
+       every turn — the trough, both ramps, the peak, and below
+       zero where numpy's remainder walks and C's fmod would
+       answer negative — and the builder's brightness table, now
+       the one answer the table's rows and the window's tints
+       both read --- */
+    {
+        static const struct { double y, want; } k_band[] = {
+            {    0.0, 0.9     }, {   16.0, 1.0     },
+            {   32.0, 1.1     }, {   48.0, 1.0     },
+            {   64.0, 0.9     }, {  -16.0, 1.0     },
+            {  -32.0, 1.1     }, {   -1.0, 0.90625 },
+            {  -64.0, 0.9     }, {  -96.0, 1.1     },
+        };
+        for (size_t i = 0; i < sizeof k_band / sizeof *k_band; ++i)
+            CHECK_MSG(mcme_tint_band(k_band[i].y) == k_band[i].want,
+                      "tint band at %g: %g, want %g", k_band[i].y,
+                      mcme_tint_band(k_band[i].y), k_band[i].want);
+        static const double k_bright[7] = {
+            0.55, 1.0, 0.85, 0.70, 0.85, 0.70, 1.0
+        };
+        for (int d = 0; d <= MCME_CULL_NONE; ++d)
+            CHECK_MSG(mcme_tint_brightness(d) == k_bright[d],
+                      "tint brightness %d: %g, want %g", d,
+                      mcme_tint_brightness(d), k_bright[d]);
+    }
+
+    /* --- the fold over a mesh's own tints (G12): cull6's tints
+       are white and its faces sit at model heights 0 and 1, so
+       every answer is the wave pins' own literals through the
+       brightness table — the direction first, the band at the
+       vertex's world height after, the row fold's order. The
+       dropped bucket keeps its raw tints; positions, uvs and
+       indices stand --- */
+    {
+        static const double k_bright[7] = {
+            0.55, 1.0, 0.85, 0.70, 0.85, 0.70, 1.0
+        };
+        /* the wave at a base's two vertex heights, anchored in
+           the table pins above ({0, DOWN, 0.495}, {32, UP,
+           1.09375}, {-32, DOWN, 0.605}, {-1, DOWN, 0.4984375}) */
+        static const struct { double base, band0, band1; } k_fold[] = {
+            {   0.0, 0.9,     0.90625 },
+            {  32.0, 1.1,     1.09375 },
+            { -32.0, 1.1,     1.09375 },
+            {  -1.0, 0.90625, 0.9     },
+        };
+        for (size_t i = 0; i < sizeof k_fold / sizeof *k_fold; ++i) {
+            McmeMesh m;
+            CHECK(build_mesh(models, tex, "mc", "block/cull6", &m));
+            const McmeMeshBucket *west =
+                &m.buckets[MCME_CULL_WEST];
+            double west_tint0 = west->tint_verts[0];
+            const McmeMeshBucket *up = &m.buckets[MCME_CULL_UP];
+            double v1 = up->verts[1];
+            double uv0 = up->tverts[0];
+            uint32_t f0 = up->faces[0];
+            /* dropped by hand: the fold touches present buckets */
+            m.present[MCME_CULL_WEST] = false;
+            CHECK(mcme_mesh_shade_tints(&m, k_fold[i].base));
+            for (int d = MCME_CULL_DOWN; d <= MCME_CULL_WEST; ++d) {
+                if (!m.present[d]) continue;
+                const McmeMeshBucket *b = &m.buckets[d];
+                CHECK(b->vert_count > 0);
+                for (size_t v = 0; v < b->vert_count; ++v) {
+                    double want = k_bright[d]
+                        * (b->verts[v * 3 + 1] == 0.0
+                               ? k_fold[i].band0 : k_fold[i].band1);
+                    CHECK_MSG(b->tint_verts[v * 3 + 0] == want
+                              && b->tint_verts[v * 3 + 1] == want
+                              && b->tint_verts[v * 3 + 2] == want,
+                              "shade tints base %g bucket %d vert %zu: "
+                              "%g %g %g, want %g", k_fold[i].base, d, v,
+                              b->tint_verts[v * 3 + 0],
+                              b->tint_verts[v * 3 + 1],
+                              b->tint_verts[v * 3 + 2], want);
+                }
+            }
+            CHECK(west->tint_verts[0] == west_tint0);
+            CHECK(up->verts[1] == v1 && up->tverts[0] == uv0
+                  && up->faces[0] == f0);
+            mcme_mesh_free(&m);
+        }
+        /* the fold MULTIPLIES the mesh's own tints: tintface's up
+           face carries (0.5, 0.25, 0.125) and its own height 1,
+           so at base 0 the answers are the raw tint under the
+           wave's 0.90625 — the brightness whole for up — and not
+           the shade alone */
+        {
+            static const double tint[3] = { 0.5, 0.25, 0.125 };
+            McmeMesh m;
+            CHECK_MSG(mcme_mesh_build_tinted(models, tex, "mc",
+                                             "block/tintface", tint,
+                                             &m),
+                      "tinted fold build: %s", mcme_last_error());
+            CHECK(mcme_mesh_shade_tints(&m, 0.0));
+            const McmeMeshBucket *up = &m.buckets[MCME_CULL_UP];
+            CHECK(up->vert_count > 0);
+            for (size_t v = 0; v < up->vert_count; ++v)
+                CHECK_MSG(up->tint_verts[v * 3 + 0] == tint[0] * 0.90625
+                          && up->tint_verts[v * 3 + 1]
+                                 == tint[1] * 0.90625
+                          && up->tint_verts[v * 3 + 2]
+                                 == tint[2] * 0.90625,
+                          "tinted fold vert %zu: %g %g %g", v,
+                          up->tint_verts[v * 3 + 0],
+                          up->tint_verts[v * 3 + 1],
+                          up->tint_verts[v * 3 + 2]);
+            mcme_mesh_free(&m);
+        }
+    }
+
     /* --- null arguments --- */
     {
         McmeMesh m;
@@ -1985,6 +2097,7 @@ static void test_blockmeshes(void)
         CHECK(!mcme_mesh_merge(NULL, 1, &m));
         CHECK(!mcme_mesh_merge((const McmeMesh *const[]){ &m }, 1, NULL));
         CHECK(!mcme_mesh_translate(NULL, 1.0, 0.0, 0.0));
+        CHECK(!mcme_mesh_shade_tints(NULL, 0.0));
     }
 
     mcme_blockstate_index_close(states);
@@ -2859,8 +2972,14 @@ static void test_cull(void)
 
     /* The mesh-level cull over the missing block's own cube — six
        one-face buckets, opaque — with a mixed beside: the six
-       sides six answers (D38's independence), the none bucket
-       standing. */
+       sides six answers (D38's independence). The none bucket
+       never stands in this mesh: the cube carries a cullface on
+       every face, so no face ever lands in it (G12's correction —
+       the section came in at G10 and never ran in a gate; its
+       numbers expected a none bucket the cube cannot have and
+       two survivors where the six independent answers leave
+       four; the code's answer is the one every other pin here
+       holds). */
     {
         McmeMesh m;
         McmeTransparency beside[MCME_CULL_NONE] = {
@@ -2877,7 +2996,8 @@ static void test_cull(void)
 
         CHECK(mcme_mesh_missing_block(&m));
         CHECK(m.transparency == MCME_TRANSPARENCY_OPAQUE);
-        for (i = 0; i < 7; ++i) CHECK(m.present[i]);
+        for (i = 0; i < MCME_CULL_NONE; ++i) CHECK(m.present[i]);
+        CHECK(!m.present[MCME_CULL_NONE]);
         CHECK(mcme_mesh_cull_dirs(&m, beside));
         for (i = 0; i < MCME_CULL_NONE; ++i) {
             bool dropped = (i == 0 || i == 3);
@@ -2887,21 +3007,21 @@ static void test_cull(void)
                 CHECK(m.buckets[i].vert_count == 0 &&
                       m.buckets[i].face_count == 0);
         }
-        CHECK(m.present[MCME_CULL_NONE]);
+        CHECK(!m.present[MCME_CULL_NONE]);
         for (i = 0; i < 7; ++i)
             if (m.present[i]) {
                 faces += m.buckets[i].face_count;
                 verts += m.buckets[i].vert_count;
             }
-        CHECK(faces == 2);
-        CHECK(verts == 8);
+        CHECK(faces == 4);
+        CHECK(verts == 16);
         CHECK(m.transparency == MCME_TRANSPARENCY_OPAQUE);
         /* The drop is stable: the second run keeps the answer. */
         CHECK(mcme_mesh_cull_dirs(&m, beside));
         faces = 0;
         for (i = 0; i < 7; ++i)
             if (m.present[i]) faces += m.buckets[i].face_count;
-        CHECK(faces == 2);
+        CHECK(faces == 4);
         mcme_mesh_free(&m);
     }
 
@@ -2921,7 +3041,7 @@ static void test_cull(void)
             beside[i] = MCME_TRANSPARENCY_TRANSLUCENT;
         CHECK(mcme_mesh_cull_dirs(&m, beside));
         for (i = 0; i < MCME_CULL_NONE; ++i) CHECK(!m.present[i]);
-        CHECK(m.present[MCME_CULL_NONE]);
+        CHECK(!m.present[MCME_CULL_NONE]);
         mcme_mesh_free(&m);
 
         CHECK(mcme_mesh_missing_block(&m));
@@ -2929,7 +3049,8 @@ static void test_cull(void)
         for (i = 0; i < MCME_CULL_NONE; ++i)
             beside[i] = MCME_TRANSPARENCY_PARTIAL;
         CHECK(mcme_mesh_cull_dirs(&m, beside));
-        for (i = 0; i < 7; ++i) CHECK(m.present[i]);
+        for (i = 0; i < MCME_CULL_NONE; ++i) CHECK(m.present[i]);
+        CHECK(!m.present[MCME_CULL_NONE]);
         mcme_mesh_free(&m);
 
         CHECK(mcme_mesh_missing_block(&m));
@@ -2938,7 +3059,7 @@ static void test_cull(void)
             beside[i] = MCME_TRANSPARENCY_OPAQUE;
         CHECK(mcme_mesh_cull_dirs(&m, beside));
         for (i = 0; i < MCME_CULL_NONE; ++i) CHECK(!m.present[i]);
-        CHECK(m.present[MCME_CULL_NONE]);
+        CHECK(!m.present[MCME_CULL_NONE]);
         mcme_mesh_free(&m);
     }
 

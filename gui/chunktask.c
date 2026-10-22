@@ -327,6 +327,20 @@ static void *chunk_work(void *work_ud)
             g_free(parts[p]);
         }
         part_count = 0;
+        /* The builder's tint fold at the sub-chunk's height (G12):
+           the table's own light over the window — every present
+           bucket's vertices through the direction's brightness
+           and the band at the vertex's world height, the
+           sub-chunk's floor (the ask's y down to its own sixteen)
+           under the cell each merged vertex stands in: the table's
+           per-cell fold answered whole, cell + local exactly the
+           cell's world height the row fold reads. */
+        if (!mcme_mesh_shade_tints(&r->mesh->mesh,
+                                   (double)((w->y >> 4) * 16))) {
+            r->text = g_strdup("out of memory");
+            g_clear_pointer(&r->mesh, mcme_meshresult_free);
+            goto out;
+        }
         r->mesh->ok = true;
         r->ok = true;
         mcme_meshtask_pack_atlas(r->mesh, textures);
@@ -467,6 +481,14 @@ static void *chunk_work(void *work_ud)
         r->faces = mesh_faces(&r->mesh->mesh);
         /* one cell was asked, and it stands if any face does */
         r->cells = r->faces > 0 ? 1 : 0;
+    }
+
+    /* The same fold at the block's own height (G12): its mesh is
+       the model's own — the vertex heights local, the ask's y the
+       world height under them, the table's row fold read whole. */
+    if (!mcme_mesh_shade_tints(&r->mesh->mesh, (double)w->y)) {
+        r->text = g_strdup("out of memory");
+        goto out;
     }
 
     /* The mesh half's own ok — set_mesh gates its stage on it (the
