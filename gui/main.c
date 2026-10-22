@@ -73,17 +73,24 @@
  *                road), and the smoke's settle line answers its
  *                center pixel's pick as pick=x,y,z or
  *                pick=none.
+ *   --block ns:block
+ *                mesh this pack's block instead of a model (G16): the
+ *                picker's other row without the bar — the blockstate
+ *                index's own walk (mcme_mesh_for_block, D33) — and
+ *                the settle line names the door as
+ *                ask=block|model|none beside mesh=. One question
+ *                with the model positional: give one.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
  *                pack's argument to `mcme blockmesh`'s builder half)
  *
  * Smoke exit codes: 0 — the pack opened and (if asked) the model
- * meshed and a frame carried it, or the world answered with faces
- * to show; 1 — a refusal, or the mesh never reached a frame (a
- * world answer whose cull kept zero faces settles without one —
- * the world said nothing stands there); 2 — GL trouble (context,
- * shader, upload, draw).
+ * or block meshed and a frame carried it, or the world answered
+ * with faces to show; 1 — a refusal, or the mesh never reached a
+ * frame (a world answer whose cull kept zero faces settles
+ * without one — the world said nothing stands there); 2 — GL
+ * trouble (context, shader, upload, draw).
  */
 
 #include <math.h>
@@ -108,6 +115,8 @@ static gboolean g_smoke;
 static const char *g_pack_arg;    /* argv's directory, borrowed       */
 static const char *g_open_dir;    /* --open: the dialog without it    */
 static const char *g_fill_arg;    /* --fill: the block spec, borrowed */
+static const char *g_block_arg;   /* --block: the block row, borrowed
+                                     (G16) */
 static char *g_pack_dir;          /* the session's directory, owned   */
 static char *g_mesh_ns;           /* the model split at ':', owned    */
 static char *g_mesh_path;
@@ -229,14 +238,17 @@ static void maybe_smoke_quit(void)
             snprintf(picks, sizeof picks, "none");
         fprintf(stderr,
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
-                "world=%s spec=%s faces=%zu/%zu cells=%zu drew=%d "
-                "tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f pick=%s "
-                "fill=%s\n",
+                "ask=%s world=%s spec=%s faces=%zu/%zu cells=%zu "
+                "drew=%d tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f "
+                "pick=%s fill=%s\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
                 g_mesh_ns == NULL ? "not-asked"
                                   : (g_mesh_ok ? "ok" : "refused"),
+                g_mesh_ns == NULL ? "none"
+                                  : (g_mesh_by_block ? "block"
+                                                     : "model"),
                 g_world_dir == NULL ? "not-asked"
                                     : (g_chunk_ok ? "ok" : "refused"),
                 g_chunk_ok && g_spec_seen != NULL ? g_spec_seen : "-",
@@ -951,6 +963,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     GtkWidget *open = gtk_button_new_with_label("Open…");
     GtkWidget *world = gtk_button_new_with_label("World…");
     GtkWidget *wrow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *prow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *go = gtk_button_new_with_label("Go");
     GtkWidget *fill = gtk_button_new_with_label("Fill");
     char init[32];
@@ -1038,7 +1051,12 @@ static void on_activate(GtkApplication *app, gpointer user)
         gtk_label_set_attributes(GTK_LABEL(g_pack_label), attrs);
         pango_attr_list_unref(attrs);
     }
-    gtk_box_append(GTK_BOX(box), g_picker);
+    /* G16: the twin takes its seat — both rows of the pack's
+       answer side by side, the block row wired the whole time
+       (G7), now reachable. */
+    gtk_box_append(GTK_BOX(prow), g_picker);
+    gtk_box_append(GTK_BOX(prow), g_block_picker);
+    gtk_box_append(GTK_BOX(box), prow);
     gtk_box_append(GTK_BOX(box), wrow);
     gtk_box_append(GTK_BOX(box), g_viewport);
     gtk_box_append(GTK_BOX(box), g_mesh_label);
@@ -1151,11 +1169,20 @@ int main(int argc, char **argv)
                 return 1;
             }
             g_fill_arg = argv[++i];
+        } else if (strcmp(argv[i], "--block") == 0) {
+            /* G16: the picker's other row without the bar — the
+               block the chain meshes through the blockstate
+               index (mcme_mesh_for_block, D33). */
+            if (i + 1 >= argc) {
+                fprintf(stderr, "mcgui: --block wants ns:block\n");
+                return 1;
+            }
+            g_block_arg = argv[++i];
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
                             "[--open dir] [--world dir --at x y z "
                             "[--dimension n] [--section] "
-                            "[--fill block]] "
+                            "[--fill block]] [--block ns:block] "
                             "[pack-dir [ns:model]]\n");
             return 1;
         } else if (npos < 2) {
@@ -1212,7 +1239,21 @@ int main(int argc, char **argv)
                         "it\n");
         return 1;
     }
-    if (model != NULL) {
+    if (model != NULL && g_block_arg != NULL) {
+        fprintf(stderr, "mcgui: the model positional and --block are "
+                        "one question — give one\n");
+        return 1;
+    }
+    if (g_block_arg != NULL) {
+        /* G16: the other row's split — a block is ns:name, walked
+           through the blockstate index instead of the model
+           path. */
+        if (!split_model(g_block_arg, &g_mesh_ns, &g_mesh_path)) {
+            fprintf(stderr, "mcgui: --block is ns:block\n");
+            return 1;
+        }
+        g_mesh_by_block = true;
+    } else if (model != NULL) {
         const char *colon = strchr(model, ':');
         size_t ns_len;
 

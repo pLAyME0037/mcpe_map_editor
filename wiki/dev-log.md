@@ -7,6 +7,58 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-22 — The block's own row: the picker's twin takes its seat
+
+### Built
+
+- G16 + D63: both rows of the pack's answer stand in the window.
+  `g_block_picker` — G7's twin, wired whole the whole time
+  (`notify::selected` → `picked_mesh` → the blockstate index's
+  walk, filled and mirrored with the models) — was never
+  appended to the layout; it now sits beside the model dropdown
+  in one picker row. The chain needed nothing new: a row pick
+  bumps the mesh generation, stale meshes fall like stale packs,
+  and the pack answer mirrors into whichever row asked
+  (`g_mesh_by_block`).
+- The flags grow `--block ns:block` — the row without the bar,
+  D60's shape: the same colon split the model positional uses,
+  refused beside it as one question ("the model positional and
+  --block are one question — give one", rc=1), a colonless
+  argument refused in its own words ("--block is ns:block").
+  The settle line grows `ask=model|block|none` beside `mesh=`:
+  mesh= says whether an ask landed, ask= says which door asked —
+  the door is the road (the blockstate index vs the model
+  path).
+- Gates: no new selftest pins — the roads were pinned where
+  they were built (test_meshtask walks `mcme_meshtask_start_block`
+  and its shapes; the rows' colon rule is split_model's). The
+  smokes press the new door: `--block minecraft:air` on p12
+  **`mesh=ok ask=block … drew=1 tex=1`** rc=0; an UNKNOWN block
+  (`minecraft:nosuchblock`, `mc:air`) answers the missing
+  block's own mesh — the header's words, "the missing block
+  standing for the unknown" — `mesh=ok ask=block drew=1` rc=0
+  (adjudicated: the block road has no unknown refusal, it
+  answers the cube); the model positional **`mesh=ok ask=model`**
+  rc=0; pack-only `mesh=not-asked ask=none` rc=0; colonless and
+  both-given refusals rc=1. Every standing smoke re-confirmed
+  at its wiki numbers with `ask=none` the only new field
+  (all-air 0/24576, block 0/6, slab 24576/24576 pick=0,80,1,
+  stone 1536/24576 pick=1,80,1, three refusals rc=1, the fill
+  smoke `fill=ok`, x11 drew=1 pick=0,80,1). Battery 107/107; no
+  core file moved.
+
+### Notes
+
+- The layout itself stays x11 eyeball territory, as every widget
+  since G1: the smoke adjudicates the chain (ask=, drew), not
+  the pixels. The twin was never lost — G7 wired it whole; only
+  its seat was missing.
+- A stale sibling directory `/mnt/disk2/mythings/mcme_map_edit`
+  (note the swapped letters) stands beside the repo and caught
+  a typo'd `cd` this session; untouched, remembered.
+- Carried from G13–G15: none — the block picker's append was
+  the last carried item.
+
 ## 2026-10-22 — The first write: Fill rides the lane
 
 ### Built

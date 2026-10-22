@@ -4254,3 +4254,58 @@ prune — then the lane's one-store-user rule wants a queue with
 fairness rather than fill priority), or the write doors stop
 taking an exclusive LOCK (then two flights may share a store
 and the lane can split).
+
+## D63 — The block's door is a row, and the settle says which door
+
+**Chosen.** The pack's answer has two rows and the window shows
+both: `g_block_picker` — created, signal-wired, filled and
+mirrored since G7 — joins the model dropdown in one picker row.
+The chain underneath needed no new road: a row pick walks
+`picked_mesh` either way (the block row through
+`mcme_meshtask_start_block`, the blockstate index's own walk —
+D33's missing block standing for the unknown), the generation
+bump retires stale meshes, and the pack answer mirrors into
+whichever row asked. The flags grow `--block ns:block` — the
+row without the bar, split by the colon rule the model
+positional already uses, refused beside it as one question. The
+settle line grows `ask=model|block|none`: `mesh=` says whether
+an ask landed, `ask=` says which door asked.
+
+**Why.** The twin was half a window: wired but invisible —
+appending it costs one box, and the picker's rows were always
+"ns:name" beside "ns:path" (G7's shape), so nothing needed
+re-designing, only seating. The flag because every other door
+grew one (G5's model positional, G13's world flags, G15's
+fill): the smoke must be able to press the same road a hand
+would — and `ask=` because a settle line that cannot say which
+door asked cannot gate a swap of the chain behind it.
+
+**Rejected.** A second picker row stacked below (two
+full-width dropdowns reading as one list); letting `--block`
+silently override the model positional (a typo'd line answering
+a question nobody asked — the refusal keeps the two doors one
+question); a verbose flag name (the row says ns:name, the flag
+says the same); pinning new selftest checks for glue that only
+widgets execute (the roads — split_model, the block meshtask,
+its missing-block answer — were pinned where they were built; a
+check that cannot run headlessly is not a check).
+
+**How verified.** GUI selftest 1549 unchanged, no new pins by
+the above. Smokes press the door: `--block minecraft:air` on
+p12 `mesh=ok ask=block drew=1 tex=1` rc=0; the unknown block
+answering the missing cube `mesh=ok ask=block` rc=0 (the road's
+designed answer, now pinned by the smoke as much as the
+header's words); the model positional `mesh=ok ask=model`;
+pack-only `mesh=not-asked ask=none`; the colonless and
+both-given refusals rc=1; every standing smoke at its wiki
+numbers with `ask=none` beside the unchanged fields, the fill
+smoke included (`fill=ok`), x11 drawn. Battery 107/107, no core
+file moved, tests/ clean; viewport.c never staged — the
+invariant's staged zero and worktree one unchanged.
+
+**Reverses if:** the pack index ever grows a third row kind
+(then the dropdowns want a list-of-lists, not twins), or the
+picker's rows stop sharing the colon shape (then --block needs
+its own split and the mutual exclusion loses its single rule),
+or the settle line outgrows ad-hoc fields (then the settle
+wants a structured dump behind it, flags and all).
