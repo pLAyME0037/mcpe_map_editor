@@ -64,8 +64,10 @@
 
 #include "mcme/core.h"
 #include "mcme/resource.h"
+#include "mcme/world.h"
 #include "camera.h"
 #include "chunktask.h"
+#include "filltask.h"
 #include "meshtask.h"
 #include "packtask.h"
 #include "pick.h"
@@ -1000,6 +1002,232 @@ static void test_chunktask(void)
     rmdir(dir);
 }
 
+/* the fill worker's answers through the wire (G15) */
+static int g_fill_done_calls;
+static bool g_fill_done_ok;
+static char g_fill_done_text[512];
+
+static void on_fill_done(void *userdata, McmeFillResult *result)
+{
+    (void)userdata;
+    g_fill_done_calls++;
+    g_fill_done_ok = result->ok;
+    snprintf(g_fill_done_text, sizeof g_fill_done_text, "%s",
+             result->text ? result->text : "");
+    mcme_fillresult_free(result);
+}
+
+/* A temp world's store, gone — GDir's own walk (glib is here); a
+   plain file falls to unlink. */
+static void rm_rf(const char *path)
+{
+    GDir *d = g_dir_open(path, 0, NULL);
+
+    if (d != NULL) {
+        const char *name;
+
+        while ((name = g_dir_read_name(d)) != NULL) {
+            char sub[512];
+
+            snprintf(sub, sizeof sub, "%s/%s", path, name);
+            rm_rf(sub);
+        }
+        g_dir_close(d);
+        rmdir(path);
+    } else {
+        unlink(path);
+    }
+}
+
+/* A file tree, copied whole — GDir's walk both ways (glib is
+   here); the bytes through g_file_get/set_contents, so a store's
+   binary files ride as they stand. */
+static void cp_rf(const char *src, const char *dst)
+{
+    GDir *d = g_dir_open(src, 0, NULL);
+
+    if (d == NULL) return;
+    for (const char *name; (name = g_dir_read_name(d)) != NULL; ) {
+        char from[512], to[512];
+        GDir *sub;
+
+        snprintf(from, sizeof from, "%s/%s", src, name);
+        snprintf(to, sizeof to, "%s/%s", dst, name);
+        sub = g_dir_open(from, 0, NULL);
+        if (sub != NULL) {
+            g_dir_close(sub);
+            g_mkdir_with_parents(to, 0755);
+            cp_rf(from, to);
+        } else {
+            gchar *data = NULL;
+            gsize len = 0;
+
+            if (g_file_get_contents(from, &data, &len, NULL)) {
+                g_file_set_contents(to, data, len, NULL);
+                g_free(data);
+            }
+        }
+    }
+    g_dir_close(d);
+}
+
+/* The lane's first writer (G15): one cell into a Bedrock store,
+   through the wire — the probe's own words when the directory is
+   not a world, the door's sentence for Java, the verbs' parser's
+   refusal for a spec it will not take, the key's own range, and
+   the write itself read back through the CLI's own spec road
+   (mcme_world_block_spec): the store's answer, not the writer's
+   claim. */
+static void test_filltask(void)
+{
+    char dir[] = "/tmp/mcme_gui_fill_XXXXXX";
+    McmeWire *wire;
+    McmeWorldInfo info;
+    McmeBuffer spec;
+    bool bedrock = mcme_fs_exists("tests/golden/worlds/bedrock");
+
+    printf("  filltask (one cell into a store, read back through "
+           "the wire)\n");
+
+    CHECK(mkdtemp(dir) != NULL);
+
+    wire = mcme_wire_new();
+
+    /* a directory that is not a world: refused in the store's own
+       words, and the LOCK never runs — no store stands in its
+       place afterwards */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = true;
+    CHECK(mcme_filltask_start(wire, "/tmp/mcme_gui_no_world_dir",
+                              0, 0, 80, 0, "minecraft:stone",
+                              on_fill_done, NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(!g_fill_done_ok);
+    CHECK(g_fill_done_text[0] != '\0');
+    CHECK(!mcme_fs_exists("/tmp/mcme_gui_no_world_dir/db"));
+    mcme_clear_error();
+
+    /* the guards: nothing starts, nothing posts */
+    CHECK(!mcme_filltask_start(NULL, dir, 0, 0, 80, 0,
+                               "minecraft:stone", on_fill_done,
+                               NULL));
+    CHECK(!mcme_filltask_start(wire, NULL, 0, 0, 80, 0,
+                               "minecraft:stone", on_fill_done,
+                               NULL));
+    CHECK(!mcme_filltask_start(wire, dir, 0, 0, 80, 0, NULL,
+                               on_fill_done, NULL));
+    CHECK(!mcme_filltask_start(wire, dir, 0, 0, 80, 0,
+                               "minecraft:stone", NULL, NULL));
+    mcme_fillresult_free(NULL);
+    CHECK(g_fill_done_calls == 1); /* still: no stray posts */
+
+    if (!bedrock) {
+        printf("  SKIP golden world probes (tests/golden absent)\n");
+        mcme_wire_free(wire);
+        rm_rf(dir);
+        return;
+    }
+
+    /* The store comes from the golden, copied whole — the writes
+       land on the copy; the fixture itself is never opened for
+       writing (the battery's own rule, kept). */
+    cp_rf("tests/golden/worlds/bedrock", dir);
+
+    /* a Java world: refused at the door, the boundary in its own
+       words — the GUI's writer opens on the Bedrock store only */
+    if (mcme_fs_exists("tests/golden/worlds/java")) {
+        g_fill_done_calls = 0;
+        g_fill_done_ok = true;
+        CHECK(mcme_filltask_start(wire, "tests/golden/worlds/java",
+                                  0, 5, 5, 5, "minecraft:stone",
+                                  on_fill_done, NULL));
+        while (g_fill_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_fill_done_calls == 1);
+        CHECK(!g_fill_done_ok);
+        CHECK(strcmp(g_fill_done_text,
+                     "the fill writes Bedrock stores — this world "
+                     "is Java") == 0);
+        mcme_clear_error();
+    }
+
+    /* a block spec the verbs' parser refuses — past the probe, so
+       the parser's own words and not the directory's; nothing is
+       written */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = true;
+    CHECK(mcme_filltask_start(wire, dir, 0, 0, 80, 0, "",
+                              on_fill_done, NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(!g_fill_done_ok);
+    CHECK(g_fill_done_text[0] != '\0');
+    CHECK(strcmp(g_fill_done_text,
+                 "that directory is not a Bedrock world") != 0);
+    mcme_clear_error();
+
+    /* a sub-chunk this world deleted: refused at the write door,
+       the door's own words — the golden's origin column carries
+       the deletion markers, so (0, 80, 0) stands for every
+       region a prune left behind */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = true;
+    CHECK(mcme_filltask_start(wire, dir, 0, 0, 80, 0,
+                              "minecraft:stone", on_fill_done, NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(!g_fill_done_ok);
+    CHECK(strstr(g_fill_done_text,
+                 "is deleted in this world") != NULL);
+    mcme_clear_error();
+
+    /* the write itself: the cell lands in the store — and the
+       store's own read says the block's name back (the proof is
+       the re-read, the GUI label's rule whole). The coordinate is
+       a column the fixture has never stored: the subchunk comes
+       into being the reference's way and is then edited. */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = false;
+    CHECK(mcme_filltask_start(wire, dir, 0, 5000, 20, 5000,
+                              "minecraft:stone", on_fill_done, NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(g_fill_done_ok);
+    CHECK(mcme_world_probe(&info, dir));
+    CHECK(info.kind == MCME_WORLD_BEDROCK);
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 5000, 20, 5000, &spec)
+          == MCME_WORLDBLOCK_OK);
+    CHECK(spec.len == strlen("minecraft:stone"));
+    CHECK(spec.data != NULL &&
+          memcmp(spec.data, "minecraft:stone", spec.len) == 0);
+    mcme_buffer_free(&spec);
+    mcme_world_info_free(&info);
+
+    /* coordinates the key cannot name: refused before the store
+       is ever opened */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = true;
+    CHECK(mcme_filltask_start(wire, dir, 0, 1L << 40, 80, 0,
+                              "minecraft:stone", on_fill_done, NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(!g_fill_done_ok);
+    CHECK(strcmp(g_fill_done_text,
+                 "the fill's coordinates are outside the range a "
+                 "key can name") == 0);
+    mcme_clear_error();
+
+    mcme_wire_free(wire);
+    rm_rf(dir);
+}
+
 static double *darray(size_t n)
 {
     double *p = calloc(n, sizeof *p);
@@ -1635,6 +1863,7 @@ int mcme_gui_selftest(void)
     test_packtask();
     test_meshtask();
     test_chunktask();
+    test_filltask();
     test_stage();
     test_camera();
     test_worldbar();

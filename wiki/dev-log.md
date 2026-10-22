@@ -7,6 +7,92 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-22 — The first write: Fill rides the lane
+
+### Built
+
+- G15 + D62: the picked cell can be changed. The bar grows a
+  block entry and a Fill button beside Go; `--fill <block>`
+  stands with the flags in D60's shape (the answer lands in the
+  entry; `--fill wants --world` refuses rc=1) — and the settle
+  line ends `fill=ok|refused|none` beside `pick=`. The writer
+  itself is `gui/filltask.c`, chunktask's mirror: a worker that
+  guards int32 (the range a key can name), probes the world —
+  Java refused at the door ("the fill writes Bedrock stores —
+  this world is Java"), a directory that isn't a Bedrock store
+  likewise — parses the spec through core's
+  `mcme_block_parse_spec` (the same grammar the CLI's wrapper
+  hands), and through `mcme_bedrock_block_entry` calls
+  `mcme_bedrock_set_block`, whose doors LOCK the store, create
+  an absent sub-chunk, and refuse a deleted one — every refusal
+  in core's own words, standing in the label whole.
+- The fill rides G13's one lane — one store user ever:
+  `g_chunk_flight` now gates both asks and fills, a Fill pressed
+  mid-flight lands in `g_fill_pending` (draining before
+  `g_chunk_pending` when the flight clears), and the startup
+  chain queues the fill after open_pack's generation bump (so
+  --fill's post carries the standing generation). On ok the
+  lane immediately re-asks the cell, so the label shows the
+  world's NEW answer — the write's claim is never the evidence;
+  a refused fill stands on its own words and asks nothing,
+  because nothing changed.
+- Gates: GUI selftest **+36 = 1549** — the filltask section:
+  guards first (NULL wire, NULL dir, NULL block, NULL done —
+  nothing starts, no stray posts), a non-world refused without
+  a `db/` ever appearing (the LOCK never ran), then
+  golden-gated on a mkdtemp COPY of the golden Bedrock world
+  (cp_rf — the fixture itself never opened for writing): Java
+  refused in its pinned words, the empty spec refused past the
+  probe (not the directory's words), a deleted sub-chunk
+  refused at the write door ("…is deleted in this world"), the
+  write itself at a column the fixture has never stored — the
+  sub-chunk comes into being the reference's way — read back
+  through `mcme_world_block_spec` as exactly
+  `minecraft:stone` (the proof is the re-read), coordinates
+  past a key's range refused before any store opens, rm_rf at
+  teardown. Every smoke re-confirmed at its wiki numbers
+  (all-air 0/24576 cells 0, slab 24576/24576 cells 4096
+  pick=0,80,1, stone 1536/24576 cells 1352 pick=1,80,1, block
+  0/6, three refusals rc=1, x11 drew=1 pick=0,80,1) with
+  `fill=none` the only new field on them, plus one new gate —
+  the fill smoke on a fresh air-world copy:
+  `spec=minecraft:stone faces=6/6 cells=1 drew=1 pick=none
+  fill=ok`, `mcme chunk get` at the cell answering
+  minecraft:stone. Battery 107/107; no core file moved
+  (filltask builds off rebuild_gui.sh's glob).
+
+### Notes
+
+- The fill smoke's `pick=none` beside a staged 6-face cube:
+  adjudicated, not a miss — the eye sits at (0.5, 0.5, dist)
+  (camera.c's translate) and the center ray descends through
+  the column z∈[1,2), exactly why the section smokes pick z=1,
+  while the single block's cube stands at z∈[0,1]. The ray
+  skims past it; the honest none stands ("no face answers that
+  point").
+- /tmp was wiped mid-session: the fixtures were rebuilt and
+  re-adjudicated against the wiki. The recipe the numbers need:
+  g12w's air fill must seal the MARGIN (`chunk fill -1 64 -1 16
+  111 16 minecraft:air` — rows 4–6 over x/z −1..16), because
+  the padded grid reads the store's real neighbouring sub-chunks
+  when they are stored: the golden's terrain under the target
+  culled the slab's bottom layer (24320, down −256) until the
+  margin went in. g12w2's stone fill stays target-only so its
+  shell faces that stored air (1536, six faces of 256). p12 =
+  the fixture pack + `assets/minecraft/blockstates/air.json` →
+  `mc:block/slab` + the slab model shipped beside it
+  ([0,0,0]-[16,8,16], alpha texture — partial on both counts);
+  the missing-block road is a built-in opaque cube either way.
+- x11 startup flakiness, twice in seven runs: the 3s backstop
+  fired with pack_settled=0 (the pack's answer never arrived
+  in the window; the cause not diagnosed — XWayland's connect
+  is the suspect). Every immediate re-run — five straight —
+  answered at the gate, and wayland never wobbled. Recorded so
+  a backstop gets re-run to adjudicate rather than chased as a
+  bug.
+- Carried from G13/G14, still untouched: `g_block_picker`'s
+  append.
+
 ## 2026-10-22 — The point on the picture: a tap, a ray, the cell under the face
 
 ### Built

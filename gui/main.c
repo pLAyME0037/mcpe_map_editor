@@ -95,6 +95,7 @@
 
 #include "camera.h"
 #include "chunktask.h"
+#include "filltask.h"
 #include "meshtask.h"
 #include "packtask.h"
 #include "pick.h"
@@ -106,6 +107,7 @@
 static gboolean g_smoke;
 static const char *g_pack_arg;    /* argv's directory, borrowed       */
 static const char *g_open_dir;    /* --open: the dialog without it    */
+static const char *g_fill_arg;    /* --fill: the block spec, borrowed */
 static char *g_pack_dir;          /* the session's directory, owned   */
 static char *g_mesh_ns;           /* the model split at ':', owned    */
 static char *g_mesh_path;
@@ -133,19 +135,23 @@ static int32_t g_world_dim;        /* --dimension: the number the CLI
                                       parses, the window takes it raw */
 static long g_wx, g_wy, g_wz;      /* --at: where to stand            */
 static bool g_chunk_settled, g_chunk_ok;
+static bool g_fill_seen, g_fill_ok;  /* the writer's answer (G15):
+                                        the settle line's fill=      */
 static char *g_spec_seen;          /* the world's answer, its words   */
 static size_t g_chunk_faces;       /* the cull's kept faces (G10)     */
 static size_t g_chunk_faces_total; /* the mesh's own, before it       */
 static size_t g_chunk_cells;       /* the cells whose faces stand
                                        (G11; the block ask's one)     */
 static bool g_section;             /* --section: the whole sub-chunk  */
-static bool g_chunk_flight;        /* one ask on the road at a time   */
+static bool g_chunk_flight;        /* the lane: one ask or fill up   */
 static bool g_chunk_pending;       /* a Go pressed while one is up    */
+static bool g_fill_pending;        /* a Fill pressed while one is up  */
 static GtkWidget *g_world_label;   /* the world's answer, its words   */
 static GtkWidget *g_wx_entry;      /* the bar's own --at: X, Y, Z     */
 static GtkWidget *g_wy_entry;
 static GtkWidget *g_wz_entry;
 static GtkWidget *g_dim_entry;     /* the bar's own --dimension       */
+static GtkWidget *g_block_entry;   /* the bar's own fill block (G15)  */
 static GtkWidget *g_section_check; /* the bar's own --section         */
 static float *g_pick_verts;        /* the world's mesh staged for the
                                       point's question (G14): the
@@ -224,7 +230,8 @@ static void maybe_smoke_quit(void)
         fprintf(stderr,
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
                 "world=%s spec=%s faces=%zu/%zu cells=%zu drew=%d "
-                "tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f pick=%s\n",
+                "tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f pick=%s "
+                "fill=%s\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -239,7 +246,8 @@ static void maybe_smoke_quit(void)
                 mcme_viewport_drew(g_viewport),
                 mcme_viewport_textured(g_viewport),
                 mcme_viewport_gl_failed(g_viewport),
-                cyaw, cpitch, cdist, picks);
+                cyaw, cpitch, cdist, picks,
+                g_fill_seen ? (g_fill_ok ? "ok" : "refused") : "none");
     }
     g_application_quit(G_APPLICATION(g_app));
 }
@@ -345,6 +353,8 @@ static void picker_mirror(GtkStringList *list, GtkWidget *dd,
  * whole (D52, one counter at the viewport's door) — while the
  * pending ask posts with the generation that stands by then. */
 static void queue_chunk_ask(void);
+static void queue_fill(void);  /* the lane's writer (G15) */
+static void start_fill(void);
 
 static void on_chunk_result(void *userdata, McmeChunkResult *result)
 {
@@ -393,7 +403,10 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
         }
         mcme_chunkresult_free(result);
     }
-    if (g_chunk_pending) {
+    if (g_fill_pending) {
+        g_fill_pending = false;
+        start_fill(); /* the writer's turn: its answer re-asks */
+    } else if (g_chunk_pending) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed answer steps aside for the Go */
     }
@@ -437,6 +450,89 @@ static void queue_chunk_ask(void)
     if (!g_pack_settled || !g_pack_ok || g_pack_dir == NULL)
         return;
     start_chunk_ask();
+}
+
+/* The writer's answer (G15): a landed fill re-asks — the label
+ * shows the world's NEW answer, never the write's claim, so the
+ * proof is the changed answer. A refusal stands on its own words
+ * (nothing changed; the ask would only overwrite them), and the
+ * write's own truth rides the settle line whatever moved
+ * underneath — it is world-state, not pack-state — while the
+ * message keeps the generation discipline (D52). */
+static void on_fill_result(void *userdata, McmeFillResult *result)
+{
+    int gen = GPOINTER_TO_INT(userdata);
+    bool stale = gen != g_mesh_gen;
+    bool ok = result->ok;
+
+    g_tasks--; /* a post is a post: the count follows workers */
+    g_chunk_flight = false;
+    g_fill_seen = true;
+    g_fill_ok = ok;
+    if (!ok && !stale) {
+        g_chunk_settled = true;
+        g_chunk_ok = false;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           result->text ? result->text : "(no memory)");
+    }
+    mcme_fillresult_free(result);
+    if (g_fill_pending) {
+        g_fill_pending = false;
+        start_fill(); /* the latest cell wins the road */
+    } else if (g_chunk_pending || ok) {
+        g_chunk_pending = false;
+        queue_chunk_ask(); /* the landed fill's own proof (G15) */
+    }
+    maybe_smoke_quit();
+}
+
+/* One writer on the lane (G15): the bar's cell and block, the
+ * worker's own copy of them at post (G13's rule). The lane is
+ * busy or the answer comes back settled the same way the ask's
+ * does. */
+static void start_fill(void)
+{
+    g_chunk_settled = false;
+    g_chunk_ok = false;
+    if (mcme_filltask_start(g_wire, g_world_dir, g_world_dim,
+                            g_wx, g_wy, g_wz,
+                            gtk_editable_get_text(
+                                GTK_EDITABLE(g_block_entry)),
+                            on_fill_result,
+                            GINT_TO_POINTER(g_mesh_gen))) {
+        g_tasks++;
+        g_chunk_flight = true;
+    } else {
+        g_chunk_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "fill task: no memory");
+    }
+}
+
+/* The fill's door (G15): the bar's cell and block through the
+ * same lane the ask rides — one store user ever, so a fill
+ * pressed mid-ask waits its turn and a Go pressed mid-fill is not
+ * lost (the landed fill re-asks anyway). No world, nothing to
+ * write: the refusal lands in the world's own label. */
+static void queue_fill(void)
+{
+    if (g_world_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "no world open — nothing to fill");
+        return;
+    }
+    if (g_chunk_flight) {
+        g_fill_pending = true;
+        return;
+    }
+    start_fill();
+}
+
+static void on_fill_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    (void)user_data;
+    queue_fill();
 }
 
 static void on_pack_result(void *userdata, McmePackResult *result)
@@ -856,6 +952,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     GtkWidget *world = gtk_button_new_with_label("World…");
     GtkWidget *wrow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *go = gtk_button_new_with_label("Go");
+    GtkWidget *fill = gtk_button_new_with_label("Fill");
     char init[32];
 
     (void)user;
@@ -876,9 +973,15 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_wy_entry), "y");
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_wz_entry), "z");
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_dim_entry), "dim");
+    g_block_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_block_entry), "block");
     set_bar_coords(g_wx, g_wy, g_wz);
     snprintf(init, sizeof init, "%d", (int)g_world_dim);
     gtk_editable_set_text(GTK_EDITABLE(g_dim_entry), init);
+    /* --fill's answer lands in the widget (G15), the flags' own
+       words shown where the button reads them — one road. */
+    if (g_fill_arg != NULL)
+        gtk_editable_set_text(GTK_EDITABLE(g_block_entry), g_fill_arg);
     g_section_check = gtk_check_button_new_with_label("section");
     gtk_check_button_set_active(GTK_CHECK_BUTTON(g_section_check),
                                 g_section);
@@ -888,6 +991,8 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_box_append(GTK_BOX(wrow), g_dim_entry);
     gtk_box_append(GTK_BOX(wrow), g_section_check);
     gtk_box_append(GTK_BOX(wrow), go);
+    gtk_box_append(GTK_BOX(wrow), g_block_entry);
+    gtk_box_append(GTK_BOX(wrow), fill);
     g_models = gtk_string_list_new(NULL);
     g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
     g_blocks = gtk_string_list_new(NULL);
@@ -918,6 +1023,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     g_signal_connect(open, "clicked", G_CALLBACK(on_open_clicked), win);
     g_signal_connect(world, "clicked", G_CALLBACK(on_world_clicked), win);
     g_signal_connect(go, "clicked", G_CALLBACK(on_go_clicked), win);
+    g_signal_connect(fill, "clicked", G_CALLBACK(on_fill_clicked), win);
     gtk_window_set_titlebar(GTK_WINDOW(win), bar);
     gtk_window_set_default_size(GTK_WINDOW(win), 960, 640);
     gtk_widget_set_halign(g_pack_label, GTK_ALIGN_CENTER);
@@ -949,6 +1055,14 @@ static void on_activate(GtkApplication *app, gpointer user)
         g_pack_settled = true; /* nothing to wait for */
         g_mesh_settled = true;
     }
+
+    /* G15's chain: --fill queues the writer where the flags' chain
+       always stood — after the pack session took its generation (a
+       fill answered under the old one would fall whole), and
+       through the same lane the pack's ask rides: the ask lands as
+       the fill's own proof, the world's new answer. */
+    if (g_fill_arg != NULL)
+        queue_fill();
 
     if (g_smoke) {
         /* G8: the camera takes the hand — the smoke drives the same
@@ -1028,10 +1142,20 @@ int main(int argc, char **argv)
             /* G11: the whole sub-chunk the coordinates stand in,
                not the one block — the same road, one cell wider. */
             g_section = true;
+        } else if (strcmp(argv[i], "--fill") == 0) {
+            /* G15: the bar's Fill without the bar — the block spec
+               the writer rides, shown in the entry the button
+               reads. */
+            if (i + 1 >= argc) {
+                fprintf(stderr, "mcgui: --fill wants a block\n");
+                return 1;
+            }
+            g_fill_arg = argv[++i];
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
                             "[--open dir] [--world dir --at x y z "
-                            "[--dimension n] [--section]] "
+                            "[--dimension n] [--section] "
+                            "[--fill block]] "
                             "[pack-dir [ns:model]]\n");
             return 1;
         } else if (npos < 2) {
@@ -1077,6 +1201,10 @@ int main(int argc, char **argv)
     }
     if (g_section && g_world_dir == NULL) {
         fprintf(stderr, "mcgui: --section belongs to --world\n");
+        return 1;
+    }
+    if (g_fill_arg != NULL && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --fill wants --world\n");
         return 1;
     }
     if (g_world_dir != NULL && g_open_dir == NULL && npos == 0) {

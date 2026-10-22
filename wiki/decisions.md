@@ -4181,3 +4181,76 @@ winding), or a second consumer needs the ray (a light probe, a
 measure tool — then pick.c's ray grows an API instead of each
 caller inverting its own), or the render gains backface culling
 (then visibility and the cell become one question again).
+
+## D62 — The write proves itself by being re-read
+
+**Chosen.** The fill never vouches for itself. New
+`gui/filltask.c` mirrors chunktask's shape: the worker guards
+int32 first (the range a key can name), probes the world —
+Java refused at the door with core's own words ("the fill
+writes Bedrock stores — this world is Java"), a directory that
+isn't a Bedrock store likewise — parses the spec through core's
+`mcme_block_parse_spec` (the grammar the CLI's wrapper already
+hands), and through `mcme_bedrock_block_entry` calls
+`mcme_bedrock_set_block`: exclusive LOCK, an absent sub-chunk
+created, a deleted one refused, every door's text riding to
+the label whole. The fill is a lane passenger — one lane, one
+store user ever: `g_chunk_flight` gates asks and fills alike,
+`g_fill_pending` drains before `g_chunk_pending` when the
+flight clears — and on ok the lane immediately re-asks the
+cell, so the label shows the world's NEW answer through
+`mcme_world_block_spec`. A refused fill stands on its own
+words and asks nothing, because nothing changed.
+
+**Why.** A writer's "ok" is a report; the store's read is
+evidence. The re-ask makes every visible write answer the
+question the window always asked — the block's own name — so
+the label can never out-run the store behind it. One flight
+over a second lane because the pool runs workers side by side
+and two writers to one LevelDB store would race the LOCK the
+write doors take: one flight means one LOCK, ever. Java at
+the door because the GUI's writer is the Bedrock writer
+(`mcme_bedrock_set_block`) — a half-promise behind the same
+button is exactly the debt the CLI's `java_fill` exists to
+name.
+
+**Rejected.** The fill's own result driving the label (the
+write's claim wearing the evidence's clothes); a second lane
+or a fill queue (two store users ever, a LOCK fight for no
+parallelism worth having); auto-asking after a refusal
+(nothing changed — the label would only repeat what the
+refusal already said); a Java writer behind the button (the
+parity debt paid by invention rather than by the CLI's road);
+validating the spec at the entry instead of in the worker (the
+entry is a text field like --at's — the parse belongs where
+the flags' parse always lived, and a keystroke must not open
+a store).
+
+**How verified.** GUI selftest +36 = 1549: guards first (NULL
+wire/dir/block/done — nothing starts, no stray posts), a
+non-world refused with no `db/` appearing (the LOCK never
+ran), then golden-gated on a mkdtemp copy of the golden
+Bedrock world (cp_rf; the fixture never opened for writing):
+Java refused word-for-word, the empty spec refused past the
+probe, a deleted sub-chunk refused at the write door, the
+write at a column the fixture has never stored (the sub-chunk
+created the reference's way) read back through
+`mcme_world_block_spec` as exactly minecraft:stone, a
+coordinate past a key's range refused before any store opens,
+rm_rf at teardown. Smokes at every standing number (all-air
+0/24576, slab 24576/24576 cells 4096 pick=0,80,1, stone
+1536/24576 cells 1352 pick=1,80,1, block 0/6, three refusals
+rc=1, x11 drew=1) each with the new `fill=none`, plus the
+fill smoke: spec=minecraft:stone faces=6/6 cells=1 fill=ok
+and `mcme chunk get` at the cell saying minecraft:stone — the
+re-read. Battery 107/107, no core file moved, tests/ clean;
+viewport.c never staged — the invariant's staged zero and
+worktree one unchanged.
+
+**Reverses if:** the store ever answers the fill synchronously
+and the label can read it in hand (then the re-ask is a
+round-trip too many), or a second writer joins (a Java fill, a
+prune — then the lane's one-store-user rule wants a queue with
+fairness rather than fill priority), or the write doors stop
+taking an exclusive LOCK (then two flights may share a store
+and the lane can split).
