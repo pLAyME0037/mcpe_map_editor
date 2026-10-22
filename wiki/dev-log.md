@@ -7,6 +7,70 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-22 — The world without flags: the bar, the dialog, one lane
+
+### Built
+
+- G13 + D60: the window stops needing the command line. The
+  header grows a World… button — G5's Open… shape, a
+  GtkFileDialog whose answer lands where --world's lands — and
+  the box grows a bar beside the pickers: X, Y, Z and dim
+  entries (the flags' starting values standing in them), a
+  section toggle, Go. Either door presses the same question
+  through gui/worldbar.c: `mcme_worldbar_coord`, the parser the
+  flags already used (the whole token consumed, int32's range,
+  strtol's own leading space — one parse_coord shape for both
+  doors), and `mcme_worldbar_ask`'s own validation — a world
+  directory and three whole coordinates, the dimension a number
+  (empty = the flag's absent = overworld), every refusal a
+  static sentence with no allocation in it.
+- One lane afterwards: `queue_chunk_ask` starts the ask when the
+  pack has landed — the startup chain calls it too, so the
+  flags' road is unchanged — and holds one ask on the road at a
+  time. A Go pressed mid-flight waits for the landed answer
+  instead of racing it (the pool runs workers side by side); a
+  stale-landed answer (a pack switch or a picker pick retiring
+  it, D52) still clears the lane for the pending ask. The
+  world's answer gains a label of its own — "spec — kept/total
+  faces, cells" on the real answer, the refusal's words under
+  it, "the pack refused — no mesh for the world" when the pack
+  fell — moving the world's refusals off the mesh label, which
+  is the picker's. `g_world_dir` becomes the session's copy
+  (g_strdup'd at both doors, freed at teardown): the task
+  copies the path into its work at post time, so a world
+  switched mid-ask frees nothing under a worker.
+- The flags are now the bar's answers without the bar, as
+  --open has been the dialog's: same parser, same lane, same
+  settle line. Every smoke re-confirmed at its G12 numbers —
+  all-air section 0/24576 cells=0, slab section (the all-air
+  world through the slab pack) 24576/24576 cells=4096 drew=1,
+  stone shell 1536/24576 cells=1352, block ask 0/6, the three
+  refusals rc=1, x11 drew=1 — so the flags' gates are the bar's
+  chain adjudicated. GUI selftest +29 = 1461: the parser's
+  bounds and signs ("+7" and " 7" parsing, the trailing junk
+  refusing, both int32 bounds and one past each), the ask at
+  min/max coordinates, the empty and absent dimensions both
+  answering 0, a named dimension refused with the flag's own
+  words, NULL's guards. Battery 107/107 — no core file moved
+  (worldbar is gui's own; `./rebuild_gui.sh` links the standing
+  objects).
+
+### Notes
+
+- Observed during the bar's build, recorded not touched:
+  `g_block_picker` (G7's blockstate twin) is created and wired
+  but never appended to the layout — the `git log -S` walk
+  shows no append ever stood. The twin answers its selftest
+  headlessly; whether the window should show it is its own
+  drop to make or undo.
+- The session's first slab-section smoke used p12 as the WORLD
+  (it is a pack: pack.mcmeta, no store) — `world=refused`,
+  rc=1, exactly right for a directory that is not a world. The
+  smoke's pair is the all-air world through the slab pack.
+- The G12 smoke environment was still standing in /tmp/opencode
+  (glstub's vendor stubs, the golden copies, the slab pack) —
+  no rebuild needed.
+
 ## 2026-10-22 — The light on the faces: the builder's fold in the window
 
 ### Built

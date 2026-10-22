@@ -4048,3 +4048,76 @@ the comparison (then the doubles must pass through the same
 storage before they claim equality, and this drop's exact-
 product pins die with it), or the picker gains a world context
 (then its meshes fold at that height like the chunk path).
+
+## D60 — One ask, two doors: the bar and the flags ride one lane
+
+**Chosen.** G13 gives the world ask its second door without a
+second road. The header's World… button picks a directory
+through GtkFileDialog (G5's Open… shape) and the row of entries
+— X, Y, Z, dim, section, Go — presses the same question; both
+doors land on one lane, `queue_chunk_ask`: the startup chain
+starts the ask when the pack's answer lands (the flags' road,
+unchanged), the bar starts it when the pack has already landed,
+and exactly one ask rides the road at a time — a Go pressed
+mid-flight waits for the landed answer instead of racing it (the
+pool runs workers side by side), and a stale-landed answer (a
+pack switch or a picker pick retiring it, D52) clears the lane
+for the pending ask all the same. The text half is gui/worldbar
+— `mcme_worldbar_coord`, the parser the flags already used (one
+parse_coord shape for both doors: the whole token, int32's
+range, strtol's own leading space) and `mcme_worldbar_ask`'s
+validation of the whole question (a world directory, three
+whole coordinates, the dimension a number — empty = the flag's
+absent = overworld), every refusal a static sentence, nothing
+allocated. The flags are the bar's answers without the bar, as
+--open has been the dialog's. The world's answer gains a label
+of its own — "spec — kept/total faces, cells", or the refusal's
+words — moving the world's refusals off the mesh label, which
+is the picker's, and `g_world_dir` becomes the session's copy
+(g_strdup'd at both doors): the task copies the path into its
+work at post time, so a world switched mid-ask frees nothing
+under a worker.
+
+**Why.** The window answered only what the command line told it
+to ask; the bar is the last flag its user has to know. One lane
+keeps the smoke's world single-ask (no gate moves) while giving
+the human the second press, and the shared parser means the
+selftest's pins cover both doors — the flags keep their own
+structural refusals ("--at wants --world" and its kin are pinned
+messages), adjudicated by smokes that did not move.
+
+**Rejected.** A coordinate dialog inside the World… dialog (two
+dialogs for one question — the entries are visible and editable
+already); inventing a spawn default for the entries (the CLI
+demands --at, the store spells no spawn road the reference
+walks; zeros are honest); routing the flags' structural
+validation through worldbar's ask (their messages are pinned
+refusals; only the text parse is shared, and only that moved);
+a queue of every Go as its own ask (the pool answers out of
+order — two same-generation results would race the display; one
+pending flag is the whole queue); folding the mesh label's world
+refusals away without giving them a new home (a refusal the user
+cannot see is a dropped question).
+
+**How verified.** GUI selftest +29 = 1461: the parser (bounds,
+signs, "+7" and " 7" parsing, trailing junk refusing, NULL's
+guards) and the ask (min/max coordinates, the empty and absent
+dimensions both answering 0, the named dimension refused with
+the flag's own words). The flag chain re-confirmed at its G12
+smoke numbers end to end (all-air 0/24576, slab 24576/24576
+cells 4096, stone shell 1536/24576 cells 1352, block 0/6, three
+refusals rc=1, x11 drew=1) — the flags are the bar's road, so
+unchanged smokes are the lane adjudicated; the bar's widgets
+themselves run only under a display (the selftest initializes
+nothing, as ever), and the x11 smoke draws with the row in the
+box. Battery 107/107, no core file moved. tests/ clean;
+viewport.c and core.h held out — the foreign whitespace hunk
+still unstaged, the staged tree answering zero for the spaced
+'GLuint    program'.
+
+**Reverses if:** the world ask ever starts from somewhere other
+than the pack's answer (then the lane's pack gates become that
+road's gates), or the bar grows questions the flags do not ask
+(asymmetric doors — then the validation wants a shape to share,
+not a list), or the worker pool ever answers in post order (then
+the pending flag can be dropped for a plain queue).

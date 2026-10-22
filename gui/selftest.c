@@ -27,6 +27,13 @@
  *             picture a pack opens to never moved); the drag's
  *             slope and tilt clamps; the zoom's clamps; a finite
  *             frame at every extreme the clamps allow.
+ *   worldbar — G13's bar, headless: the parser the flags and the
+ *             entries share (the whole token consumed, int32's
+ *             range) and the validation of the bar's whole
+ *             question — a world directory and three whole
+ *             coordinates — every refusal a static sentence:
+ *             nothing allocates, so the leak check at the end
+ *             stands over it too.
  *
  * The core queue (src/core/event_queue.c) has no glib in it and its own
  * tests can not see a main context; these checks stand where the two
@@ -53,6 +60,7 @@
 #include "packtask.h"
 #include "viewport.h"
 #include "wire.h"
+#include "worldbar.h"
 
 static int g_checks;
 static int g_failed;
@@ -1259,6 +1267,74 @@ static void test_camera(void)
     }
 }
 
+/* The world bar's text half (G13): the parser the flags and the
+ * entries share — one shape, one range, one refusal rule — and the
+ * bar's whole question validated. The refusals are static
+ * sentences: nothing here allocates, so the recoverable leak check
+ * at the end stands over this test too. */
+static void test_worldbar(void)
+{
+    long v;
+    long x, y, z;
+    int32_t dim;
+    const char *why;
+
+    printf("  worldbar (the parse both doors share, the bar's ask)\n");
+
+    /* The parser: the whole token, inside int32 — strtol's own
+       leading space and sign, nothing else (the CLI's
+       parse_coord shape, G9). */
+    CHECK(mcme_worldbar_coord("0", &v) && v == 0);
+    CHECK(mcme_worldbar_coord("80", &v) && v == 80);
+    CHECK(mcme_worldbar_coord("-5", &v) && v == -5);
+    CHECK(mcme_worldbar_coord("+7", &v) && v == 7);
+    CHECK(mcme_worldbar_coord(" 7", &v) && v == 7);
+    CHECK(mcme_worldbar_coord("2147483647", &v) && v == 2147483647);
+    CHECK(mcme_worldbar_coord("-2147483648", &v) && v == -2147483648L);
+    CHECK(!mcme_worldbar_coord("2147483648", &v));
+    CHECK(!mcme_worldbar_coord("-2147483649", &v));
+    CHECK(!mcme_worldbar_coord("12abc", &v));
+    CHECK(!mcme_worldbar_coord("7 ", &v));
+    CHECK(!mcme_worldbar_coord("1.5", &v));
+    CHECK(!mcme_worldbar_coord("", &v));
+    CHECK(!mcme_worldbar_coord("abc", &v));
+    CHECK(!mcme_worldbar_coord(NULL, &v));
+    CHECK(!mcme_worldbar_coord("80", NULL));
+
+    /* The bar's whole question: a world directory and the three
+       coordinates, the dimension's number beside them. */
+    why = NULL;
+    CHECK(mcme_worldbar_ask("/tmp/w", "1", "2", "3", "0",
+                            &x, &y, &z, &dim, &why));
+    CHECK(x == 1 && y == 2 && z == 3 && dim == 0 && why == NULL);
+    CHECK(mcme_worldbar_ask("/tmp/w", "-30000000", "255", "30000000",
+                            "", &x, &y, &z, &dim, &why) &&
+          x == -30000000 && y == 255 && z == 30000000 && dim == 0);
+    CHECK(mcme_worldbar_ask("/tmp/w", "0", "0", "0", "-1",
+                            &x, &y, &z, &dim, &why) && dim == -1);
+
+    /* The refusals: no world, a malformed coordinate or dimension,
+       and NULL's own guards — every one static, none allocated. */
+    CHECK(!mcme_worldbar_ask(NULL, "0", "0", "0", "0",
+                             &x, &y, &z, &dim, &why) && why != NULL);
+    CHECK(!mcme_worldbar_ask("", "0", "0", "0", "0",
+                             &x, &y, &z, &dim, &why) && why != NULL);
+    CHECK(!mcme_worldbar_ask("/tmp/w", "x", "0", "0", "0",
+                             &x, &y, &z, &dim, &why) && why != NULL);
+    CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0.5", "0", "0",
+                             &x, &y, &z, &dim, &why) && why != NULL);
+    CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "9999999999", "0",
+                             &x, &y, &z, &dim, &why) && why != NULL);
+    CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "the_nether",
+                             &x, &y, &z, &dim, &why) && why != NULL);
+    CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "1.5",
+                             &x, &y, &z, &dim, &why) && why != NULL);
+    CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "0",
+                             NULL, &y, &z, &dim, &why));
+    CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "0",
+                             &x, &y, &z, &dim, NULL));
+}
+
 int mcme_gui_selftest(void)
 {
     test_fifo();
@@ -1270,6 +1346,7 @@ int mcme_gui_selftest(void)
     test_chunktask();
     test_stage();
     test_camera();
+    test_worldbar();
 
     /* The binary's default turns LeakSanitizer off for GTK's caches;
      * the wire's own allocations are asserted here, where nothing has

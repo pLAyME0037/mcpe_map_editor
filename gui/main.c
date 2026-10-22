@@ -53,7 +53,15 @@
  *                line. The dimension is a number here — the CLI
  *                spells the names — and the three flags come as one
  *                question: together or refused. A refusal's own
- *                words land in the mesh label.
+ *                words land in the world's label, beside the
+ *                pack's. Since G13 these flags are the bar's
+ *                answers without the bar, as --open is the
+ *                dialog's: the header's World… button picks the
+ *                directory, the row of entries (X, Y, Z, dim,
+ *                section, Go) presses the same lane the chain
+ *                rides — one ask on the road at a time — and the
+ *                world's answer lands in its own label: "spec —
+ *                kept/total faces, cells" or the refusal's words.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -79,6 +87,7 @@
 #include "selftest.h"
 #include "viewport.h"
 #include "wire.h"
+#include "worldbar.h"
 
 static gboolean g_smoke;
 static const char *g_pack_arg;    /* argv's directory, borrowed       */
@@ -105,7 +114,7 @@ static GtkWidget *g_picker;
 static GtkStringList *g_models;
 static GtkWidget *g_block_picker;
 static GtkStringList *g_blocks;
-static const char *g_world_dir;    /* --world: the world ask (G9)     */
+static char *g_world_dir;          /* --world or World…: owned (G13)  */
 static int32_t g_world_dim;        /* --dimension: the number the CLI
                                       parses, the window takes it raw */
 static long g_wx, g_wy, g_wz;      /* --at: where to stand            */
@@ -116,6 +125,14 @@ static size_t g_chunk_faces_total; /* the mesh's own, before it       */
 static size_t g_chunk_cells;       /* the cells whose faces stand
                                        (G11; the block ask's one)     */
 static bool g_section;             /* --section: the whole sub-chunk  */
+static bool g_chunk_flight;        /* one ask on the road at a time   */
+static bool g_chunk_pending;       /* a Go pressed while one is up    */
+static GtkWidget *g_world_label;   /* the world's answer, its words   */
+static GtkWidget *g_wx_entry;      /* the bar's own --at: X, Y, Z     */
+static GtkWidget *g_wy_entry;
+static GtkWidget *g_wz_entry;
+static GtkWidget *g_dim_entry;     /* the bar's own --dimension       */
+static GtkWidget *g_section_check; /* the bar's own --section         */
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -270,35 +287,53 @@ static void picker_mirror(GtkStringList *list, GtkWidget *dd,
     }
 }
 
-/* The world's own block, asked once per pack session (G9). Its
- * answer is a mesh like any other: it carries the mesh generation —
- * open_pack bumps that counter on every pack switch and every pick
- * bumps it too, so a world answer still on the road when either
- * lands falls whole (D52, one counter at the viewport's door). */
+/* The world's own block, asked once per pack session (G9) — and
+ * since G13 re-askable from the bar, so exactly one ask rides the
+ * road at a time: the answer's landing clears the lane, and a Go
+ * pressed while one was up takes the next lane instead of racing
+ * it (the pool runs workers side by side). Its answer is a mesh
+ * like any other: it carries the mesh generation — open_pack
+ * bumps that counter on every pack switch and every pick bumps it
+ * too, so a world answer still on the road when either lands falls
+ * whole (D52, one counter at the viewport's door) — while the
+ * pending ask posts with the generation that stands by then. */
+static void queue_chunk_ask(void);
+
 static void on_chunk_result(void *userdata, McmeChunkResult *result)
 {
     int gen = GPOINTER_TO_INT(userdata);
 
     g_tasks--; /* a post is a post: the count follows workers */
+    g_chunk_flight = false;
     if (gen != g_mesh_gen) {
-        mcme_chunkresult_free(result);
-        return;
-    }
-    g_chunk_settled = true;
-    g_chunk_ok = result->ok;
-    if (result->ok) {
-        g_free(g_spec_seen);
-        g_spec_seen = g_strdup(result->spec);
-        g_chunk_faces = result->faces;
-        g_chunk_faces_total = result->faces_total;
-        g_chunk_cells = result->cells;
-        mcme_viewport_set_mesh(g_viewport, result->mesh); /* takes it */
-        result->mesh = NULL;
+        mcme_chunkresult_free(result); /* the lane clears anyway */
     } else {
-        gtk_label_set_text(GTK_LABEL(g_mesh_label),
-                           result->text ? result->text : "(no memory)");
+        char txt[256];
+
+        g_chunk_settled = true;
+        g_chunk_ok = result->ok;
+        if (result->ok) {
+            g_free(g_spec_seen);
+            g_spec_seen = g_strdup(result->spec);
+            g_chunk_faces = result->faces;
+            g_chunk_faces_total = result->faces_total;
+            g_chunk_cells = result->cells;
+            mcme_viewport_set_mesh(g_viewport, result->mesh); /* takes it */
+            result->mesh = NULL;
+            snprintf(txt, sizeof txt, "%s — %zu/%zu faces, %zu cells",
+                     g_spec_seen ? g_spec_seen : "?",
+                     g_chunk_faces, g_chunk_faces_total, g_chunk_cells);
+            gtk_label_set_text(GTK_LABEL(g_world_label), txt);
+        } else {
+            gtk_label_set_text(GTK_LABEL(g_world_label),
+                               result->text ? result->text : "(no memory)");
+        }
+        mcme_chunkresult_free(result);
     }
-    mcme_chunkresult_free(result);
+    if (g_chunk_pending) {
+        g_chunk_pending = false;
+        queue_chunk_ask(); /* the landed answer steps aside for the Go */
+    }
     maybe_smoke_quit();
 }
 
@@ -315,11 +350,30 @@ static void start_chunk_ask(void)
                              on_chunk_result,
                              GINT_TO_POINTER(g_mesh_gen))) {
         g_tasks++;
+        g_chunk_flight = true;
     } else {
         g_chunk_settled = true;
-        gtk_label_set_text(GTK_LABEL(g_mesh_label),
+        gtk_label_set_text(GTK_LABEL(g_world_label),
                            "chunk task: no memory");
     }
+}
+
+/* The ask through one lane (G13): the flags' startup chain and the
+ * bar's Go both land here. One ask rides the road at a time — a Go
+ * pressed mid-flight waits for the landed answer instead of racing
+ * it (the pool runs workers side by side) — and a Go before the
+ * pack stands waits too: the pack's answer starts the ask exactly
+ * where the flags' chain always started it. */
+static void queue_chunk_ask(void)
+{
+    if (g_world_dir == NULL) return;
+    if (g_chunk_flight) {
+        g_chunk_pending = true;
+        return;
+    }
+    if (!g_pack_settled || !g_pack_ok || g_pack_dir == NULL)
+        return;
+    start_chunk_ask();
 }
 
 static void on_pack_result(void *userdata, McmePackResult *result)
@@ -354,12 +408,18 @@ static void on_pack_result(void *userdata, McmePackResult *result)
     g_picker_sync = false;
     /* The world's block rides this session's answer too: asked when
        the pack landed (its mesh needs the pack's indices), settled
-       same-shaped as the mesh when no ask stands or the pack
-       refused (G9). */
+       same-shaped as the mesh when no ask stands (G9) — and since
+       G13 through the same lane as the bar, which may already hold
+       one in flight (its answer lands stale and clears the road
+       for the chain's ask). A refused pack answers the world with
+       the same words. */
     if (result->ok && g_world_dir != NULL) {
-        start_chunk_ask();
+        queue_chunk_ask();
     } else {
         g_chunk_settled = true;
+        if (g_world_dir != NULL)
+            gtk_label_set_text(GTK_LABEL(g_world_label),
+                               "the pack refused — no mesh for the world");
     }
     if (result->ok && g_mesh_ns != NULL) {
         /* The mesh's worker starts only now: the core's error slot is
@@ -524,12 +584,103 @@ static void on_open_clicked(GtkButton *btn, gpointer user_data)
                                   on_folder_picked, NULL);
 }
 
+/* The bar's one press (G13): the entries through the shared
+ * validation, then the same lane the flags' chain rides. The
+ * refusal lands in the world's own label and nothing posts; a pack
+ * not yet standing is not a refusal — the chain starts the ask
+ * when the pack's answer lands, with exactly these coordinates. */
+static void world_go(void)
+{
+    long x, y, z;
+    int32_t dim;
+    const char *why = NULL;
+
+    if (!mcme_worldbar_ask(g_world_dir,
+                           gtk_editable_get_text(GTK_EDITABLE(g_wx_entry)),
+                           gtk_editable_get_text(GTK_EDITABLE(g_wy_entry)),
+                           gtk_editable_get_text(GTK_EDITABLE(g_wz_entry)),
+                           gtk_editable_get_text(GTK_EDITABLE(g_dim_entry)),
+                           &x, &y, &z, &dim, &why)) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           why ? why : "the bar has no answer");
+        return;
+    }
+    g_wx = x;
+    g_wy = y;
+    g_wz = z;
+    g_world_dim = dim;
+    g_section = gtk_check_button_get_active(
+        GTK_CHECK_BUTTON(g_section_check));
+    if (g_pack_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "open a pack first — the world's faces need it");
+        return;
+    }
+    if (!g_pack_settled) {
+        gtk_label_set_text(GTK_LABEL(g_world_label), "reading the pack…");
+        return;
+    }
+    if (!g_pack_ok) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "the pack refused — no mesh for the world");
+        return;
+    }
+    gtk_label_set_text(GTK_LABEL(g_world_label), "asking…");
+    queue_chunk_ask();
+}
+
+/* GtkFileDialog's answer for the WORLD (G13), on the loop thread:
+ * the chosen directory lands where --world lands it, and the bar's
+ * own press follows — the entries as they stand, one road. */
+static void on_world_folder_picked(GObject *source, GAsyncResult *res,
+                                   gpointer user_data)
+{
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+    GError *err = NULL;
+    GFile *file = gtk_file_dialog_select_folder_finish(dialog, res, &err);
+
+    (void)user_data;
+    if (file != NULL) {
+        char *path = g_file_get_path(file);
+
+        if (path != NULL) {
+            g_free(g_world_dir);
+            g_world_dir = path; /* the dialog's answer: owned (G13) */
+            world_go();
+        }
+        g_object_unref(file);
+    }
+    g_clear_error(&err);
+    g_object_unref(dialog);
+}
+
+static void on_world_clicked(GtkButton *btn, gpointer user_data)
+{
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+
+    (void)btn;
+    gtk_file_dialog_set_title(dialog, "Open a world directory");
+    gtk_file_dialog_select_folder(dialog, GTK_WINDOW(user_data), NULL,
+                                  on_world_folder_picked, NULL);
+}
+
+static void on_go_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    (void)user_data;
+    world_go();
+}
+
 static void on_activate(GtkApplication *app, gpointer user)
 {
     GtkWidget *win = gtk_application_window_new(app);
     GtkWidget *bar = gtk_header_bar_new();
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     GtkWidget *open = gtk_button_new_with_label("Open…");
+    GtkWidget *world = gtk_button_new_with_label("World…");
+    GtkWidget *wrow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *go = gtk_button_new_with_label("Go");
+    char init[32];
 
     (void)user;
     g_viewport = mcme_viewport_new();
@@ -538,6 +689,34 @@ static void on_activate(GtkApplication *app, gpointer user)
     g_pack_label = gtk_label_new((g_pack_arg || g_open_dir)
                                  ? "reading the pack…"
                                  : "the shell is up — no world open");
+    /* The bar's answer lands here (G13): "spec — kept/total faces,
+       cells" on a real answer, the refusal's own words under it. */
+    g_world_label = gtk_label_new("");
+    g_wx_entry = gtk_entry_new();
+    g_wy_entry = gtk_entry_new();
+    g_wz_entry = gtk_entry_new();
+    g_dim_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_wx_entry), "x");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_wy_entry), "y");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_wz_entry), "z");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_dim_entry), "dim");
+    snprintf(init, sizeof init, "%ld", g_wx);
+    gtk_editable_set_text(GTK_EDITABLE(g_wx_entry), init);
+    snprintf(init, sizeof init, "%ld", g_wy);
+    gtk_editable_set_text(GTK_EDITABLE(g_wy_entry), init);
+    snprintf(init, sizeof init, "%ld", g_wz);
+    gtk_editable_set_text(GTK_EDITABLE(g_wz_entry), init);
+    snprintf(init, sizeof init, "%d", (int)g_world_dim);
+    gtk_editable_set_text(GTK_EDITABLE(g_dim_entry), init);
+    g_section_check = gtk_check_button_new_with_label("section");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(g_section_check),
+                                g_section);
+    gtk_box_append(GTK_BOX(wrow), g_wx_entry);
+    gtk_box_append(GTK_BOX(wrow), g_wy_entry);
+    gtk_box_append(GTK_BOX(wrow), g_wz_entry);
+    gtk_box_append(GTK_BOX(wrow), g_dim_entry);
+    gtk_box_append(GTK_BOX(wrow), g_section_check);
+    gtk_box_append(GTK_BOX(wrow), go);
     g_models = gtk_string_list_new(NULL);
     g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
     g_blocks = gtk_string_list_new(NULL);
@@ -550,11 +729,16 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(bar),
                                     gtk_label_new("mcme"));
     gtk_header_bar_pack_start(GTK_HEADER_BAR(bar), open);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(bar), world);
     g_signal_connect(open, "clicked", G_CALLBACK(on_open_clicked), win);
+    g_signal_connect(world, "clicked", G_CALLBACK(on_world_clicked), win);
+    g_signal_connect(go, "clicked", G_CALLBACK(on_go_clicked), win);
     gtk_window_set_titlebar(GTK_WINDOW(win), bar);
     gtk_window_set_default_size(GTK_WINDOW(win), 960, 640);
     gtk_widget_set_halign(g_pack_label, GTK_ALIGN_CENTER);
     gtk_widget_set_valign(g_pack_label, GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(g_world_label, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(g_world_label, GTK_ALIGN_CENTER);
     {
         /* No gtk_label_set_monospace in this GTK4; the Pango way. */
         PangoAttrList *attrs = pango_attr_list_new();
@@ -564,9 +748,11 @@ static void on_activate(GtkApplication *app, gpointer user)
         pango_attr_list_unref(attrs);
     }
     gtk_box_append(GTK_BOX(box), g_picker);
+    gtk_box_append(GTK_BOX(box), wrow);
     gtk_box_append(GTK_BOX(box), g_viewport);
     gtk_box_append(GTK_BOX(box), g_mesh_label);
     gtk_box_append(GTK_BOX(box), g_pack_label);
+    gtk_box_append(GTK_BOX(box), g_world_label);
     gtk_window_set_child(GTK_WINDOW(win), box);
     gtk_window_present(GTK_WINDOW(win));
 
@@ -595,17 +781,11 @@ static void on_activate(GtkApplication *app, gpointer user)
 }
 
 /* A coordinate as a whole block position — the CLI's parse_coord
-   shape, verbless (G9): the whole token consumed, inside int32's
-   range because the store's own keys are int32. */
+   shape, verbless (G9), and since G13 the bar's parser too: one
+   shape in worldbar.c, selftest-pinned for both doors. */
 static bool parse_long(const char *text, long *out)
 {
-    char *end = NULL;
-    long v = strtol(text, &end, 10);
-
-    if (end == text || *end != '\0') return false;
-    if (v < INT32_MIN || v > INT32_MAX) return false;
-    *out = v;
-    return true;
+    return mcme_worldbar_coord(text, out);
 }
 
 int main(int argc, char **argv)
@@ -633,7 +813,7 @@ int main(int argc, char **argv)
                 fprintf(stderr, "mcgui: --world wants a directory\n");
                 return 1;
             }
-            g_world_dir = argv[++i];
+            g_world_dir = g_strdup(argv[++i]); /* owned (G13) */
         } else if (strcmp(argv[i], "--at") == 0) {
             if (i + 3 >= argc) {
                 fprintf(stderr, "mcgui: --at wants three "
@@ -760,6 +940,7 @@ int main(int argc, char **argv)
     g_object_unref(app);
     mcme_wire_free(g_wire);
     g_free(g_pack_dir);
+    g_free(g_world_dir);
     g_free(g_mesh_ns);
     g_free(g_mesh_path);
     g_free(g_spec_seen);
