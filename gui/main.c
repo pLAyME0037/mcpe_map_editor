@@ -62,6 +62,17 @@
  *                rides — one ask on the road at a time — and the
  *                world's answer lands in its own label: "spec —
  *                kept/total faces, cells" or the refusal's words.
+ *                Since G14 the picture itself answers a point: a
+ *                still tap on the viewport raycasts the frame's
+ *                own matrix (mcme_camera_mvp over the read-back
+ *                orbit, the render's own width/height) onto the
+ *                staged world mesh — the cell under the struck
+ *                face — fills the bar with those world
+ *                coordinates and asks through the lane; a push
+ *                over four pixels stays with the camera (G8's
+ *                road), and the smoke's settle line answers its
+ *                center pixel's pick as pick=x,y,z or
+ *                pick=none.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -75,15 +86,18 @@
  * shader, upload, draw).
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <gtk/gtk.h>
 
+#include "camera.h"
 #include "chunktask.h"
 #include "meshtask.h"
 #include "packtask.h"
+#include "pick.h"
 #include "selftest.h"
 #include "viewport.h"
 #include "wire.h"
@@ -133,6 +147,13 @@ static GtkWidget *g_wy_entry;
 static GtkWidget *g_wz_entry;
 static GtkWidget *g_dim_entry;     /* the bar's own --dimension       */
 static GtkWidget *g_section_check; /* the bar's own --section         */
+static float *g_pick_verts;        /* the world's mesh staged for the
+                                      point's question (G14): the
+                                      frame uploads, the pick reads   */
+static uint32_t *g_pick_idx;
+static size_t g_pick_nverts, g_pick_nidx;
+static bool g_pick_section;        /* which frame the mesh came in   */
+static double g_press_x, g_press_y; /* the tap's own down-point      */
 
 /* GTK's process-lifetime caches (fontconfig, pango) are never freed by
  * design; with the debug build's ASan that is half a megabyte of noise
@@ -143,6 +164,9 @@ const char *__asan_default_options(void)
 {
     return "detect_leaks=0";
 }
+
+/* The tap's road (G14) — the settle line drives it too. */
+static bool pick_world(double px, double py, long out[3]);
 
 /* The smoke settles when the pack's answer landed and — a model was
    asked — the viewport's frame carried it (or GL gave out). Decides
@@ -182,12 +206,25 @@ static void maybe_smoke_quit(void)
     }
     {
         float cyaw = 0, cpitch = 0, cdist = 0;
+        long pick[3];
+        char picks[32];
 
         mcme_viewport_camera(g_viewport, &cyaw, &cpitch, &cdist);
+        /* G14's tap, answered without a hand: the widget's own
+           center pixel down the frame's matrix — the same road a
+           click calls, its cell in world coordinates, or the
+           honest none (nothing staged, nothing under the point). */
+        if (pick_world((double)gtk_widget_get_width(g_viewport) / 2.0,
+                       (double)gtk_widget_get_height(g_viewport) / 2.0,
+                       pick))
+            snprintf(picks, sizeof picks, "%ld,%ld,%ld",
+                     pick[0], pick[1], pick[2]);
+        else
+            snprintf(picks, sizeof picks, "none");
         fprintf(stderr,
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
                 "world=%s spec=%s faces=%zu/%zu cells=%zu drew=%d "
-                "tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f\n",
+                "tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f pick=%s\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -202,7 +239,7 @@ static void maybe_smoke_quit(void)
                 mcme_viewport_drew(g_viewport),
                 mcme_viewport_textured(g_viewport),
                 mcme_viewport_gl_failed(g_viewport),
-                cyaw, cpitch, cdist);
+                cyaw, cpitch, cdist, picks);
     }
     g_application_quit(G_APPLICATION(g_app));
 }
@@ -247,6 +284,16 @@ static void on_mesh_result(void *userdata, McmeMeshResult *result)
     g_mesh_settled = true;
     if (result->ok) {
         gtk_label_set_text(GTK_LABEL(g_mesh_label), g_pack_dir);
+        /* The frame now carries the picker's mesh: no world stands
+           behind it, so nothing to pick — the stage goes with the
+           picture (G14). A refused or stale mesh leaves the world's
+           answer on screen, and its stage with it. */
+        g_free(g_pick_verts);
+        g_free(g_pick_idx);
+        g_pick_verts = NULL;
+        g_pick_idx = NULL;
+        g_pick_nverts = 0;
+        g_pick_nidx = 0;
         mcme_viewport_set_mesh(g_viewport, result); /* takes it */
     } else {
         char buf[1024];
@@ -318,6 +365,22 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
             g_chunk_faces = result->faces;
             g_chunk_faces_total = result->faces_total;
             g_chunk_cells = result->cells;
+            /* G14 keeps its own stage of the world's geometry: the
+               same stream the frame uploads, the page withheld (the
+               pick reads positions alone), staged here while the
+               result still holds the mesh — set_mesh takes the
+               result after. A refusal or a stale answer leaves the
+               stage as the viewport stands (they leave that too). */
+            g_free(g_pick_verts);
+            g_free(g_pick_idx);
+            g_pick_verts = NULL;
+            g_pick_idx = NULL;
+            g_pick_nverts = 0;
+            g_pick_nidx = 0;
+            g_pick_section = g_section;
+            mcme_viewport_stage(&result->mesh->mesh, NULL, NULL,
+                                &g_pick_verts, &g_pick_idx,
+                                &g_pick_nverts, &g_pick_nidx);
             mcme_viewport_set_mesh(g_viewport, result->mesh); /* takes it */
             result->mesh = NULL;
             snprintf(txt, sizeof txt, "%s — %zu/%zu faces, %zu cells",
@@ -671,6 +734,119 @@ static void on_go_clicked(GtkButton *btn, gpointer user_data)
     world_go();
 }
 
+/* The tap's road, both doors (G14): a widget pixel through the
+ * frame's own matrix — the orbit read back and re-made, the very
+ * width/height the render passes to mcme_camera_mvp, viewport.c's
+ * pair — onto the staged world mesh, answered as the cell's WORLD
+ * coordinates: the ask's own origin (the sub-chunk's floor, the
+ * block's corner — G12's tint base, same arithmetic) plus the
+ * local cell under the face. False when no answer stands: no
+ * world mesh staged, not laid out, no camera, or nothing hit. */
+static bool pick_world(double px, double py, long out[3])
+{
+    float mvp[16], orig[3], dir[3];
+    float yaw = 0, pitch = 0, dist = 0;
+    McmeCamera cam;
+    long cell[3];
+    long base_x, base_y, base_z;
+    int w, h;
+
+    if (g_pick_verts == NULL || g_pick_idx == NULL) return false;
+    w = gtk_widget_get_width(g_viewport);
+    h = gtk_widget_get_height(g_viewport);
+    if (w <= 0 || h <= 0) return false;
+    if (!mcme_viewport_camera(g_viewport, &yaw, &pitch, &dist))
+        return false;
+    mcme_camera_default(&cam);
+    cam.yaw = yaw;
+    cam.pitch = pitch;
+    cam.dist = dist; /* last_x/last_y are the drag's bookkeeping
+                        alone (camera.h) — the matrix reads three */
+    mcme_camera_mvp(&cam, (float)w / (float)h, mvp);
+    if (!mcme_pick_ray(mvp, px, py, w, h, orig, dir)) return false;
+    if (!mcme_pick_cell(g_pick_verts, g_pick_nverts, g_pick_idx,
+                        g_pick_nidx, orig, dir,
+                        g_pick_section ? 16 : 1, cell))
+        return false;
+    if (g_pick_section) {
+        base_x = (g_wx >> 4) * 16; /* the floor the ask stands on */
+        base_y = (g_wy >> 4) * 16;
+        base_z = (g_wz >> 4) * 16;
+    } else {
+        base_x = g_wx;
+        base_y = g_wy;
+        base_z = g_wz;
+    }
+    out[0] = base_x + cell[0];
+    out[1] = base_y + cell[1];
+    out[2] = base_z + cell[2];
+    return true;
+}
+
+/* The entries show the coordinates the ask will ride — the flags'
+ * own words at startup (G13), and since G14 whatever point you
+ * touched. */
+static void set_bar_coords(long x, long y, long z)
+{
+    char txt[32];
+
+    snprintf(txt, sizeof txt, "%ld", x);
+    gtk_editable_set_text(GTK_EDITABLE(g_wx_entry), txt);
+    snprintf(txt, sizeof txt, "%ld", y);
+    gtk_editable_set_text(GTK_EDITABLE(g_wy_entry), txt);
+    snprintf(txt, sizeof txt, "%ld", z);
+    gtk_editable_set_text(GTK_EDITABLE(g_wz_entry), txt);
+}
+
+/* The window's answer to a point (G14): the cell's world
+ * coordinates become the bar's own question — the entries show
+ * what you touched and the lane asks it (G13), the label reports
+ * either the way there or what stood under the point. */
+static void pick_at(double px, double py)
+{
+    long cell[3];
+
+    if (g_world_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "no world open — nothing to pick");
+        return;
+    }
+    if (!pick_world(px, py, cell)) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           g_pick_verts == NULL
+                               ? "the picker's mesh — no world behind it"
+                               : "no face answers that point");
+        return;
+    }
+    set_bar_coords(cell[0], cell[1], cell[2]);
+    world_go();
+}
+
+/* The gesture's road (G14): down records where, up asks — and only
+ * when up is still down there: a drag's down belongs to the camera
+ * (G8's road) and must not re-ask the world. Four pixels is the
+ * gap between a point and a push. */
+static void on_pick_pressed(GtkGestureClick *gesture, int n_press,
+                            double x, double y, gpointer user_data)
+{
+    (void)gesture;
+    (void)n_press;
+    (void)user_data;
+    g_press_x = x;
+    g_press_y = y;
+}
+
+static void on_pick_released(GtkGestureClick *gesture, int n_press,
+                             double x, double y, gpointer user_data)
+{
+    (void)gesture;
+    (void)user_data;
+    if (n_press != 1) return; /* the second of a double-tap: one ask */
+    if (fabs(x - g_press_x) > 4.0 || fabs(y - g_press_y) > 4.0)
+        return; /* a drag: the camera took it (G8) */
+    pick_at(g_press_x, g_press_y);
+}
+
 static void on_activate(GtkApplication *app, gpointer user)
 {
     GtkWidget *win = gtk_application_window_new(app);
@@ -700,12 +876,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_wy_entry), "y");
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_wz_entry), "z");
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_dim_entry), "dim");
-    snprintf(init, sizeof init, "%ld", g_wx);
-    gtk_editable_set_text(GTK_EDITABLE(g_wx_entry), init);
-    snprintf(init, sizeof init, "%ld", g_wy);
-    gtk_editable_set_text(GTK_EDITABLE(g_wy_entry), init);
-    snprintf(init, sizeof init, "%ld", g_wz);
-    gtk_editable_set_text(GTK_EDITABLE(g_wz_entry), init);
+    set_bar_coords(g_wx, g_wy, g_wz);
     snprintf(init, sizeof init, "%d", (int)g_world_dim);
     gtk_editable_set_text(GTK_EDITABLE(g_dim_entry), init);
     g_section_check = gtk_check_button_new_with_label("section");
@@ -725,6 +896,20 @@ static void on_activate(GtkApplication *app, gpointer user)
                      G_CALLBACK(on_model_picked), NULL);
     g_signal_connect(g_block_picker, "notify::selected",
                      G_CALLBACK(on_block_picked), NULL);
+    {
+        /* G14: the picture's own tap — the gesture rides the same
+           widget the camera's drag gestures do (its own group, so
+           both see the press; the 4-pixel gate keeps a push with
+           the camera from re-asking the world). */
+        GtkGesture *tap = gtk_gesture_click_new();
+
+        gtk_widget_add_controller(g_viewport,
+                                  GTK_EVENT_CONTROLLER(tap));
+        g_signal_connect(tap, "pressed",
+                         G_CALLBACK(on_pick_pressed), NULL);
+        g_signal_connect(tap, "released",
+                         G_CALLBACK(on_pick_released), NULL);
+    }
 
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(bar),
                                     gtk_label_new("mcme"));
@@ -944,5 +1129,7 @@ int main(int argc, char **argv)
     g_free(g_mesh_ns);
     g_free(g_mesh_path);
     g_free(g_spec_seen);
+    g_free(g_pick_verts);
+    g_free(g_pick_idx);
     return g_exit_code ? g_exit_code : rc;
 }

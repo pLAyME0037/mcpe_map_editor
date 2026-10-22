@@ -7,6 +7,100 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-22 — The point on the picture: a tap, a ray, the cell under the face
+
+### Built
+
+- G14 + D61: the window answers where you point. A still tap on
+  the viewport raycasts the frame's own numbers — the orbit read
+  back (G8's accessor), re-made into the camera the matrix reads
+  three fields of, `mcme_camera_mvp` at the widget's own
+  width/height (the pair the render passes), inverted for the
+  sight-line — onto a second stage of the world's mesh
+  (`mcme_viewport_stage` with the page withheld: positions and
+  indices, which is all a point is). The cell comes from the
+  struck face itself: the coordinate the three hit vertices
+  share exactly is its plane (block positions are dyadic and
+  exact, mesh.c says so), the face's own winding — the
+  reference's cube tables face outward — puts the solid on one
+  side of it (outward + answers `ceil(P)-1`, outward − answers
+  `floor(P)`), the other axes floor where the ray landed, and
+  every axis clamps to the frame the mesh was built in (16 for
+  the sub-chunk, 1 for the block — recorded at arrival, since
+  the toggle may move between the answer and the tap). A face
+  with no shared coordinate (a rotated model's) answers the hit
+  point's own cell.
+- The tap lands on G13's bar, not beside it: the cell's world
+  coordinates — the ask's origin (the sub-chunk's floor by
+  G12's tint arithmetic, the block's own corner) plus the local
+  cell — fill the entries and press Go through the same lane,
+  so rapid taps coalesce in the pending flag instead of racing
+  the pool. The gate between a point and a push is four pixels:
+  a drag's down belongs to the camera (G8's road) and never
+  re-asks; the picker's mesh (no world behind it) and the
+  world-less window answer in the world's label instead. The
+  stage copy rides each world answer — kept through refusals
+  and stale ones exactly as the viewport keeps its mesh, freed
+  when a picker's mesh lands, and at teardown.
+- The smoke grows a pick without a hand: the settle line ends
+  `pick=x,y,z` (world coordinates) or `pick=none`, computed
+  from the widget's center pixel through the very road a tap
+  calls (G8 drove the drag the same way). Adjudicated this
+  session: slab section **0,80,1** — the slab's top plane at
+  y=0.5, a non-integer plane answered by `ceil(0.5)-1`, the
+  slab's own cell; stone shell **1,80,1** — struck from inside
+  the closed box, out through the bottom face's second
+  triangle; all-air, block ask and the three refusals all
+  **none** (nothing staged, or nothing under the point).
+- Gates: GUI selftest **+52 = 1513** — m·inv = the identity, a
+  known world point's pixel roundtrip (projected by the frame's
+  own matrix, the ray back through that pixel lies through
+  it), the center ray through the orbit's fixed point
+  (0.5, 0.5, dist), both windings of a hand-laid face, nearest
+  over far, behind and miss, the frame's clamp, NULL/ragged/
+  out-of-range guards, the second-triangle strike, and all six
+  faces of the reference's own missing-block cube through the
+  window's stage answering the one cell it stands on. Every
+  smoke re-confirmed at its G13 numbers (all-air 0/24576, slab
+  24576/24576 cells 4096, stone 1536/24576 cells 1352, block
+  0/6, three refusals rc=1, x11 drew=1) — `pick=` is the only
+  new field. Battery 107/107; no core file moved (pick is
+  gui's own, and the new file builds off rebuild_gui.sh's
+  glob).
+
+### Notes
+
+- The first stone-shell smoke came back `pick=none` through a
+  closed box the ray could not fail to leave — the bug was
+  pick.c's reading of `tri_face {0,1,2, 0,2,3}`: the second
+  triangle was built as `(i, i+2, i+3)`, which reads the face's
+  indices 0, 2, and *0 again* — a degenerate corner the area
+  test skips as zero-area. Every pin struck a face center, and
+  the center of a split square sits exactly on the diagonal
+  both halves share, so the first triangle always answered and
+  the second was never load-bearing — until the smoke's
+  off-diagonal ray from inside the shell depended on it. Fixed
+  to read the stage's next three indices as their own triple;
+  the pick moved none → 1,80,1 (the hand-derived exit); a pin
+  now strikes strictly inside the second half. The record:
+  pins adjudicate what they strike, the smoke adjudicates the
+  road.
+- The roundtrip pin's first draft also asserted that points of
+  the block land inside the picture — false: at the default
+  still, aspect 1.5, the block's center column projects at
+  px ≈ −11, just past the left edge. The assertion was my
+  invention, not a fact the pick needs; removed and recorded.
+  (The center pixel's sight-line still passes exactly through
+  (0.5, 0.5, dist) — camera.c's translate — and that pin
+  stands.)
+- The tap's wiring itself — GtkGestureClick on the viewport,
+  pressed/released with the four-pixel gate — has no headless
+  gate (the selftest initializes no GTK, as ever); the road it
+  calls is what the smoke drives, and the gesture is x11
+  eyeball territory, like every widget since G1.
+- Carried from G13, still untouched: `g_block_picker`'s
+  append.
+
 ## 2026-10-22 — The world without flags: the bar, the dialog, one lane
 
 ### Built

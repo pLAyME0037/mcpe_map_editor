@@ -4121,3 +4121,63 @@ road's gates), or the bar grows questions the flags do not ask
 (asymmetric doors — then the validation wants a shape to share,
 not a list), or the worker pool ever answers in post order (then
 the pending flag can be dropped for a plain queue).
+
+## D61 — The tap rides the frame's matrix, not a second one
+
+**Chosen.** The pick is the picture's algebra: the orbit read
+back from the viewport and re-made into the camera the matrix
+reads (yaw, pitch, dist — the drag's last_x/last_y are gesture
+bookkeeping), `mcme_camera_mvp` at the widget's own width/height
+— the exact pair the render passes — inverted for one
+sight-line, tested against a second stage of the world's own
+mesh (`mcme_viewport_stage` with the page withheld: positions
+and indices, which is all a point is). The cell comes from the
+struck face: the coordinate the three hit vertices share is the
+plane (dyadic exact), the face's winding the solid's side
+(`ceil(P)-1` outward +, `floor(P)` outward −), the other axes
+the floored landing point, everything clamped to the frame the
+mesh came in. New `gui/pick.c`, pure and headless-pinned; core
+and `gui/viewport.c` untouched.
+
+**Why.** A ray with its own camera could drift from the
+picture — every number it needs, the frame already spent, and
+the read-back accessor (G8) plus the pure stage (D50) were
+exported long before this drop. Withholding the page keeps the
+atlas out of a question that reads positions alone. And not
+opening viewport.c keeps the foreign whitespace hunk exactly
+where it stands: this drop never needed partial staging at all.
+
+**Rejected.** The bucket's cull direction as the inward normal
+(the stage flattens the seven buckets into one stream — and the
+winding carries the same answer from the geometry itself, which
+works for the block ask's single model too); the viewer's side
+of the plane as the cell's side (GL culls nothing here, so a
+click can strike a backface — the eye's side would answer the
+wrong cell through it, while the winding answers the face's
+owner either way); ray-testing the first triangle only and
+trusting face centers (the degenerate-second-triangle bug the
+stone smoke caught — a center sits on the shared diagonal, so
+half of every face went unpinned); driving the pick from a
+second projection tuned for picking (two matrices to keep in
+step, forever); a coordinate dialog beside the picture instead
+of the bar (the entries already show where the tap asked).
+
+**How verified.** GUI selftest +52 = 1513: the inverse's
+identity, the point→pixel→ray roundtrip, the center ray through
+the orbit's fixed point, both windings, nearest/behind/miss,
+the clamp, the guards, the second-triangle strike, and the six
+faces of `mcme_mesh_missing_block` each answering (0,0,0)
+through the window's own stage. Smokes at every G13 number with
+the new `pick=` adjudicated: slab 0,80,1 (the non-integer top
+plane — the ceil rule), stone 1,80,1 (the shell's bottom from
+inside, the second triangle), all-air/block/refusals none, x11
+draws and picks the slab. Battery 107/107, no core file moved,
+tests/ clean; viewport.c never staged — the invariant's staged
+zero and worktree one unchanged.
+
+**Reverses if:** the stage ever keeps the buckets' directions
+as data (then the face's declared side beats inferring it from
+winding), or a second consumer needs the ray (a light probe, a
+measure tool — then pick.c's ray grows an API instead of each
+caller inverting its own), or the render gains backface culling
+(then visibility and the cell become one question again).

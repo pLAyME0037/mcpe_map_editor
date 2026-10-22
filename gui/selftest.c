@@ -34,6 +34,16 @@
  *             coordinates — every refusal a static sentence:
  *             nothing allocates, so the leak check at the end
  *             stands over it too.
+ *   pick    — G14's point, headless: the matrix inverse the ray
+ *             unprojects through (m·inv = I), the sight-line back
+ *             through a known world point's own pixel, the center
+ *             ray through the orbit's fixed point (0.5, 0.5,
+ *             dist), and the cell under the struck face — the
+ *             reference's outward winding over hand-laid quads
+ *             (both sides), nearest hit over far, behind and
+ *             miss, the frame's clamp, and all six faces of the
+ *             reference's own missing-block cube answering the
+ *             cell it stands on.
  *
  * The core queue (src/core/event_queue.c) has no glib in it and its own
  * tests can not see a main context; these checks stand where the two
@@ -58,6 +68,7 @@
 #include "chunktask.h"
 #include "meshtask.h"
 #include "packtask.h"
+#include "pick.h"
 #include "viewport.h"
 #include "wire.h"
 #include "worldbar.h"
@@ -1335,6 +1346,286 @@ static void test_worldbar(void)
                              &x, &y, &z, &dim, NULL));
 }
 
+/* G14's point, headless: the matrix and the ray are the frame's
+ * own numbers (the very composition viewport.c draws with), and
+ * the cell rule is the builder's winding read back — the
+ * reference's cube tables face outward (mesh.c), so a face's
+ * shared coordinate is its plane and the cross product's sign is
+ * the solid's side of it. Nothing allocates. */
+static void test_pick(void)
+{
+    McmeCamera cam;
+    float mvp[16], inv[16];
+    long cell[3];
+
+    printf("  pick (the point through the frame's matrix, the cell's rule)\n");
+
+    /* The inverse the ray unprojects through: m · inv answers the
+       identity element for element, or the adjugate is wrong. */
+    mcme_camera_default(&cam);
+    mcme_camera_mvp(&cam, 1.5f, mvp);
+    CHECK(mcme_mat4_invert(mvp, inv));
+    {
+        bool ident = true;
+
+        for (int c = 0; c < 4; ++c)
+            for (int r = 0; r < 4; ++r) {
+                float s = 0.0f;
+
+                for (int k = 0; k < 4; ++k)
+                    s += mvp[k * 4 + r] * inv[c * 4 + k];
+                if (fabsf(s - (float)(c == r)) > 1e-4f)
+                    ident = false;
+            }
+        CHECK(ident);
+    }
+    {
+        float zero[16] = {0};
+
+        CHECK(!mcme_mat4_invert(zero, inv));
+        CHECK(!mcme_mat4_invert(NULL, inv));
+    }
+
+    /* The roundtrip: a known point projected by the frame's own
+       matrix names its pixel, and the ray back through that pixel
+       lies through the point — three points inside the block the
+       still opens to. */
+    {
+        static const float pts[3][3] = {
+            {0.5f, 0.5f, 0.0f}, {0.2f, 0.9f, 0.7f}, {0.9f, 0.1f, 0.3f}
+        };
+
+        for (int i = 0; i < 3; ++i) {
+            float x = pts[i][0], y = pts[i][1], z = pts[i][2];
+            float cx = mvp[0] * x + mvp[4] * y + mvp[8] * z +
+                       mvp[12];
+            float cy = mvp[1] * x + mvp[5] * y + mvp[9] * z +
+                       mvp[13];
+            float cw = mvp[3] * x + mvp[7] * y + mvp[11] * z +
+                       mvp[15];
+            float orig[3], dir[3];
+            double px, py, dx, dy, dz, t, d2;
+
+            CHECK(cw > 0.0f); /* in front of the eye */
+            /* The frame's own ndc, whatever side of the picture it
+               lands on — the default still sits the block's center
+               column just past the left edge (px ≈ -11 at aspect
+               1.5), and the sight-line math does not care. */
+            px = (cx / cw + 1.0) * 0.5 * 640.0;
+            py = (1.0 - cy / cw) * 0.5 * 480.0;
+            CHECK(mcme_pick_ray(mvp, px, py, 640, 480, orig, dir));
+            CHECK(fabsf(sqrtf(dir[0] * dir[0] + dir[1] * dir[1] +
+                              dir[2] * dir[2]) - 1.0f) < 1e-5f);
+            dx = x - orig[0];
+            dy = y - orig[1];
+            dz = z - orig[2];
+            t = dx * dir[0] + dy * dir[1] + dz * dir[2];
+            dx -= t * dir[0];
+            dy -= t * dir[1];
+            dz -= t * dir[2];
+            d2 = dx * dx + dy * dy + dz * dz;
+            CHECK(d2 < 1e-4); /* on the line, in world units */
+        }
+    }
+
+    /* The center pixel's sight-line: camera.c's composition puts
+       the translate's fixed point (0.5, 0.5, dist) on the view
+       axis — every center ray's line passes through it. */
+    {
+        float orig[3], dir[3];
+        double dx, dy, dz, t, d2;
+
+        CHECK(mcme_pick_ray(mvp, 320.0, 240.0, 640, 480, orig, dir));
+        dx = 0.5 - orig[0];
+        dy = 0.5 - orig[1];
+        dz = 2.6 - orig[2];
+        t = dx * dir[0] + dy * dir[1] + dz * dir[2];
+        dx -= t * dir[0];
+        dy -= t * dir[1];
+        dz -= t * dir[2];
+        d2 = dx * dx + dy * dy + dz * dz;
+        CHECK(d2 < 1e-6);
+    }
+
+    /* The cell rule over hand-laid quads, laid out as the stage
+       writes them (stride 8, six indices a face). One face on the
+       plane x = 1 wound outward +x — the reference's tables read
+       outward through cross(v1-v0, v2-v0): the solid below the
+       plane, so the cell answers ceil(1)-1 = 0. */
+    {
+        static const float quad_p[12] = {
+            1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1
+        };
+        float verts[4 * 8] = {0};
+        uint32_t idx[6] = {0, 1, 2, 0, 2, 3};
+        float orig[3], dir[3];
+
+        for (int i = 0; i < 4; ++i)
+            memcpy(verts + i * 8, quad_p + i * 3, 3 * sizeof(float));
+        orig[0] = 4.0f;
+        orig[1] = 0.5f;
+        orig[2] = 0.5f;
+        dir[0] = -1.0f;
+        dir[1] = dir[2] = 0.0f;
+        CHECK(mcme_pick_cell(verts, 4, idx, 6, orig, dir, 16, cell));
+        CHECK(cell[0] == 0 && cell[1] == 0 && cell[2] == 0);
+        /* The face's other half: a strike strictly inside the
+           second triangle tri_face writes (0, 2, 3 — the stage's
+           next three indices, a triple of their own). Reading them
+           as corner arithmetic — (i, i+2, i+3) — repeated the
+           face's first vertex and built a degenerate (0, 2, 0),
+           skipped as zero-area. Every center strike falls on the
+           diagonal both halves share, so only the stone-shell
+           smoke's off-diagonal ray caught it. */
+        orig[1] = 0.2f;
+        orig[2] = 0.8f;
+        CHECK(mcme_pick_cell(verts, 4, idx, 6, orig, dir, 16, cell));
+        CHECK(cell[0] == 0 && cell[1] == 0 && cell[2] == 0);
+    }
+
+    /* The same face wound the other way reads inward: the solid
+       above the plane, cell floor(1) = 1 — winding is the side. */
+    {
+        static const float quad_n[12] = {
+            1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0
+        };
+        float verts[4 * 8] = {0};
+        uint32_t idx[6] = {0, 1, 2, 0, 2, 3};
+        float orig[3], dir[3];
+
+        for (int i = 0; i < 4; ++i)
+            memcpy(verts + i * 8, quad_n + i * 3, 3 * sizeof(float));
+        orig[0] = 4.0f;
+        orig[1] = 0.5f;
+        orig[2] = 0.5f;
+        dir[0] = -1.0f;
+        dir[1] = dir[2] = 0.0f;
+        CHECK(mcme_pick_cell(verts, 4, idx, 6, orig, dir, 16, cell));
+        CHECK(cell[0] == 1 && cell[1] == 0 && cell[2] == 0);
+    }
+
+    /* Nearest hit wins over the far face, and a face behind the
+       origin never counts: from x = 4 the x = 3 face answers cell
+       (2, 0, 0); from between, only the x = 1 face is ahead. */
+    {
+        static const float quad_p[12] = {
+            1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1
+        };
+        static const float quad_f[12] = {
+            3, 0, 0, 3, 1, 0, 3, 1, 1, 3, 0, 1
+        };
+        float verts[8 * 8] = {0};
+        uint32_t idx[12] = {0, 1, 2, 0, 2, 3,
+                            4, 5, 6, 4, 6, 7};
+        float orig[3], dir[3];
+
+        for (int i = 0; i < 4; ++i) {
+            memcpy(verts + i * 8, quad_p + i * 3, 3 * sizeof(float));
+            memcpy(verts + (4 + i) * 8, quad_f + i * 3,
+                   3 * sizeof(float));
+        }
+        orig[0] = 4.0f;
+        orig[1] = orig[2] = 0.5f;
+        dir[0] = -1.0f;
+        dir[1] = dir[2] = 0.0f;
+        CHECK(mcme_pick_cell(verts, 8, idx, 12, orig, dir, 16, cell));
+        CHECK(cell[0] == 2 && cell[1] == 0 && cell[2] == 0);
+        orig[0] = 2.5f;
+        CHECK(mcme_pick_cell(verts, 8, idx, 12, orig, dir, 16, cell));
+        CHECK(cell[0] == 0 && cell[1] == 0 && cell[2] == 0);
+        orig[0] = 4.0f;
+        dir[0] = 0.0f;
+        dir[1] = 1.0f;
+        CHECK(!mcme_pick_cell(verts, 8, idx, 12, orig, dir, 16,
+                              cell)); /* beside, never crossed */
+        orig[0] = 0.0f;
+        dir[0] = -1.0f;
+        dir[1] = 0.0f;
+        CHECK(!mcme_pick_cell(verts, 8, idx, 12, orig, dir, 16,
+                              cell)); /* both faces behind */
+    }
+
+    /* The frame's clamp: a face on the sub-chunk's far plane with
+       the ray striking its very edge — the tangential x reads 16
+       and clamps to the last cell, 15; the winding puts the z too
+       at 15. */
+    {
+        static const float quad_e[12] = {
+            15, 0, 16, 16, 0, 16, 16, 1, 16, 15, 1, 16
+        };
+        float verts[4 * 8] = {0};
+        uint32_t idx[6] = {0, 1, 2, 0, 2, 3};
+        float orig[3], dir[3];
+
+        for (int i = 0; i < 4; ++i)
+            memcpy(verts + i * 8, quad_e + i * 3, 3 * sizeof(float));
+        orig[0] = 16.0f;
+        orig[1] = 0.5f;
+        orig[2] = 20.0f;
+        dir[0] = dir[1] = 0.0f;
+        dir[2] = -1.0f;
+        CHECK(mcme_pick_cell(verts, 4, idx, 6, orig, dir, 16, cell));
+        CHECK(cell[0] == 15 && cell[1] == 0 && cell[2] == 15);
+    }
+
+    /* NULL's own guards and the ragged stream: no vertex past the
+       table, no face split mid-six, no frame to clamp into. */
+    {
+        static const float quad_p[12] = {
+            1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1
+        };
+        float verts[4 * 8] = {0};
+        uint32_t idx[6] = {0, 1, 2, 0, 2, 3};
+        uint32_t ragged[7] = {0, 1, 2, 0, 2, 3, 0};
+        uint32_t past[6] = {0, 1, 2, 0, 2, 99};
+        float orig[3] = {4, 0.5f, 0.5f}, dir[3] = {-1, 0, 0};
+
+        for (int i = 0; i < 4; ++i)
+            memcpy(verts + i * 8, quad_p + i * 3, 3 * sizeof(float));
+        CHECK(!mcme_pick_cell(NULL, 4, idx, 6, orig, dir, 16, cell));
+        CHECK(!mcme_pick_cell(verts, 4, NULL, 6, orig, dir, 16,
+                              cell));
+        CHECK(!mcme_pick_cell(verts, 4, ragged, 7, orig, dir, 16,
+                              cell));
+        CHECK(!mcme_pick_cell(verts, 4, past, 6, orig, dir, 16,
+                              cell));
+        CHECK(!mcme_pick_cell(verts, 4, idx, 6, orig, dir, 0, cell));
+        CHECK(!mcme_pick_cell(verts, 4, idx, 6, orig, dir, 16, NULL));
+    }
+
+    /* The reference's own missing-block cube, through the stage the
+       window uses: every one of the six faces, struck head-on from
+       outside, answers the single cell it stands on — 0,0,0 with
+       the sub-chunk's frame (the clamp is not what saves it; the
+       winding and the plane are). */
+    {
+        McmeMesh cube;
+        float *verts = NULL;
+        uint32_t *idx = NULL;
+        size_t nv = 0, ni = 0;
+        static const float rays[6][6] = {
+            {0.5f, -1.0f, 0.5f, 0.0f, 1.0f, 0.0f},
+            {0.5f, 2.0f, 0.5f, 0.0f, -1.0f, 0.0f},
+            {0.5f, 0.5f, -1.0f, 0.0f, 0.0f, 1.0f},
+            {0.5f, 0.5f, 2.0f, 0.0f, 0.0f, -1.0f},
+            {-1.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f},
+            {2.0f, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f}
+        };
+
+        CHECK(mcme_mesh_missing_block(&cube));
+        CHECK(mcme_viewport_stage(&cube, NULL, NULL, &verts, &idx,
+                                  &nv, &ni));
+        for (int i = 0; i < 6; ++i) {
+            CHECK(mcme_pick_cell(verts, nv, idx, ni, rays[i],
+                                 rays[i] + 3, 16, cell));
+            CHECK(cell[0] == 0 && cell[1] == 0 && cell[2] == 0);
+        }
+        free(verts); /* the stage's own contract: malloc'd, freed */
+        free(idx);
+        mcme_mesh_free(&cube);
+    }
+}
+
 int mcme_gui_selftest(void)
 {
     test_fifo();
@@ -1347,6 +1638,7 @@ int mcme_gui_selftest(void)
     test_stage();
     test_camera();
     test_worldbar();
+    test_pick();
 
     /* The binary's default turns LeakSanitizer off for GTK's caches;
      * the wire's own allocations are asserted here, where nothing has
