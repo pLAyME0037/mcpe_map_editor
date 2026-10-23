@@ -16,6 +16,12 @@ Why fixtures rather than "generate at test time":
 Usage:
     venv/bin/python tools/ref_worlds.py --out tests/golden/worlds
 
+A bare run (no --out) generates into a temporary directory: the goldens are
+never an implicit target, so a battery that sweeps every tools/ref_*.py
+cannot replant them by accident (G22 caught exactly that: the generator
+ran bare, Amulet re-saved both worlds in place, and the region timestamps
+the core selftest pins changed with them).
+
 Output layout:
     <out>/java/     a small Java world (level.dat + region/*.mca + entities/*.mca)
     <out>/bedrock/  a small Bedrock world (level.dat + db/ LevelDB store)
@@ -32,6 +38,7 @@ import argparse
 import os
 import shutil
 import sys
+import tempfile
 
 import amulet
 from amulet.api.chunk import Chunk
@@ -86,8 +93,13 @@ def _build(fmt_cls, path: str, platform, version, label: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default="tests/golden/worlds")
+    ap.add_argument("--out", default=None,
+                    help="directory to plant the worlds in (default: a "
+                         "fresh temporary directory — pass "
+                         "tests/golden/worlds to replant the goldens)")
     args = ap.parse_args()
+    if args.out is None:
+        args.out = tempfile.mkdtemp(prefix="ref_worlds_")
 
     from amulet.level.formats.anvil_world import AnvilFormat
     from amulet.level.formats.leveldb_world import LevelDBFormat

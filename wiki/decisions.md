@@ -4468,3 +4468,32 @@ itself (then the parse marks given by construction and the
 gate is dead weight), or the settle's `world=` grows a third
 state this pair cannot carry (then the ask's own "ever
 started" bit is the truth-source to retire, not grow).
+
+## D68 — A tool that writes the goldens defaults away from them
+
+The goldens are read-only pins: every count, name and
+timestamp the selftests assert was committed deliberately, so
+the bytes are the oracle and nothing may regenerate them by
+implication. G22's battery proved the cost of an implied
+target — the bare sweep ran `ref_worlds`, a fixture
+*generator* whose `--out` defaulted to `tests/golden/worlds`,
+and Amulet dutifully rmtree'd and re-saved both worlds in
+place; within one second the region timestamps the core
+selftest pins had moved and the oracle itself failed 7
+checks. The damage was visible (git showed the seven files)
+and reversible (checked out), but the rule must not depend on
+noticing: any tool whose job includes writing fixture bytes
+defaults its target to a temporary directory and requires the
+golden path as an explicit, greppable argument (the
+documented `ref_worlds.py --out tests/golden/worlds` still
+plants). A sweep that runs every `tools/ref_*.py` is then
+harmless by construction: no bare invocation can reach the
+store, and a battery pass means what it says — the checks
+ran, the fixtures did not move.
+
+**Reverses if:** goldens become regenerable-by-construction
+because pins stop depending on the volatile bytes (embedded
+timestamps, save order) and a drift check compares fresh
+output against committed bytes instead — then in-place
+regeneration becomes a *check*, and the default must point at
+the goldens for the comparison to mean anything.

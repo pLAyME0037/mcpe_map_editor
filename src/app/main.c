@@ -1474,7 +1474,9 @@ static int cmd_atlasmesh(const char *pack_dir, const char *spec,
  * container. It is deliberately read-only and never opens a database.
  * ======================================================================== */
 
-static void print_info_text(const McmeWorldInfo *w, const McmeBedrockInventory *inv)
+static void print_info_text(const McmeWorldInfo *w,
+                            const McmeBedrockInventory *inv,
+                            const McmeJavaInventory *jinv)
 {
     printf("path:     %s\n", w->path);
     printf("format:   %s\n", mcme_world_kind_name(w->kind));
@@ -1504,8 +1506,11 @@ static void print_info_text(const McmeWorldInfo *w, const McmeBedrockInventory *
     printf("leveldat: %s\n", mcme_level_dat_frame_name(w->frame));
 
     if (w->kind == MCME_WORLD_JAVA) {
-        printf("regions:  %zu\n", w->region_files);
-        printf("chunks:   %zu\n", w->chunks);
+        /* The inventory's totals (G22): the same numbers the probe's
+           overworld leg counted, plus every dimension tree the world
+           holds — for an overworld-only world, the same two lines. */
+        printf("regions:  %zu\n", jinv->region_files);
+        printf("chunks:   %zu\n", jinv->chunks);
     } else if (inv != NULL && inv->opened) {
         printf("keys:     %zu\n", inv->keys);
         printf("chunks:   %zu\n", inv->chunks);
@@ -1530,7 +1535,9 @@ static void print_json(cJSON *root)
     cJSON_Delete(root);
 }
 
-static void print_info_json(const McmeWorldInfo *w, const McmeBedrockInventory *inv)
+static void print_info_json(const McmeWorldInfo *w,
+                            const McmeBedrockInventory *inv,
+                            const McmeJavaInventory *jinv)
 {
     /* Built with cJSON rather than by hand so names containing quotes or
        non-ASCII survive the round trip into a JSON parser. */
@@ -1567,8 +1574,21 @@ static void print_info_json(const McmeWorldInfo *w, const McmeBedrockInventory *
         cJSON_AddBoolToObject(root, "has_level_dat", w->has_level_dat);
 
         if (w->kind == MCME_WORLD_JAVA) {
-            cJSON_AddNumberToObject(root, "region_files", (double)w->region_files);
-            cJSON_AddNumberToObject(root, "chunks", (double)w->chunks);
+            cJSON_AddNumberToObject(root, "region_files",
+                                    (double)jinv->region_files);
+            cJSON_AddNumberToObject(root, "chunks", (double)jinv->chunks);
+            /* G22: java answers the breakdown question the bedrock json
+               already answered — one key, one shape, both formats. */
+            cJSON *dims = cJSON_AddArrayToObject(root, "chunks_by_dimension");
+            for (size_t i = 0; i < jinv->dims; ++i) {
+                cJSON *row = cJSON_CreateObject();
+                if (row == NULL) break;
+                cJSON_AddNumberToObject(row, "dimension",
+                                        (double)jinv->by_dim[i].dimension);
+                cJSON_AddNumberToObject(row, "chunks",
+                                        (double)jinv->by_dim[i].chunks);
+                cJSON_AddItemToArray(dims, row);
+            }
         } else {
             cJSON_AddBoolToObject(root, "has_db", w->has_db);
             if (inv != NULL && inv->opened) {
@@ -1626,6 +1646,15 @@ static int cmd_info(int argc, char **argv)
         rc = MCME_EXIT_NOT_FOUND;
     }
 
+    /* G22: the java count is the inventory's — every dimension tree,
+       through the same scanner the probe walked for the world root.
+       Java counting never fails the way opening a store can: a world
+       without a nether simply holds no DIM-1 rows. */
+    McmeJavaInventory jinv;
+    memset(&jinv, 0, sizeof jinv);
+    if (info.kind == MCME_WORLD_JAVA)
+        mcme_java_inventory(&jinv, info.path);
+
     /* Only opened for a store that is actually there. Probing is cheap and
        opening is not, and a Java world has no store to open. */
     McmeBedrockInventory inv;
@@ -1640,10 +1669,11 @@ static int cmd_info(int argc, char **argv)
         }
     }
 
-    if (g_opts.json) print_info_json(&info, &inv);
-    else print_info_text(&info, &inv);
+    if (g_opts.json) print_info_json(&info, &inv, &jinv);
+    else print_info_text(&info, &inv, &jinv);
 
     mcme_bedrock_inventory_free(&inv);
+    mcme_java_inventory_free(&jinv);
     mcme_world_info_free(&info);
     return rc;
 }
@@ -1693,22 +1723,62 @@ static int cmd_chunks(int argc, char **argv)
     size_t chunks = 0;
 
     if (info.kind == MCME_WORLD_JAVA) {
-        chunks = info.chunks;
+        /* G22: the java count comes from the inventory — every
+           dimension tree, one scanner with the probe's leg — and the
+           breakdown prints the way the bedrock branch prints it. */
+        McmeJavaInventory jinv;
+
+        mcme_java_inventory(&jinv, info.path);
+        chunks = jinv.chunks;
         if (g_opts.json) {
             cJSON *root = cJSON_CreateObject();
             if (root != NULL) {
                 cJSON_AddStringToObject(root, "path", info.path);
                 cJSON_AddStringToObject(root, "format", "java");
                 cJSON_AddNumberToObject(root, "region_files",
-                                        (double)info.region_files);
+                                        (double)jinv.region_files);
                 cJSON_AddNumberToObject(root, "chunks", (double)chunks);
+                cJSON *dims =
+                    cJSON_AddArrayToObject(root, "chunks_by_dimension");
+                for (size_t i = 0; i < jinv.dims; ++i) {
+                    cJSON *row = cJSON_CreateObject();
+                    if (row == NULL) break;
+                    cJSON_AddNumberToObject(row, "dimension",
+                                            (double)jinv.by_dim[i].dimension);
+                    cJSON_AddNumberToObject(row, "chunks",
+                                            (double)jinv.by_dim[i].chunks);
+                    cJSON_AddItemToArray(dims, row);
+                }
                 print_json(root);
             }
-        } else if (!count_only) {
+        } else if (count_only) {
+            /* The count face of the road: one bare number, the way the
+               bedrock leg prints it (cli.md promises --count prints a
+               number and nothing else, and every leg owes it). */
+            printf("%zu\n", chunks);
+        } else {
             printf("format:   java (anvil)\n");
-            printf("regions:  %zu\n", info.region_files);
+            printf("regions:  %zu\n", jinv.region_files);
             printf("chunks:   %zu\n", chunks);
+            if (jinv.dims > 0) {
+                printf("by dimension:\n");
+                for (size_t i = 0; i < jinv.dims; ++i) {
+                    /* The inventory spells the names the vocabulary
+                       spells (G20): one place decides them, and a
+                       number with no name prints as the number. */
+                    const char *name =
+                        mcme_dimension_name(jinv.by_dim[i].dimension);
+                    if (name != NULL) {
+                        printf("  %-10s %zu\n", name,
+                               jinv.by_dim[i].chunks);
+                    } else {
+                        printf("  %-10d %zu\n", jinv.by_dim[i].dimension,
+                               jinv.by_dim[i].chunks);
+                    }
+                }
+            }
         }
+        mcme_java_inventory_free(&jinv);
     } else if (info.kind == MCME_WORLD_BEDROCK && info.db_path != NULL) {
         McmeBedrockInventory inv;
         if (!mcme_bedrock_inventory(&inv, info.db_path)) {

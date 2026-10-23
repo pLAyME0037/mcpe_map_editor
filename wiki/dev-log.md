@@ -7,6 +7,110 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-23 — The wider count: java's trees join the inventory
+
+### Built
+
+- G22: G21's named limit paid. Java's count becomes a named
+  engine beside the bedrock walk — `McmeJavaInventory`
+  (region_files/chunks/dims/by_dim, the same
+  `McmeDimensionCount` row type) + `mcme_java_inventory` +
+  `_free` in world.h/world.c. Three roots in the game's own
+  names — `region` (0), `DIM-1/region` (1), `DIM1/region` (2) —
+  each scanned like `region/` always was: a tree that is not
+  there counts nothing (a world without a nether is a world,
+  not an error), a damaged .mca warns and skips. A dimension
+  earns its row only by holding chunks (bedrock's display rule,
+  kept), rows ascending.
+- One scanner, no drift: the probe's `scan_regions` loop was
+  lifted to `scan_region_root(root, &regions, &chunks)` and
+  BOTH the probe's overworld leg and the inventory's three
+  roots call it. The probe itself deliberately did not grow —
+  every verb and worker probes, and a nether+end header scan on
+  each cell read would tax real worlds; the probe stays the
+  cheap metadata read, the inventory is what the count's
+  clients run (info, chunks, the door). Java counting is
+  therefore `void` where the bedrock walk is bool: no store to
+  open, nothing that can fail.
+- CLI on the engine: `info` text byte-identical (the goldens
+  are overworld-only, same two lines); `info --json` and
+  `chunks --json` grow `chunks_by_dimension` — bedrock's own
+  key, one breakdown both editions; `chunks` text grows
+  `by dimension:` spelled through G20's vocabulary (overworld /
+  nether / end, bare number where the name doesn't know it).
+  The java leg's totals now come from the inventory.
+- `chunks --count` on java now prints the number: the java
+  branch was `else if (!count_only)` — under `--count` it
+  printed nothing while cli.md promises "one number and
+  nothing else" — a pre-existing hole in the exact branch this
+  drop rewrote, closed with the bedrock leg's own shape.
+- GUI: `gui/statstask.c`'s java leg onto the engine (the probe
+  still speaks identity, the inventory the counts and rows —
+  data crosses as ever); `gui/main.c`'s sentence becomes ONE
+  shape for both engines: identity, then rows wherever dims >
+  0 — java gains its parens (`java: 9 chunks in 3 regions
+  (overworld 5, nether 4)`). `statstask.h`'s doc claims the
+  change falsified (java dims, "the probe's totals") rewritten.
+- The fixture, built not found: the goldens ship no java
+  nether, so the selftest copies the java golden, mkdirs
+  `DIM-1/region/`, and copies `r.0.0.mca` in at file level (no
+  region API needed). Measured through the CLI first — 3
+  regions, 9 chunks, rows overworld 5 + nether 4 — then the
+  pins were written. Never guessed.
+
+### Gates
+
+- GUI selftest **1721 → 1741** (+20): the java golden's row
+  now present (dims 1, (0,5)); the built java+nether fixture
+  (3/9, rows (0,5)+(1,4), the vocabulary spelling "nether");
+  the convert output's own row (dims 1, (0,1) — the product's
+  one region with its one chunk).
+- Core selftest 6/6; both selftests re-ran after every
+  rebuild.
+- CLI gates, wayland AND x11: `info --json` on java+nether →
+  region_files 3, chunks 9, `{"dimension":1,"chunks":4}`;
+  `chunks` text → `overworld 5` / `nether     4`;
+  `chunks --count` → 9; the plain golden's `info` text still
+  byte-identical (regions 2 / chunks 5).
+- The doors: stats on java+nether → `stats=ok` rc=0; plain
+  java → `stats=ok`; and G21's full S1–S6 + F re-ran (the
+  stats door is this drop's blast radius — refusals exact,
+  composed and chained runs green).
+- Standing sweep A–S + G1–G6 + T1–T5, both backends, one run
+  at a time: 22 settles, `stats=none` where the door isn't
+  asked, every rc as recorded.
+- Battery **107 `: ok` / 0 FAIL** — 27 standalone refs pass,
+  the two helper refs (bedrock_entities/store, which demand
+  `--subchunks/--out`) exit 2 on argparse as they always have.
+
+### Notes
+
+- **The battery's near-miss, recorded whole:** the bare sweep
+  ran `ref_worlds` — a fixture *generator*, not a check — whose
+  default `--out` was `tests/golden/worlds`. Amulet rmtree'd
+  and re-saved both goldens in place in the battery's final
+  second (7 files: region, entities, level.dat, session.lock),
+  and the core selftest's pinned region timestamps
+  (1791643789) failed 7 checks on the next run. The oracle was
+  the casualty and git was the cure: `git checkout --
+  tests/golden/`, 6/6 again. The tool now plants into a temp
+  directory when run bare (the documented `--out
+  tests/golden/worlds` regeneration still works), and the
+  battery re-ran green with `git status -- tests/` empty
+  afterward. The original 107/0 had run on pristine fixtures —
+  the generator sorts alphabetically last — so no other number
+  in this entry carries the damage. Ruling: D68.
+- G21's entry ends by naming "java's chunk count is the
+  probe's `region/` scan … a named limit, not a hole". This is
+  the hole-fill: both shells now count every tree, and the
+  limit line is superseded by this entry.
+- The probe's scope did NOT change and is now a principle
+  rather than a limit: cheapness is its contract, and the
+  inventory (like the bedrock walk) is opt-in for the clients
+  that need the whole truth.
+- Carried from G19/D66: the chosen-name convert dialog, still
+  waiting for a hand that wants one.
+
 ## 2026-10-23 — The reader: the world counted, two roads one number
 
 ### Built

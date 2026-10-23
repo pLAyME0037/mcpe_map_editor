@@ -350,12 +350,17 @@ static bool read_level_dat(McmeWorldInfo *info, const char *dir)
  * ======================================================================== */
 
 /* Counts .mca files in `<dir>/region` and the chunks inside them. */
-static void scan_regions(McmeWorldInfo *info, const char *dir)
+/* Scans one region root (the directory holding the .mca files) into the
+   two counters. A root that is not there counts nothing — a world
+   without a dimension is a fact, not a failure — and a corrupt region
+   must not abort the whole scan: report it and keep going, which is
+   what a map editor's user expects when one file out of hundreds is
+   damaged. The probe's overworld leg and G22's inventory both ride
+   this one scanner, so the two roads cannot drift. */
+static void scan_region_root(const char *root, size_t *regions,
+                             size_t *chunks)
 {
-    char region_dir[4096];
-    if (join2(region_dir, sizeof region_dir, dir, "region") == NULL) return;
-
-    DIR *d = opendir(region_dir);
+    DIR *d = opendir(root);
     if (d == NULL) return;
 
     struct dirent *e;
@@ -364,25 +369,30 @@ static void scan_regions(McmeWorldInfo *info, const char *dir)
         if (len <= 5 || strcmp(e->d_name + len - 4, ".mca") != 0) continue;
 
         char path[4096];
-        int n = snprintf(path, sizeof path, "%s/%s", region_dir, e->d_name);
+        int n = snprintf(path, sizeof path, "%s/%s", root, e->d_name);
         if (n < 0 || (size_t)n >= sizeof path) continue;
         if (!path_is_file(path)) continue;
 
         McmeRegion reg;
         if (!mcme_region_open(&reg, path)) {
-            /* A corrupt region must not abort the whole scan: report it and
-               keep going, which is what a map editor's user expects when one
-               file out of hundreds is damaged. */
             MCME_WARN("world: %s: %s", e->d_name, mcme_last_error());
             mcme_clear_error();
             continue;
         }
 
-        info->region_files++;
-        info->chunks += mcme_region_chunk_count(&reg);
+        (*regions)++;
+        *chunks += mcme_region_chunk_count(&reg);
         mcme_region_close(&reg);
     }
     closedir(d);
+}
+
+static void scan_regions(McmeWorldInfo *info, const char *dir)
+{
+    char region_dir[4096];
+    if (join2(region_dir, sizeof region_dir, dir, "region") == NULL) return;
+
+    scan_region_root(region_dir, &info->region_files, &info->chunks);
 }
 
 /* ========================================================================
@@ -620,6 +630,53 @@ bool mcme_bedrock_inventory(McmeBedrockInventory *inv, const char *db_path)
 }
 
 void mcme_bedrock_inventory_free(McmeBedrockInventory *inv)
+{
+    arrfree(inv->by_dim);
+    memset(inv, 0, sizeof *inv);
+}
+
+/* ========================================================================
+ * Java chunk inventory
+ * ======================================================================== */
+
+/* See world.h. The java half of the same question, and its answer has
+   always been a directory walk: the probe's overworld leg, widened
+   (G22) to the DIM-1/ and DIM1/ trees the game keeps the nether and
+   the end in — through the SAME scanner, so what the probe reports and
+   what this counts can never disagree. A dimension earns its row only
+   by holding chunks (the bedrock inventory's display rule, kept). */
+static const struct {
+    int32_t    dim;
+    const char *suffix;   /* the world-relative tree, the game's own names */
+} java_roots[] = {
+    { 0, "region" },
+    { 1, "DIM-1/region" },
+    { 2, "DIM1/region" },
+};
+
+void mcme_java_inventory(McmeJavaInventory *inv, const char *dir)
+{
+    memset(inv, 0, sizeof *inv);
+
+    for (size_t i = 0; i < sizeof java_roots / sizeof java_roots[0]; ++i) {
+        char root[4096];
+        size_t regions = 0, chunks = 0;
+
+        if (join2(root, sizeof root, dir, java_roots[i].suffix) == NULL)
+            continue;
+        scan_region_root(root, &regions, &chunks);
+
+        inv->region_files += regions;
+        inv->chunks += chunks;
+        if (chunks > 0) {
+            McmeDimensionCount row = { java_roots[i].dim, chunks };
+            arrput(inv->by_dim, row);
+            inv->dims = (size_t)arrlen(inv->by_dim);
+        }
+    }
+}
+
+void mcme_java_inventory_free(McmeJavaInventory *inv)
 {
     arrfree(inv->by_dim);
     memset(inv, 0, sizeof *inv);

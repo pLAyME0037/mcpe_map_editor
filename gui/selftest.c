@@ -1700,8 +1700,10 @@ static void on_stats_done(void *userdata, McmeStatsResult *result)
    probe's words for a directory that is not a world, cmd_info's own
    line for one that probes but holds none, both goldens' fixed
    inventory walked through mcme_bedrock_inventory (8 keys/3 chunks
-   overworld+nether for the store, 2 regions/5 chunks for java from
-   the probe), and the arc that ties the doors together: a fill
+   overworld+nether for the store) and mcme_java_inventory (2
+   regions/5 chunks for java — and, on G22's built fixture, the
+   DIM-1/ tree counted as a second dimension), and the arc that ties
+   the doors together: a fill
    makes the input's own count grow (5→6 — the door sees what the
    writers did), the convert carries the new cell (report 1 chunk),
    and the count of its OUTPUT equals the report — the writer's
@@ -1798,9 +1800,10 @@ static void test_statstask(void)
         rm_rf(cdir);
     }
 
-    /* java: the probe's own totals (region/, what `info` prints)
-       and the name the level.dat holds — no per-dimension rows,
-       the probe's scope showing in both shells alike */
+    /* java: the inventory's own totals (G22 — every dimension tree,
+       through the same scanner the probe's leg rode; for this
+       overworld-only golden, what `info` has always printed) and the
+       name the level.dat holds — one row now, the overworld's */
     if (mcme_fs_exists("tests/golden/worlds/java")) {
         char jdir[] = "/tmp/mcme_gui_stats_java_XXXXXX";
 
@@ -1818,8 +1821,50 @@ static void test_statstask(void)
               == 0);
         CHECK(g_stats_done_regions == 2);
         CHECK(g_stats_done_chunks == 5);
-        CHECK(g_stats_done_dims == 0);
+        CHECK(g_stats_done_dims == 1);
+        CHECK(g_stats_done_rows[0].dimension == 0);
+        CHECK(g_stats_done_rows[0].chunks == 5);
         rm_rf(jdir);
+    }
+
+    /* java WITH a nether (G22's own fixture — the goldens ship no
+       java dimension beyond the overworld, so this one is built: the
+       golden with r.0.0.mca copied into DIM-1/region/). Measured
+       through the CLI before these pins were written: 3 regions,
+       9 chunks, rows overworld 5 + nether 4 — the second tree
+       counted as a dimension, its name spelled by the vocabulary. */
+    if (mcme_fs_exists("tests/golden/worlds/java")) {
+        char ndir[] = "/tmp/mcme_gui_stats_nether_XXXXXX";
+        char dim1[512], to[600];
+        gchar *data = NULL;
+        gsize len = 0;
+
+        CHECK(mkdtemp(ndir) != NULL);
+        cp_rf("tests/golden/worlds/java", ndir);
+        snprintf(dim1, sizeof dim1, "%s/DIM-1/region", ndir);
+        snprintf(to, sizeof to, "%s/r.0.0.mca", dim1);
+        CHECK(g_mkdir_with_parents(dim1, 0755) == 0);
+        CHECK(g_file_get_contents("tests/golden/worlds/java/region/r.0.0.mca",
+                                  &data, &len, NULL));
+        CHECK(g_file_set_contents(to, data, len, NULL));
+        g_free(data);
+
+        g_stats_done_calls = 0;
+        g_stats_done_ok = false;
+        CHECK(mcme_statstask_start(wire, ndir, on_stats_done, NULL));
+        while (g_stats_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_stats_done_calls == 1);
+        CHECK(g_stats_done_ok);
+        CHECK(g_stats_done_kind == MCME_WORLD_JAVA);
+        CHECK(g_stats_done_regions == 3);
+        CHECK(g_stats_done_chunks == 9);
+        CHECK(g_stats_done_dims == 2);
+        CHECK(g_stats_done_rows[0].dimension == 0);
+        CHECK(g_stats_done_rows[0].chunks == 5);
+        CHECK(g_stats_done_rows[1].dimension == 1);
+        CHECK(g_stats_done_rows[1].chunks == 4);
+        rm_rf(ndir);
     }
 
     /* The arc (a copy whole, the golden never opened for writing —
@@ -1885,6 +1930,10 @@ static void test_statstask(void)
     CHECK(g_stats_done_ok);
     CHECK(g_stats_done_kind == MCME_WORLD_JAVA);
     CHECK(g_stats_done_regions == 1);
+    CHECK(g_stats_done_dims == 1); /* G22: the product's own row —
+                                       one region, its one chunk */
+    CHECK(g_stats_done_rows[0].dimension == 0);
+    CHECK(g_stats_done_rows[0].chunks == 1);
     CHECK(g_stats_done_chunks == report.chunks);
     CHECK(g_stats_done_chunks == 1);
 

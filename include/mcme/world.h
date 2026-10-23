@@ -135,6 +135,37 @@ bool mcme_bedrock_inventory(McmeBedrockInventory *inv, const char *db_path);
 void mcme_bedrock_inventory_free(McmeBedrockInventory *inv);
 
 /* ========================================================================
+ * Java chunk inventory
+ * ======================================================================== */
+
+/* What a Java world holds, counted from its directory trees — the java
+   half of McmeBedrockInventory's question (G22: the door that counts
+   asked for both engines). Java keeps its dimensions in separate trees
+   (region/, DIM-1/region, DIM1/region — the game's own names), so the
+   count is a directory walk through the same scanner the probe has
+   always used for its overworld leg: one engine, no drift. Java keeps
+   its metadata in level.dat rather than a store, so counting never
+   fails the way opening a store can. */
+typedef struct {
+    size_t region_files; /* every .mca under the counted trees      */
+    size_t chunks;       /* chunks those files hold                 */
+    size_t dims;         /* rows in by_dim                          */
+    McmeDimensionCount *by_dim; /* one row per dimension that holds
+                                   chunks, ascending — owned,
+                                   released by
+                                   mcme_java_inventory_free          */
+} McmeJavaInventory;
+
+/* Counts every dimension tree of the Java world at dir. Never fails:
+   a dimension that is not there counts nothing (a world without a
+   nether is a world, not an error) and a damaged region file warns
+   and is skipped — the probe's scan rule, widened. */
+void mcme_java_inventory(McmeJavaInventory *inv, const char *dir);
+
+/* Zero an inventory and release the rows it owns. */
+void mcme_java_inventory_free(McmeJavaInventory *inv);
+
+/* ========================================================================
  * One block out of the store (G9)
  *
  * The block position's own answer — what `chunk get` prints and

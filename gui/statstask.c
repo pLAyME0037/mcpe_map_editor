@@ -71,13 +71,23 @@ static void *stats_work(void *data)
     }
 
     if (info.kind == MCME_WORLD_JAVA) {
-        /* The probe already counted java's regions and the chunks
-           inside them (world.c's scan — region/, the numbers
-           `info` prints): one struct, both shells. Java hands out
-           no per-dimension rows; the CLI's inventory shows none
-           either. */
-        r->region_files = info.region_files;
-        r->chunks = info.chunks;
+        /* The probe spoke for identity; the count is the inventory's
+           (G22): every dimension tree — region/, DIM-1/region,
+           DIM1/region — through the same scanner the CLI's info and
+           chunks read, so the door and the shell cannot disagree.
+           Java counting never fails the way opening a store can: a
+           world without a nether simply holds no nether rows. */
+        McmeJavaInventory jinv;
+
+        mcme_java_inventory(&jinv, info.path);
+        r->region_files = jinv.region_files;
+        r->chunks = jinv.chunks;
+        r->dims = jinv.dims;
+        if (jinv.dims > 0) {
+            r->by_dim = g_new(McmeDimensionCount, jinv.dims);
+            memcpy(r->by_dim, jinv.by_dim, jinv.dims * sizeof *r->by_dim);
+        }
+        mcme_java_inventory_free(&jinv);
         mcme_world_info_free(&info);
         r->ok = true;
         goto out;

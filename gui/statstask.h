@@ -5,9 +5,13 @@
  * client arrived (mcme_bedrock_inventory — the whole-store key walk
  * moved from src/app/main.c into world.c, the G11 rule: a second
  * client makes the engine core's, one count both shells read).
- * Java needs no move: the probe already counts its region/ files
- * and their chunks on McmeWorldInfo, so both doors print the same
- * numbers from the same struct.
+ * Java needed a widening, not a move (G22): its count was always
+ * core's (the probe's region/ scan), and mcme_java_inventory now
+ * names it — every dimension tree (region/, DIM-1/region,
+ * DIM1/region) through the SAME scanner as the probe's leg, so
+ * `info`, `chunks` and this door read one engine while the probe
+ * stays what every verb and worker pays for: a cheap metadata read
+ * of the world root alone.
  *
  * The result carries DATA — kind, name, the counts, the
  * per-dimension rows — and the door (the loop thread) spells the
@@ -44,18 +48,19 @@ typedef struct {
     char *name;               /* the world's own name, or NULL (owned) */
     size_t keys;              /* bedrock: every live key (java: 0) */
     size_t chunks;            /* bedrock: its store's distinct
-                                 chunks; java: the probe's region/
-                                 count — info's own number         */
+                                 chunks; java: every dimension
+                                 tree's — info's own number        */
     size_t region_files;      /* java's region files (bedrock: 0)  */
-    size_t dims;              /* rows in by_dim (java: 0)          */
+    size_t dims;              /* rows in by_dim — both engines
+                                 answer now (G22)                  */
     McmeDimensionCount *by_dim; /* owned copy of the walk's rows   */
 } McmeStatsResult;
 
 typedef void (*McmeStatsDoneFn)(void *userdata, McmeStatsResult *result);
 
 /* Worker: probe the directory and count what it holds — the
- * bedrock store walked key by key, the java probe's own totals —
- * deliver on the loop thread. */
+ * bedrock store walked key by key, the java inventory through every
+ * dimension tree — deliver on the loop thread. */
 bool mcme_statstask_start(McmeWire *wire, const char *world_dir,
                           McmeStatsDoneFn done, void *userdata);
 

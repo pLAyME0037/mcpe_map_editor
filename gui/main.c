@@ -1029,14 +1029,20 @@ static void on_stats_result(void *userdata, McmeStatsResult *result)
                      result->region_files,
                      result->region_files == 1 ? "" : "s");
         } else {
-            size_t rows_at;
-
             snprintf(txt + at, sizeof txt - at,
                      "bedrock: %zu chunk%s in %zu key%s",
                      result->chunks, result->chunks == 1 ? "" : "s",
                      result->keys, result->keys == 1 ? "" : "s");
-            at = strlen(txt);
-            rows_at = at;
+        }
+        /* The rows spell either engine's dimensions (G22: java's
+           trees answer the same question as bedrock's keys) — the
+           sentence's one shape for both: identity, then what each
+           dimension holds, spelled through mcme_dimension_name with
+           the number bare where the name doesn't know it. */
+        at = strlen(txt);
+        {
+            size_t rows_at = at;
+
             for (size_t i = 0; i < result->dims &&
                               at + 40 < sizeof txt; ++i) {
                 const char *dim = mcme_dimension_name(

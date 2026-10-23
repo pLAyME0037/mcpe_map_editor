@@ -166,16 +166,26 @@ neither is derivable from the other. A store that cannot be opened prints
 `database: present, unreadable: <reason>` rather than a chunk count of zero —
 zero would say the world is empty, which is the one thing that is not known.
 
+For Java, `regions:` and `chunks:` span every dimension tree the world holds —
+`region/`, `DIM-1/region` (the nether), `DIM1/region` (the end) — through the
+same directory scan that identifies the world root, so a world with a nether
+counts it. `--json` adds `chunks_by_dimension`, the same key the Bedrock
+answer uses: one breakdown, both editions. A dimension earns its row only by
+holding chunks.
+
 ### `mcme chunks`
 
 What chunks a world contains. Counts distinct chunk coordinates; for Bedrock a
-chunk counts once no matter how many marker keys address it, and the count is
-grouped by dimension because a store mixes dimensions in one flat keyspace.
+chunk counts once no matter how many marker keys address it. The count is
+grouped by dimension for both editions — a store mixes dimensions in one flat
+keyspace, a Java world keeps each in its own tree — so the breakdown reads the
+same either way.
 
 ```
 mcme chunks <world>            # text summary, per-dimension breakdown
 mcme chunks <world> --count    # one number and nothing else
-mcme --json chunks <world>     # path, format, keys, chunks_by_dimension
+mcme --json chunks <world>     # path, format, keys|region_files,
+                               # chunks, chunks_by_dimension
 ```
 
 ```
