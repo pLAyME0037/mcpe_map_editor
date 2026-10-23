@@ -79,6 +79,23 @@ typedef struct {
 const char *mcme_world_kind_name(McmeWorldKind k);
 const char *mcme_level_dat_frame_name(McmeLevelDatFrame f);
 
+/*
+ * The dimension's spelling — one vocabulary for every road (G20):
+ * "overworld" 0, "nether" 1, "end" 2, or a whole number for what
+ * the game has not named. Names exist because numbers are for
+ * machines: the CLI's --dimension, the window's bar and flag, and
+ * the chunks inventory's display all spell through this pair, so
+ * one place decides the vocabulary. mcme_dimension_parse takes the
+ * text a hand or a flag gave — empty is not a spelling (a caller's
+ * own policy for absent stands before it, as the bar's does) — and
+ * on failure sets mcme_last_error() in the shape parsers here
+ * speak. mcme_dimension_name spells a number back the way the
+ * inventory prints it: NULL for a number with no name, the caller
+ * prints the number.
+ */
+bool mcme_dimension_parse(const char *text, int32_t *out);
+const char *mcme_dimension_name(int32_t dimension);
+
 /* ========================================================================
  * One block out of the store (G9)
  *

@@ -16,10 +16,13 @@
 bool mcme_worldbar_coord(const char *text, long *out);
 
 /* The bar's one question: a world directory and the whole
- * coordinates to ask it at — the dimension's number (an empty or
- * absent text is the flag's absent: overworld 0), answered through
- * the out-parameters. On refusal: false and a static sentence in
- * *why (owned here; point at it, never free it). */
+ * coordinates to ask it at — the dimension as its name or number
+ * (overworld|nether|end|<number>, core's one vocabulary since
+ * G20; an empty or absent text is the flag's absent: overworld
+ * 0), answered through the out-parameters. On refusal: false and
+ * a sentence in *why — static, owned here, except the dimension
+ * leg's, which is mcme_last_error()'s own buffer (used
+ * immediately, like every caller of it). */
 bool mcme_worldbar_ask(const char *world_dir,
                        const char *x_text, const char *y_text,
                        const char *z_text, const char *dim_text,

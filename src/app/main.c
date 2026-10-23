@@ -1852,12 +1852,11 @@ static int cmd_chunks(int argc, char **argv)
             printf("chunks:   %zu\n", chunks);
             printf("by dimension:\n");
             for (size_t i = 0; i < (size_t)arrlen(inv.by_dim); ++i) {
-                /* Dimension 0 is the overworld and is normally written as a
-                   bare 0; naming it costs one line and saves a lookup. */
-                const char *name = inv.by_dim[i].dimension == 0 ? "overworld"
-                                  : inv.by_dim[i].dimension == 1 ? "nether"
-                                  : inv.by_dim[i].dimension == 2 ? "end"
-                                  : NULL;
+                /* The inventory spells the names the vocabulary
+                   spells (G20): one place decides them, and a
+                   number with no name prints as the number. */
+                const char *name =
+                    mcme_dimension_name(inv.by_dim[i].dimension);
                 if (name != NULL) {
                     printf("  %-10s %zu\n", name, inv.by_dim[i].chunks);
                 } else {
@@ -1960,29 +1959,19 @@ static bool extract_dimension(const char *verb, int *argc, char **argv,
             return false;
         }
         const char *v = argv[i + 1];
-        long n;
-        char *end = NULL;
-        if (strcmp(v, "overworld") == 0) {
-            n = 0;
-        } else if (strcmp(v, "nether") == 0) {
-            n = 1;
-        } else if (strcmp(v, "end") == 0) {
-            n = 2;
-        } else {
-            n = strtol(v, &end, 10);
-            if (end == v || *end != '\0') {
-                mcme_set_error("%s: '%s' is not a dimension "
-                               "(overworld, nether, end, or a "
-                               "number)", verb, v);
-                return false;
-            }
-        }
-        if (n < INT32_MIN || n > INT32_MAX) {
-            mcme_set_error("%s: dimension '%s' is outside "
-                           "the range", verb, v);
+        int32_t parsed;
+
+        /* The vocabulary lives in core now (G20): the core's own
+           words under the family's own name — the message these
+           verbs have always printed, byte for byte. */
+        if (!mcme_dimension_parse(v, &parsed)) {
+            char why[512];
+
+            snprintf(why, sizeof why, "%s", mcme_last_error());
+            mcme_set_error("%s: %s", verb, why);
             return false;
         }
-        *dim = (int32_t)n;
+        *dim = parsed;
         for (int j = i; j + 2 < *argc; ++j) argv[j] = argv[j + 2];
         *argc -= 2;
         return true;

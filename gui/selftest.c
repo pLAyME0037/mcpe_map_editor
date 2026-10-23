@@ -1988,6 +1988,24 @@ static void test_worldbar(void)
     CHECK(mcme_worldbar_ask("/tmp/w", "0", "0", "0", "-1",
                             &x, &y, &z, &dim, &why) && dim == -1);
 
+    /* G20: the dimension spells its names — the CLI's vocabulary,
+       one place in core, both doors reading it. */
+    CHECK(mcme_worldbar_ask("/tmp/w", "1", "2", "3", "overworld",
+                            &x, &y, &z, &dim, &why) && dim == 0);
+    CHECK(mcme_worldbar_ask("/tmp/w", "1", "2", "3", "nether",
+                            &x, &y, &z, &dim, &why) && dim == 1);
+    CHECK(mcme_worldbar_ask("/tmp/w", "1", "2", "3", "end",
+                            &x, &y, &z, &dim, &why) && dim == 2);
+    CHECK(mcme_worldbar_ask("/tmp/w", "1", "2", "3", "7",
+                            &x, &y, &z, &dim, &why) && dim == 7);
+    CHECK(mcme_dimension_name(0) != NULL &&
+          strcmp(mcme_dimension_name(0), "overworld") == 0);
+    CHECK(mcme_dimension_name(1) != NULL &&
+          strcmp(mcme_dimension_name(1), "nether") == 0);
+    CHECK(mcme_dimension_name(2) != NULL &&
+          strcmp(mcme_dimension_name(2), "end") == 0);
+    CHECK(mcme_dimension_name(3) == NULL);
+
     /* The refusals: no world, a malformed coordinate or dimension,
        and NULL's own guards — every one static, none allocated. */
     CHECK(!mcme_worldbar_ask(NULL, "0", "0", "0", "0",
@@ -2004,6 +2022,13 @@ static void test_worldbar(void)
                              &x, &y, &z, &dim, &why) && why != NULL);
     CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "1.5",
                              &x, &y, &z, &dim, &why) && why != NULL);
+    /* G20: a name the vocabulary does not hold refuses in the
+       core's own words — the one global's buffer, read the way
+       every caller reads it (immediately). */
+    CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "banana",
+                             &x, &y, &z, &dim, &why) &&
+          why != NULL && strstr(why, "not a dimension") != NULL);
+    mcme_clear_error();
     CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "0",
                              NULL, &y, &z, &dim, &why));
     CHECK(!mcme_worldbar_ask("/tmp/w", "0", "0", "0", "0",

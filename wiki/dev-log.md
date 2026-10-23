@@ -7,6 +7,93 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-23 — The vocabulary moves: one spelling of the dimension
+
+### Built
+
+- G20: the dimension's vocabulary promoted to core (G11's rule —
+  a second client needed it; D64's debt named at a border, paid
+  at a border). `mcme_dimension_parse` + `mcme_dimension_name`
+  (src/world/world.c, beside kind_name's own pair): overworld 0,
+  nether 1, end 2, or a whole number — strtol's coordinate
+  grammar for the numeric leg, mcme_set_error in the parsers'
+  shape for the rest. One place decides the vocabulary every
+  road spells, and three sites that each knew it now read it:
+  - the CLI's extract_dimension — the argv walk and the
+    verb-named messages stay, the value leg is the core's, and
+    the wrap (the local copy, then "%s: %s" — parse_block_spec's
+    own pattern) reproduces the message these verbs have always
+    printed byte for byte ("chunk: 'banana' is not a dimension
+    (overworld, nether, end, or a number)"; the range's own);
+  - the chunks inventory's display — the inline ternary (0/1/2 →
+    names, else the number) becomes mcme_dimension_name's NULL
+    contract: a name or the number, printed exactly as before;
+  - the window — BOTH its doors at once: the bar's entries and
+    the smoke's `--dimension` flag spell the names, so the hand
+    and the smoke share the CLI's vocabulary. The flag's refusal
+    is the core's words under the flag's name ("mcgui:
+    --dimension: 'banana' is not a dimension ..."); a missing
+    value keeps the flag's own sentence.
+- The bar's debt sentence dies: "the dimension is a number (the
+  CLI spells the names)" was a named hole — worldbar.c's own
+  comment said so. The leg now speaks the core's words through
+  mcme_last_error(), the one global's contract read immediately
+  like every other caller reads it (G2's rule: the buffer is
+  copied when it crosses the wire or outlives the call; here it
+  does neither). The bar's other refusals stay static sentences
+  and the header's *why contract says exactly which is which.
+- Gates: GUI selftest **1647 → 1656** (+9): the four names
+  through mcme_worldbar_ask (overworld/nether/end/7), the name
+  function's half (three spells + NULL for 3), and the
+  vocabulary's refusal in the core's own words ("banana" → "not
+  a dimension"; the near-miss "the_nether" still refused — now
+  by a vocabulary that exists). Smokes (wayland, nvidia-stubbed
+  llvmpipe): THE name gate — `--dimension nether` at (5,5,5) on
+  a bedrock-chunks copy **`world=ok spec=minecraft:stone`** rc=0,
+  the name reaching the fixture's own nether chunk (the old bar
+  refused it at the door — world=refused rc=1 — so the settle
+  line itself tells the before from the after); `--dimension 1`
+  byte-identical beside it (the name and the number agree);
+  `--dimension overworld` at the standing cell = the standing
+  gate's numbers; "banana" rc=1 with the core's words under the
+  flag's name; a missing value rc=1 with the flag's sentence;
+  the composed road — `--dimension nether` on the java golden —
+  rc=1 at the core's own dimension gate (the label carries "holds
+  no such dimension"). Every standing gate re-confirmed at its
+  wiki numbers — the whole sweep: all-air 0/6 and 0/24576, the
+  slab section 24576/24576 cells 4096 pick=0,80,1, stone
+  1536/24576 cells 1352 pick=1,80,1, the three old refusals,
+  G16's block doors, the G18 prune gates (bedrock/java/empty ok,
+  non-world refused), both fills and the java not-stored
+  refusal, G19's five convert gates — the carry
+  `fill=ok convert=ok` + the OUTPUT's `chunk get` =
+  minecraft:stone — and the x11 backstop on the drawing gates
+  plus the name gate. The CLI's messages byte-identical at the
+  shell and the inventory's display unchanged. Battery (the core
+  changed: world.c and the CLI's leg) **107/107, 0 FAIL** —
+  every --dimension ref adjudicating the wrap; core selftest 6
+  suites green.
+
+### Notes
+
+- The bar's `why` is mcme_last_error()'s buffer for exactly one
+  leg now, and the contract says so where the next reader looks
+  (worldbar.h): static sentences owned here, except the
+  dimension leg's, used immediately like every caller of the one
+  global uses it. Nothing allocates either way — the leak check
+  stands.
+- The flag's `--at` was already the bar's parser (parse_long IS
+  mcme_worldbar_coord — G13's claim checked, not assumed): the
+  dimension was the LAST divergence between the two doors, and
+  there is none now.
+- The java+nether gate is the one whose rc cannot tell the two
+  roads apart — the old bar refusal and the new core gate both
+  exit 1 — recorded rather than dressed: the settle line has no
+  word for WHICH refusal fired, and inventing one would be gate
+  surface built for this drop alone. The selftest carries the
+  parse's truth instead.
+- Carried from G19: none.
+
 ## 2026-10-23 — The writer that creates: a world beside itself
 
 ### Built

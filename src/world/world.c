@@ -28,6 +28,51 @@ const char *mcme_world_kind_name(McmeWorldKind k)
     return "unknown";
 }
 
+/* See world.h. One place decides the vocabulary (G20): every road
+   spells through this pair, so the names cannot drift between the
+   shell, the window and the inventory. The numeric leg keeps
+   strtol's own grammar — a whole number, the whole token, the
+   coordinate parse's shape. */
+bool mcme_dimension_parse(const char *text, int32_t *out)
+{
+    char *end = NULL;
+    long n;
+
+    if (out == NULL) return false;
+    if (text == NULL) text = "";
+    if (strcmp(text, "overworld") == 0) {
+        n = 0;
+    } else if (strcmp(text, "nether") == 0) {
+        n = 1;
+    } else if (strcmp(text, "end") == 0) {
+        n = 2;
+    } else {
+        n = strtol(text, &end, 10);
+        if (end == text || *end != '\0') {
+            mcme_set_error("'%s' is not a dimension (overworld, "
+                           "nether, end, or a number)", text);
+            return false;
+        }
+    }
+    if (n < INT32_MIN || n > INT32_MAX) {
+        mcme_set_error("dimension '%s' is outside the range", text);
+        return false;
+    }
+    *out = (int32_t)n;
+    return true;
+}
+
+const char *mcme_dimension_name(int32_t dimension)
+{
+    switch (dimension) {
+    case 0: return "overworld";
+    case 1: return "nether";
+    case 2: return "end";
+    default: break;
+    }
+    return NULL;
+}
+
 const char *mcme_level_dat_frame_name(McmeLevelDatFrame f)
 {
     switch (f) {

@@ -37,7 +37,7 @@
  *   --open DIR   the dialog's answer without the dialog (smoke gates):
  *                open_pack runs at startup exactly where the callback
  *                would land it
- *   --world DIR --at X Y Z [--dimension N] [--section]
+ *   --world DIR --at X Y Z [--dimension <name|n>] [--section]
  *                ask the world for one block — or, with --section,
  *                the whole sub-chunk the coordinates stand in (G11):
  *                after the pack's answer lands, the worker composes
@@ -50,9 +50,11 @@
  *                the viewport — a buried block lands as the empty
  *                mesh the world itself would draw, and both halves
  *                of the face count (kept/total) ride the settle
- *                line. The dimension is a number here — the CLI
- *                spells the names — and the three flags come as one
- *                question: together or refused. A refusal's own
+ *                line. The dimension spells the CLI's names here
+ *                too since G20 — overworld, nether, end, or a
+ *                number, one vocabulary in core read by the bar's
+ *                entries and this flag alike — and the three flags
+ *                come as one question: together or refused. A refusal's own
  *                words land in the world's label, beside the
  *                pack's. Since G13 these flags are the bar's
  *                answers without the bar, as --open is the
@@ -143,6 +145,9 @@
 #include <string.h>
 
 #include <gtk/gtk.h>
+
+#include "mcme/core.h"  /* mcme_last_error — the flag's refusal words */
+#include "mcme/world.h" /* mcme_dimension_parse — the one vocabulary  */
 
 #include "camera.h"
 #include "chunktask.h"
@@ -1529,14 +1534,21 @@ int main(int argc, char **argv)
             }
             at_seen = true;
         } else if (strcmp(argv[i], "--dimension") == 0) {
-            long dim;
-
-            if (i + 1 >= argc || !parse_long(argv[i + 1], &dim)) {
-                fprintf(stderr, "mcgui: --dimension is a number "
-                                "(the CLI spells the names)\n");
+            /* G20: the bar's names at the flag too — overworld,
+               nether, end, or a number, the one vocabulary core
+               owns; the refusal is the core's own words under
+               the flag's name. */
+            if (i + 1 >= argc) {
+                fprintf(stderr, "mcgui: --dimension wants "
+                                "overworld, nether, end, or a "
+                                "number\n");
                 return 1;
             }
-            g_world_dim = (int32_t)dim;
+            if (!mcme_dimension_parse(argv[i + 1], &g_world_dim)) {
+                fprintf(stderr, "mcgui: --dimension: %s\n",
+                        mcme_last_error());
+                return 1;
+            }
             dim_seen = true;
             i++;
         } else if (strcmp(argv[i], "--section") == 0) {

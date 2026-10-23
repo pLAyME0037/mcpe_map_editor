@@ -2,11 +2,18 @@
  * entries share (one parse_coord, one range, one refusal shape —
  * the CLI's), and the bar's validation of its whole question.
  * Nothing here allocates: the refusals are static sentences, so
- * the caller points and the selftest's leak check stays clean.
+ * the caller points and the selftest's leak check stays clean —
+ * except the dimension leg, which speaks the CORE's words for the
+ * vocabulary core owns (G20): mcme_last_error()'s own buffer, the
+ * one global's contract (G2), used immediately like every other
+ * caller of it.
  */
 #include "worldbar.h"
 
 #include <stdlib.h>
+
+#include "mcme/core.h"  /* mcme_last_error — the dimension leg's why */
+#include "mcme/world.h" /* mcme_dimension_parse — the one vocabulary */
 
 bool mcme_worldbar_coord(const char *text, long *out)
 {
@@ -27,8 +34,6 @@ bool mcme_worldbar_ask(const char *world_dir,
                        long *out_x, long *out_y, long *out_z,
                        int32_t *out_dim, const char **why)
 {
-    long dim;
-
     if (out_x == NULL || out_y == NULL || out_z == NULL ||
         out_dim == NULL || why == NULL)
         return false;
@@ -50,11 +55,11 @@ bool mcme_worldbar_ask(const char *world_dir,
     }
     if (dim_text == NULL || dim_text[0] == '\0') {
         *out_dim = 0; /* the flag's absent: overworld */
-    } else if (!mcme_worldbar_coord(dim_text, &dim)) {
-        *why = "the dimension is a number (the CLI spells the names)";
+    } else if (!mcme_dimension_parse(dim_text, out_dim)) {
+        /* The core's own words for the vocabulary it owns (G20):
+           the CLI's --dimension and this bar spell alike. */
+        *why = mcme_last_error();
         return false;
-    } else {
-        *out_dim = (int32_t)dim;
     }
     *why = NULL;
     return true;
