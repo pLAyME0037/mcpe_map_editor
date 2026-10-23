@@ -7,6 +7,143 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-23 — The reader: the world counted, two roads one number
+
+### Built
+
+- G21 + D67: the window's stats door — the CLI's `info` and
+  `chunks` read through a button. The bar grows a Stats button
+  beside Convert, and `--stats` rides the flag grammar. This is
+  the readers' family under D66: a door that only looks asks
+  nothing back (no dialog, no confirmation), takes no cell (it
+  counts the world, not a place in it — the one world run
+  `--at` is not asked for), and its sentence stands when it
+  lands (nothing changed, so nothing re-asks; a pressed Go
+  still gets its turn).
+- The promotion (G11's rule — a second client): the
+  bedrock inventory walk moved whole out of src/app/main.c into
+  world.c/world.h as `mcme_bedrock_inventory` + `_free`. The
+  CLI's ChunkCoord/DimensionCount/callback/free all travel; the
+  transient coordinate scratch becomes the walk's own (file
+  local), so the public struct keeps only the answers —
+  opened/keys/chunk_keys/chunks/dims plus a plain
+  `McmeDimensionCount *by_dim` core owns the lifetime of (no
+  stb in the header). Java needed no move at all: the probe
+  already counts `region/` files and their chunks on
+  McmeWorldInfo, so both shells print the numbers `info` has
+  always printed. The four CLI roads (info text/json, chunks
+  text/json) consume core's type with `arrlen` → `dims` and
+  print byte-identical output.
+- `gui/statstask.c/h` — converttask's shape through gui/task.c.
+  The probe speaks first; a directory that probes but holds no
+  world is refused in cmd_info's own line ("Not a Minecraft
+  world: no db/ (Bedrock) and no region/ or session.lock
+  (Java)"); a Java world answers with the probe's totals; a
+  Bedrock world with no store beside it takes the door's own
+  sentence; otherwise the walk. DATA crosses — kind, name, the
+  counts, the per-dimension rows — and the loop thread spells
+  the sentence: identity first, then `bedrock: 3 chunks in 8
+  keys (overworld 2, nether 1)` (G20's vocabulary at every
+  dimension, the number bare when the name doesn't know it —
+  the inventory's own display rule) or `java: 5 chunks in 2
+  regions`.
+- The lane holds it like everything that touches a store: the
+  walk OPENS the store and reads every key (g_chunk_flight,
+  one world user ever), the drains order writers → ask →
+  stats, and a reader's answer settles itself (no re-ask —
+  the convert's rule held wider — while g_chunk_ok, the ask's
+  verdict, is left standing; stats= carries this door's own).
+  The settle line grows `stats=ok|refused|none` appended
+  after convert=, and a refused `--stats` fails the smoke
+  through its own clause beside convert's.
+- The grammar: `--stats wants --world` is the new refusal,
+  and the standing `--world wants --at` now fires unless the
+  run is stats-only — a cell writer still demands the cell
+  (fill, prune, or convert present ⇒ `--at` required, same
+  words as always), while a count alone may stand. The
+  window's other binding holds anyway: a world run still
+  brings a pack (G9).
+- **D67** — the gate found the line by crossing it. Relaxing
+  `--at` exposed that the pack's landing auto-asks, so the
+  first stats-only gate settled `world=ok
+  spec=minecraft:redstone_wire{...}` — a cell answer at
+  (0,0,0) nobody had ever given, and the label's last word
+  would have been an invented question's answer under the
+  door's own sentence. The ask now runs only for a cell
+  GIVEN: `g_at_seen` set by the `--at` parse, the bar's
+  parsed Go (world_go marks it after mcme_worldbar_ask
+  succeeds), or a cell door (queue_fill/queue_prune), gated
+  inside queue_chunk_ask — and the settle's `world=` plus
+  the exit's world clause key on the ask having EVER started
+  (g_ask_seen), so a stats-only run reports `world=not-asked`
+  honestly and no clause judges it by an answer it never
+  sought. Hand roads were already all marked-before-queue, so
+  none of them changed.
+
+### Gates
+
+- GUI selftest **1656 → 1721** (+65): test_statstask through
+  the wire — the guards; the probe's words for a missing
+  directory; cmd_info's line for an empty one; the
+  bedrock-chunks store's fixed inventory walked through the
+  door (8 keys, 3 chunks, rows overworld 2 + nether 1, no
+  name without a level.dat); java's probe totals (2 regions,
+  5 chunks, no dimension rows, the level.dat's name riding
+  the result); and THE ARC — the pristine fuller golden
+  counted (15 keys, 5 chunks, one overworld row), a fill
+  through the wire, counted again (16 keys, 6 chunks — the
+  door SEES the write), the convert run beside it (report 1
+  chunk, 4096 blocks — the input's own 5 chunks hold records
+  but no terrain, so the filled cell is the terrain), and the
+  cross-check: **the converter's report and this door's
+  count of its output, one number (1 == 1)** — a writer's
+  claim and an independent reader of its product that never
+  met.
+- Smokes, wayland: S1 `--world g12w --stats p12` with NO
+  `--at` → `world=not-asked ... stats=ok` rc=0; S2 the java
+  golden same; S3 notaworld → `stats=refused` rc=1;
+  S4 `--stats` alone → rc=1 "mcgui: --stats wants --world";
+  the standing F refusal still exact ("--world wants --at x
+  y z"); S5 world+`--at`+`--stats` composed → `world=ok
+  stats=ok` rc=0; S6 the lane's full chain on a fresh
+  bedrock-chunks copy — `--fill minecraft:stone --stats` →
+  `fill=ok world=ok stats=ok spec=minecraft:stone` rc=0 with
+  the store's own `chunk get` = minecraft:stone after it.
+- Every standing gate re-confirmed at its wiki numbers
+  through the full sweep A–S + G1–G6 + T1–T5 (each settle now
+  carrying ` stats=none` appended — fields, not lines, so
+  every recorded gate stands unchanged), on wayland; then the
+  x11 backstop on both scripts **sequentially** — 22 settles
+  and only the expected refusals non-zero. Battery (the core
+  changed: world.c and the CLI's leg) **107/107, 0 FAIL** —
+  the info/chunks refs adjudicating the promotion
+  byte-identical; core selftest 6 suites green.
+
+### Notes
+
+- **mcgui is a single-instance GApplication: two smokes at
+  once and the second forwards its arguments to the first,
+  then exits 0 with NO output** (my two x11 scripts ran
+  concurrently; both logs came back green-but-empty until
+  rerun one at a time). A silent green is worse than a flake —
+  one smoke at a time is now part of the standing order.
+- One engine, two faces (the report pattern): the counts
+  cross as data and the sentence is each client's own; only
+  two verdicts ride as sentences already — cmd_info's
+  unknown-directory line and the door's own no-store refusal,
+  because the first is where this door's truth lives and the
+  second has no verb to borrow.
+- `chunk_keys` moved with no printer anywhere — the walk's
+  own accounting. The struct travels whole rather than
+  trimmed to its consumers, same as the convert report.
+- java's chunk count is the probe's `region/` scan (one call,
+  the world root): both shells show exactly that number, and
+  a per-dimension java inventory (DIM-1, DIM1) has no
+  fixture to pin it against — the goldens ship no java
+  nether. A named limit, not a hole.
+- Carried from G19/D66: the chosen-name convert dialog,
+  still waiting for a hand that wants one.
+
 ## 2026-10-23 — The vocabulary moves: one spelling of the dimension
 
 ### Built

@@ -123,6 +123,30 @@
  *                --fill/--prune in the drains' order (fill,
  *                prune, convert). The settle line names the door
  *                as convert=ok|refused|none.
+ *   --stats      count what the open world holds (G21): the CLI's
+ *                info/chunks engine read through the door — the
+ *                Bedrock store walked key by key (the inventory
+ *                promoted to core when this door became its
+ *                second client), Java's regions from the probe
+ *                that already counted them — the label spelling
+ *                the sentence: identity, the chunks, and the
+ *                dimensions spelled through mcme_dimension_name
+ *                (G20's vocabulary, the number bare when the
+ *                name doesn't know it). This door only reads: no
+ *                cell — --stats is the one world run --at is not
+ *                asked for, it counts the world, not a place in
+ *                it, and with no cell given no ask runs behind
+ *                it either: the bar's defaults are display, not
+ *                a question — no dialog (nothing to ask back: the
+ *                readers' family under D66), and its sentence
+ *                stands (nothing changed, so nothing re-asks; a
+ *                pressed Go still gets its turn). The window's
+ *                standing binding holds anyway: a world run
+ *                still brings a pack (G9). Composes with
+ *                --fill/--prune/--convert through the same lane,
+ *                behind every world traffic (writers, the ask,
+ *                then the count). The settle line names the
+ *                door as stats=ok|refused|none.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -132,10 +156,11 @@
  * or block meshed and a frame carried it, or the world answered
  * with faces to show — or, since G18, a landed prune answered
  * with the refusal that says the chunk is gone, the delete's own
- * proof; 1 — a refusal, or a refused --convert (its own verdict,
- * whatever the world's ask then answers), or the mesh never
- * reached a frame (a world answer whose cull kept zero faces
- * settles without one — the world said nothing stands there);
+ * proof; 1 — a refusal, or a refused --convert or --stats (each
+ * its own verdict, whatever the world's ask then answers), or the
+ * mesh never reached a frame (a world answer whose cull kept zero
+ * faces settles without one — the world said nothing stands
+ * there);
  * 2 — GL trouble (context, shader, upload, draw).
  */
 
@@ -157,6 +182,7 @@
 #include "packtask.h"
 #include "pick.h"
 #include "prunetask.h"
+#include "statstask.h"
 #include "selftest.h"
 #include "viewport.h"
 #include "wire.h"
@@ -172,6 +198,8 @@ static gboolean g_prune_arg;      /* --prune: the cell's chunk column,
                                      deleted (G18) */
 static gboolean g_convert_arg;    /* --convert: the world to Java
                                      beside itself (G19)            */
+static gboolean g_stats_arg;      /* --stats: count what the world
+                                     holds (G21)                    */
 static char *g_pack_dir;          /* the session's directory, owned   */
 static char *g_mesh_ns;           /* the model split at ':', owned    */
 static char *g_mesh_path;
@@ -199,6 +227,17 @@ static int32_t g_world_dim;        /* --dimension: the number the CLI
                                       parses, the window takes it raw */
 static long g_wx, g_wy, g_wz;      /* --at: where to stand            */
 static bool g_chunk_settled, g_chunk_ok;
+static bool g_ask_seen;           /* an ask ever started: the settle's
+                                      world= and the exit's world
+                                      clauses speak only for runs
+                                      that asked (G21 — a stats-only
+                                      world run never does)         */
+static bool g_at_seen;            /* a cell was ever GIVEN — the
+                                      --at flag, the bar's parsed Go
+                                      or a cell door (G21): without
+                                      one there is no question to
+                                      ask, and the bar's defaults
+                                      are not a question            */
 static bool g_fill_seen, g_fill_ok;  /* the writer's answer (G15):
                                         the settle line's fill=      */
 static bool g_prune_seen, g_prune_ok; /* the destructive writer's
@@ -207,6 +246,8 @@ static bool g_prune_seen, g_prune_ok; /* the destructive writer's
 static bool g_convert_seen, g_convert_ok; /* the creating writer's
                                              answer (G19): the settle
                                              line's convert=        */
+static bool g_stats_seen, g_stats_ok; /* the reader's answer (G21):
+                                         the settle line's stats=   */
 static char *g_spec_seen;          /* the world's answer, its words   */
 static size_t g_chunk_faces;       /* the cull's kept faces (G10)     */
 static size_t g_chunk_faces_total; /* the mesh's own, before it       */
@@ -218,6 +259,7 @@ static bool g_chunk_pending;       /* a Go pressed while one is up    */
 static bool g_fill_pending;        /* a Fill pressed while one is up  */
 static bool g_prune_pending;       /* a Prune pressed while one is up */
 static bool g_convert_pending;     /* a Convert pressed while up      */
+static bool g_stats_pending;       /* a Stats pressed while up (G21)  */
 static GtkWidget *g_world_label;   /* the world's answer, its words   */
 static GtkWidget *g_wx_entry;      /* the bar's own --at: X, Y, Z     */
 static GtkWidget *g_wy_entry;
@@ -290,16 +332,24 @@ static void maybe_smoke_quit(void)
     if (g_world_dir != NULL) {
         /* A landed prune's re-ask refusing is the world's own new
            answer, not the smoke's failure: the chunk the cell
-           stood in is gone, and the refusal says so (G18). */
-        if (!g_chunk_ok && !(g_prune_seen && g_prune_ok))
+           stood in is gone, and the refusal says so (G18). The
+           ask's clauses speak only for runs that asked — a
+           stats-only world run has no answer at the cell to
+           judge (G21) — while the frame's GL is judged for any
+           world run, asked or not. */
+        if (g_ask_seen && !g_chunk_ok &&
+            !(g_prune_seen && g_prune_ok))
             g_exit_code = 1;
         else if (mcme_viewport_gl_failed(g_viewport)) g_exit_code = 2;
-        else if (g_chunk_ok && g_chunk_faces > 0 &&
+        else if (g_ask_seen && g_chunk_ok && g_chunk_faces > 0 &&
                  !mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
     /* The creating writer's own verdict (G19): a refused convert
        fails the smoke whatever the world's ask then answers. */
     if (g_convert_seen && !g_convert_ok) g_exit_code = 1;
+    /* The reader's own verdict (G21): a refused count fails the
+       smoke on its words — every door owns its settle clause. */
+    if (g_stats_seen && !g_stats_ok) g_exit_code = 1;
     {
         float cyaw = 0, cpitch = 0, cdist = 0;
         long pick[3];
@@ -321,7 +371,7 @@ static void maybe_smoke_quit(void)
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
                 "ask=%s world=%s spec=%s faces=%zu/%zu cells=%zu "
                 "drew=%d tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f "
-                "pick=%s fill=%s prune=%s convert=%s\n",
+                "pick=%s fill=%s prune=%s convert=%s stats=%s\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -330,8 +380,8 @@ static void maybe_smoke_quit(void)
                 g_mesh_ns == NULL ? "none"
                                   : (g_mesh_by_block ? "block"
                                                      : "model"),
-                g_world_dir == NULL ? "not-asked"
-                                    : (g_chunk_ok ? "ok" : "refused"),
+                !g_ask_seen ? "not-asked"
+                            : (g_chunk_ok ? "ok" : "refused"),
                 g_chunk_ok && g_spec_seen != NULL ? g_spec_seen : "-",
                 g_chunk_faces,
                 g_chunk_faces_total,
@@ -344,7 +394,9 @@ static void maybe_smoke_quit(void)
                 g_prune_seen ? (g_prune_ok ? "ok" : "refused")
                              : "none",
                 g_convert_seen ? (g_convert_ok ? "ok" : "refused")
-                               : "none");
+                               : "none",
+                g_stats_seen ? (g_stats_ok ? "ok" : "refused")
+                             : "none");
     }
     g_application_quit(G_APPLICATION(g_app));
 }
@@ -454,6 +506,7 @@ static void queue_fill(void);  /* the lane's writer (G15) */
 static void start_fill(void);
 static void start_prune(void);
 static void start_convert(void);
+static void start_stats(void);    /* the reader behind them (G21)   */
 
 static void on_chunk_result(void *userdata, McmeChunkResult *result)
 {
@@ -514,12 +567,18 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
     } else if (g_chunk_pending) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed answer steps aside for the Go */
+    } else if (g_stats_pending) {
+        g_stats_pending = false;
+        start_stats(); /* the reader waits behind the traffic (G21) */
     }
     maybe_smoke_quit();
 }
 
 static void start_chunk_ask(void)
 {
+    g_ask_seen = true; /* an ask ever runs: the settle's world=
+                          and the exit's world clauses speak for
+                          it from here (G21) */
     g_chunk_settled = false;
     g_chunk_ok = false;
     g_chunk_faces = 0;
@@ -548,6 +607,13 @@ static void start_chunk_ask(void)
 static void queue_chunk_ask(void)
 {
     if (g_world_dir == NULL) return;
+    /* No cell ever given: no question stands — the flags' startup
+       chain may arrive here on a world run that asked for none
+       (G21's --stats relaxes --at), and the bar's default numbers
+       are display, not intent. The hand's roads (Go, the cell
+       doors, the world dialog's own world_go) all mark the cell
+       given before they queue. */
+    if (!g_at_seen) return;
     if (g_chunk_flight) {
         g_chunk_pending = true;
         return;
@@ -593,6 +659,9 @@ static void on_fill_result(void *userdata, McmeFillResult *result)
     } else if (g_chunk_pending || ok) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed fill's own proof (G15) */
+    } else if (g_stats_pending) {
+        g_stats_pending = false;
+        start_stats(); /* the reader waits behind the traffic (G21) */
     }
     maybe_smoke_quit();
 }
@@ -627,6 +696,7 @@ static void start_fill(void)
  * write: the refusal lands in the world's own label. */
 static void queue_fill(void)
 {
+    g_at_seen = true; /* a cell door: the bar's cell is the question (G21) */
     if (g_world_dir == NULL) {
         gtk_label_set_text(GTK_LABEL(g_world_label),
                            "no world open — nothing to fill");
@@ -703,6 +773,9 @@ static void on_prune_result(void *userdata, McmePruneResult *result)
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed prune's own proof: the world
                               says the chunk is gone */
+    } else if (g_stats_pending) {
+        g_stats_pending = false;
+        start_stats(); /* the reader waits behind the traffic (G21) */
     }
     maybe_smoke_quit();
 }
@@ -739,6 +812,7 @@ static void start_prune(void)
  * `chunk prune` never asking either (D65). */
 static void queue_prune(void)
 {
+    g_at_seen = true; /* a cell door: the bar's cell is the question (G21) */
     if (g_world_dir == NULL) {
         gtk_label_set_text(GTK_LABEL(g_world_label),
                            "no world open — nothing to prune");
@@ -858,6 +932,9 @@ static void on_convert_result(void *userdata, McmeConvertResult *result)
            nothing in the open world, so the label keeps the
            report's own words. */
         queue_chunk_ask();
+    } else if (g_stats_pending) {
+        g_stats_pending = false;
+        start_stats(); /* the reader waits behind the traffic (G21) */
     }
     maybe_smoke_quit();
 }
@@ -907,6 +984,148 @@ static void on_convert_clicked(GtkButton *btn, gpointer user_data)
     (void)btn;
     (void)user_data;
     queue_convert(); /* creates, never destroys: no asking back */
+}
+
+static void on_stats_result(void *userdata, McmeStatsResult *result)
+{
+    int gen = GPOINTER_TO_INT(userdata);
+    bool stale = gen != g_mesh_gen;
+    bool ok = result->ok;
+
+    g_tasks--; /* a post is a post: the count follows workers */
+    g_chunk_flight = false;
+    g_stats_seen = true;
+    g_stats_ok = ok;
+    /* The reader's answer is final: it changed nothing, so nothing
+       re-asks after it (the convert's rule, held wider) — it
+       settles the wait itself, because a stats-only run has no
+       ask behind it to settle instead. The ask's own verdict under
+       it is left alone: world= speaks for the ask, stats= for
+       this door. */
+    g_chunk_settled = true;
+    if (!ok && !stale) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           result->text ? result->text : "(no memory)");
+    } else if (ok && !stale) {
+        char txt[600];
+        size_t at;
+
+        /* The counts' own sentence: identity first, then the
+           numbers — bedrock's store walked key by key, its
+           dimensions spelled through mcme_dimension_name (G20's
+           vocabulary, the number bare when the name doesn't know
+           it); java's regions from the probe that counted them.
+           Both spellings are the CLI's inventory printing its own
+           rows, one engine two faces. */
+        if (result->name != NULL)
+            snprintf(txt, sizeof txt, "%s — ", result->name);
+        else
+            txt[0] = '\0';
+        at = strlen(txt);
+        if (result->kind == MCME_WORLD_JAVA) {
+            snprintf(txt + at, sizeof txt - at,
+                     "java: %zu chunk%s in %zu region%s",
+                     result->chunks, result->chunks == 1 ? "" : "s",
+                     result->region_files,
+                     result->region_files == 1 ? "" : "s");
+        } else {
+            size_t rows_at;
+
+            snprintf(txt + at, sizeof txt - at,
+                     "bedrock: %zu chunk%s in %zu key%s",
+                     result->chunks, result->chunks == 1 ? "" : "s",
+                     result->keys, result->keys == 1 ? "" : "s");
+            at = strlen(txt);
+            rows_at = at;
+            for (size_t i = 0; i < result->dims &&
+                              at + 40 < sizeof txt; ++i) {
+                const char *dim = mcme_dimension_name(
+                    result->by_dim[i].dimension);
+                char dimtxt[32];
+
+                if (dim != NULL)
+                    snprintf(dimtxt, sizeof dimtxt, "%s", dim);
+                else
+                    snprintf(dimtxt, sizeof dimtxt, "%d",
+                             (int)result->by_dim[i].dimension);
+                snprintf(txt + at, sizeof txt - at, "%s%s %zu",
+                         i == 0 ? " (" : ", ", dimtxt,
+                         result->by_dim[i].chunks);
+                at = strlen(txt);
+            }
+            if (at > rows_at && at + 2 < sizeof txt)
+                snprintf(txt + at, sizeof txt - at, ")");
+        }
+        gtk_label_set_text(GTK_LABEL(g_world_label), txt);
+    }
+    mcme_statsresult_free(result);
+    if (g_fill_pending) {
+        g_fill_pending = false;
+        start_fill(); /* the writers drain fill-first (G18) */
+    } else if (g_prune_pending) {
+        g_prune_pending = false;
+        start_prune();
+    } else if (g_convert_pending) {
+        g_convert_pending = false;
+        start_convert();
+    } else if (g_chunk_pending) {
+        g_chunk_pending = false;
+        /* Only a pressed Go re-asks after this reader: nothing
+           changed in the open world, so the label keeps the
+           count's own sentence. */
+        queue_chunk_ask();
+    } else if (g_stats_pending) {
+        g_stats_pending = false;
+        start_stats(); /* the latest count wins the road */
+    }
+    maybe_smoke_quit();
+}
+
+/* The count takes the lane the traffic holds (G21): the walk
+ * OPENS the store and reads every key, so it rides the same
+ * exclusivity as the writes and the ask — one world user ever,
+ * side by side otherwise (the pool runs workers concurrently).
+ * g_chunk_ok is left standing: the ask's verdict, not this door's
+ * — stats= carries this door's own. */
+static void start_stats(void)
+{
+    g_chunk_settled = false;
+    if (mcme_statstask_start(g_wire, g_world_dir,
+                             on_stats_result,
+                             GINT_TO_POINTER(g_mesh_gen))) {
+        g_tasks++;
+        g_chunk_flight = true;
+    } else {
+        g_chunk_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "stats task: no memory");
+    }
+}
+
+/* The count's door (G21): the open world, counted. No cell — this
+ * door reads the world, not a place in it — no dialog (it breaks
+ * nothing, so nothing asks back: the readers' family under D66),
+ * and no world, nothing to count: the refusal lands in the
+ * world's own label. */
+static void queue_stats(void)
+{
+    if (g_world_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "no world open — nothing to count");
+        return;
+    }
+    if (g_chunk_flight) {
+        g_stats_pending = true;
+        return;
+    }
+    start_stats();
+}
+
+static void on_stats_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    (void)user_data;
+    queue_stats(); /* reads, never writes: no asking back */
 }
 
 static void on_pack_result(void *userdata, McmePackResult *result)
@@ -1142,6 +1361,8 @@ static void world_go(void)
     g_wy = y;
     g_wz = z;
     g_world_dim = dim;
+    g_at_seen = true; /* the bar's cell parsed and standing: the
+                         hand has given a question (G21) */
     g_section = gtk_check_button_get_active(
         GTK_CHECK_BUTTON(g_section_check));
     if (g_pack_dir == NULL) {
@@ -1330,6 +1551,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     GtkWidget *fill = gtk_button_new_with_label("Fill");
     GtkWidget *prune = gtk_button_new_with_label("Prune");
     GtkWidget *convert = gtk_button_new_with_label("Convert");
+    GtkWidget *stats = gtk_button_new_with_label("Stats");
     char init[32];
 
     (void)user;
@@ -1372,6 +1594,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_box_append(GTK_BOX(wrow), fill);
     gtk_box_append(GTK_BOX(wrow), prune);
     gtk_box_append(GTK_BOX(wrow), convert);
+    gtk_box_append(GTK_BOX(wrow), stats);
     g_models = gtk_string_list_new(NULL);
     g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
     g_blocks = gtk_string_list_new(NULL);
@@ -1413,6 +1636,12 @@ static void on_activate(GtkApplication *app, gpointer user)
         convert, "write this world as Java in <name>_java beside it");
     g_signal_connect(convert, "clicked",
                      G_CALLBACK(on_convert_clicked), win);
+    /* The reader names its question before the press (G21):
+       nothing asks back, and the count arrives in the label. */
+    gtk_widget_set_tooltip_text(
+        stats, "count this world's chunks, keys and dimensions");
+    g_signal_connect(stats, "clicked",
+                     G_CALLBACK(on_stats_clicked), win);
     gtk_window_set_titlebar(GTK_WINDOW(win), bar);
     gtk_window_set_default_size(GTK_WINDOW(win), 960, 640);
     gtk_widget_set_halign(g_pack_label, GTK_ALIGN_CENTER);
@@ -1469,6 +1698,13 @@ static void on_activate(GtkApplication *app, gpointer user)
        for. */
     if (g_convert_arg)
         queue_convert();
+
+    /* G21's: --stats queues the reader behind every writer — the
+       walk opens the store, so the lane holds it like the writes
+       and the ask, and its sentence lands under whatever the
+       traffic answered last. */
+    if (g_stats_arg)
+        queue_stats();
 
     if (g_smoke) {
         /* G8: the camera takes the hand — the smoke drives the same
@@ -1533,6 +1769,7 @@ int main(int argc, char **argv)
                 return 1;
             }
             at_seen = true;
+            g_at_seen = true; /* the flags gave the question (G21) */
         } else if (strcmp(argv[i], "--dimension") == 0) {
             /* G20: the bar's names at the flag too — overworld,
                nether, end, or a number, the one vocabulary core
@@ -1575,6 +1812,13 @@ int main(int argc, char **argv)
                No argument: the input is --world's, the output is
                the derived name the answer spells. */
             g_convert_arg = TRUE;
+        } else if (strcmp(argv[i], "--stats") == 0) {
+            /* G21: the bar's Stats without the bar — count what
+               the world holds, the CLI's info/chunks engine read
+               through the door. No argument: the counts are the
+               world's own; no cell either — this door reads the
+               world, not a place in it. */
+            g_stats_arg = TRUE;
         } else if (strcmp(argv[i], "--block") == 0) {
             /* G16: the picker's other row without the bar — the
                block the chain meshes through the blockstate
@@ -1588,7 +1832,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
                             "[--open dir] [--world dir --at x y z "
                             "[--dimension n] [--section] "
-                            "[--fill block] [--prune] [--convert]] "
+                            "[--fill block] [--prune] [--convert] "
+                            "[--stats]] "
                             "[--block ns:block] "
                             "[pack-dir [ns:model]]\n");
             return 1;
@@ -1620,12 +1865,17 @@ int main(int argc, char **argv)
         model = npos > 1 ? pos[1] : NULL;
     }
     /* The world ask (G9): one question in three flags — alone they
-       are a typo, together they need a pack to mesh the block with. */
+       are a typo, together they need a pack to mesh the block with.
+       Since G21 --stats is the exception: it needs no cell, so a
+       world run may stand on the count alone — unless a cell
+       writer came along, which writes a place and asks for it. */
     if (at_seen && g_world_dir == NULL) {
         fprintf(stderr, "mcgui: --at wants --world\n");
         return 1;
     }
-    if (g_world_dir != NULL && !at_seen) {
+    if (g_world_dir != NULL && !at_seen &&
+        (g_fill_arg != NULL || g_prune_arg || g_convert_arg ||
+         !g_stats_arg)) {
         fprintf(stderr, "mcgui: --world wants --at x y z\n");
         return 1;
     }
@@ -1654,10 +1904,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "mcgui: --convert wants --world\n");
         return 1;
     }
-    /* --fill/--prune and --convert compose deliberately (G19): the
-       writers drain fill, prune, then convert — the biggest copy
-       reads what the smaller ones did — so "fill this cell, then
-       convert" is one run, not two questions. */
+    if (g_stats_arg && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --stats wants --world\n");
+        return 1;
+    }
+    /* --fill/--prune, --convert and --stats compose deliberately
+       (G19/G21): the writers drain fill, prune, then convert — the
+       biggest copy reads what the smaller ones did — and the count
+       waits behind them all, so "fill this cell, then convert, then
+       count the world" is one run, not two questions. */
     if (g_world_dir != NULL && g_open_dir == NULL && npos == 0) {
         fprintf(stderr, "mcgui: a world block needs a pack to mesh "
                         "it\n");

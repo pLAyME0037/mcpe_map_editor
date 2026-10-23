@@ -1474,112 +1474,7 @@ static int cmd_atlasmesh(const char *pack_dir, const char *spec,
  * container. It is deliberately read-only and never opens a database.
  * ======================================================================== */
 
-/* ========================================================================
- * Bedrock chunk inventory
- * ======================================================================== */
-
-typedef struct {
-    int32_t dimension;
-    int32_t x, z;
-} ChunkCoord;
-
-typedef struct {
-    int32_t dimension;
-    size_t  chunks;
-} DimensionCount;
-
-typedef struct {
-    bool    opened;             /* the store was readable at all */
-    size_t  keys;               /* every live key               */
-    size_t  chunk_keys;         /* keys that marked a chunk     */
-    size_t  chunks;             /* distinct (dimension, x, z)   */
-    ChunkCoord     *coords;     /* stb_ds, sorted then deduped  */
-    DimensionCount *by_dim;     /* stb_ds, one row per dimension */
-} BedrockInventory;
-
-static void bedrock_inventory_free(BedrockInventory *inv)
-{
-    arrfree(inv->coords);
-    arrfree(inv->by_dim);
-    memset(inv, 0, sizeof *inv);
-}
-
-static int chunk_coord_cmp(const void *pa, const void *pb)
-{
-    const ChunkCoord *a = (const ChunkCoord *)pa;
-    const ChunkCoord *b = (const ChunkCoord *)pb;
-    if (a->dimension != b->dimension) return a->dimension < b->dimension ? -1 : 1;
-    if (a->x != b->x) return a->x < b->x ? -1 : 1;
-    if (a->z != b->z) return a->z < b->z ? -1 : 1;
-    return 0;
-}
-
-static bool on_bedrock_key(void *ud, const McmeLevelEntry *e)
-{
-    BedrockInventory *inv = (BedrockInventory *)ud;
-    inv->keys++;
-
-    McmeBedrockKey k;
-    if (!mcme_bedrock_key_parse(e->key, e->key_len, &k) || !k.is_chunk) {
-        /* Level metadata, actors, portallists, and chunk data whose tag does
-           not identify a chunk. All normal, all counted so the total adds up. */
-        return true;
-    }
-
-    inv->chunk_keys++;
-    ChunkCoord c = { k.dimension, k.x, k.z };
-    arrput(inv->coords, c);
-    return true;
-}
-
-/*
- * Opens a Bedrock store and counts what is in it.
- *
- * "How many chunks" is not a number the store keeps; it has to be derived, and
- * the derivation is: a chunk is present if any key marks it. Several keys can
- * mark one chunk — a subchunk, a version record — so the coordinates are
- * collected and counted distinct rather than tallied per key.
- *
- * Returns false only when the store cannot be opened. A store that opens is a
- * success even if it holds no chunks, because an empty world is a real thing.
- */
-static bool bedrock_inventory(BedrockInventory *inv, const char *db_path)
-{
-    memset(inv, 0, sizeof *inv);
-
-    McmeLevelDb *db = NULL;
-    if (!mcme_leveldb_open(&db, db_path)) return false;
-    inv->opened = true;
-
-    mcme_leveldb_iterate(db, on_bedrock_key, inv);
-    mcme_leveldb_close(db);
-
-    size_t n = (size_t)arrlen(inv->coords);
-    if (n > 1) qsort(inv->coords, n, sizeof *inv->coords, chunk_coord_cmp);
-
-    for (size_t i = 0; i < n; ++i) {
-        if (i > 0 && chunk_coord_cmp(&inv->coords[i - 1], &inv->coords[i]) == 0) {
-            continue;   /* the same chunk under another tag */
-        }
-        inv->chunks++;
-
-        size_t rows = (size_t)arrlen(inv->by_dim);
-        if (rows > 0 && inv->by_dim[rows - 1].dimension == inv->coords[i].dimension) {
-            inv->by_dim[rows - 1].chunks++;
-        } else {
-            DimensionCount row = { inv->coords[i].dimension, 1 };
-            arrput(inv->by_dim, row);
-        }
-    }
-
-    /* The raw coordinate list is only needed to count; dropping it keeps the
-       peak footprint proportional to the store rather than keeping it. */
-    arrfree(inv->coords);
-    inv->coords = NULL;
-    return true;
-}
-
-static void print_info_text(const McmeWorldInfo *w, const BedrockInventory *inv)
+static void print_info_text(const McmeWorldInfo *w, const McmeBedrockInventory *inv)
 {
     printf("path:     %s\n", w->path);
     printf("format:   %s\n", mcme_world_kind_name(w->kind));
@@ -1635,7 +1530,7 @@ static void print_json(cJSON *root)
     cJSON_Delete(root);
 }
 
-static void print_info_json(const McmeWorldInfo *w, const BedrockInventory *inv)
+static void print_info_json(const McmeWorldInfo *w, const McmeBedrockInventory *inv)
 {
     /* Built with cJSON rather than by hand so names containing quotes or
        non-ASCII survive the round trip into a JSON parser. */
@@ -1680,7 +1575,7 @@ static void print_info_json(const McmeWorldInfo *w, const BedrockInventory *inv)
                 cJSON_AddNumberToObject(root, "keys", (double)inv->keys);
                 cJSON_AddNumberToObject(root, "chunks", (double)inv->chunks);
                 cJSON *dims = cJSON_AddArrayToObject(root, "chunks_by_dimension");
-                for (size_t i = 0; i < (size_t)arrlen(inv->by_dim); ++i) {
+                for (size_t i = 0; i < inv->dims; ++i) {
                     cJSON *row = cJSON_CreateObject();
                     if (row == NULL) break;
                     cJSON_AddNumberToObject(row, "dimension",
@@ -1733,10 +1628,10 @@ static int cmd_info(int argc, char **argv)
 
     /* Only opened for a store that is actually there. Probing is cheap and
        opening is not, and a Java world has no store to open. */
-    BedrockInventory inv;
+    McmeBedrockInventory inv;
     memset(&inv, 0, sizeof inv);
     if (info.kind == MCME_WORLD_BEDROCK && info.db_path != NULL) {
-        if (!bedrock_inventory(&inv, info.db_path)) {
+        if (!mcme_bedrock_inventory(&inv, info.db_path)) {
             /* Keep the exit code at "found": the world was identified, only
                its contents could not be read, and a script that wants to
                distinguish those can ask for --json and read db_error. */
@@ -1748,7 +1643,7 @@ static int cmd_info(int argc, char **argv)
     if (g_opts.json) print_info_json(&info, &inv);
     else print_info_text(&info, &inv);
 
-    bedrock_inventory_free(&inv);
+    mcme_bedrock_inventory_free(&inv);
     mcme_world_info_free(&info);
     return rc;
 }
@@ -1815,11 +1710,11 @@ static int cmd_chunks(int argc, char **argv)
             printf("chunks:   %zu\n", chunks);
         }
     } else if (info.kind == MCME_WORLD_BEDROCK && info.db_path != NULL) {
-        BedrockInventory inv;
-        if (!bedrock_inventory(&inv, info.db_path)) {
+        McmeBedrockInventory inv;
+        if (!mcme_bedrock_inventory(&inv, info.db_path)) {
             mcme_set_error("chunks: cannot read %s: %s", info.db_path,
                            mcme_last_error());
-            bedrock_inventory_free(&inv);
+            mcme_bedrock_inventory_free(&inv);
             mcme_world_info_free(&info);
             return MCME_EXIT_IO;
         }
@@ -1833,7 +1728,7 @@ static int cmd_chunks(int argc, char **argv)
                 cJSON_AddNumberToObject(root, "keys", (double)inv.keys);
                 cJSON_AddNumberToObject(root, "chunks", (double)chunks);
                 cJSON *dims = cJSON_AddArrayToObject(root, "chunks_by_dimension");
-                for (size_t i = 0; i < (size_t)arrlen(inv.by_dim); ++i) {
+                for (size_t i = 0; i < inv.dims; ++i) {
                     cJSON *row = cJSON_CreateObject();
                     if (row == NULL) break;
                     cJSON_AddNumberToObject(row, "dimension",
@@ -1851,7 +1746,7 @@ static int cmd_chunks(int argc, char **argv)
             printf("keys:     %zu\n", inv.keys);
             printf("chunks:   %zu\n", chunks);
             printf("by dimension:\n");
-            for (size_t i = 0; i < (size_t)arrlen(inv.by_dim); ++i) {
+            for (size_t i = 0; i < inv.dims; ++i) {
                 /* The inventory spells the names the vocabulary
                    spells (G20): one place decides them, and a
                    number with no name prints as the number. */
@@ -1865,7 +1760,7 @@ static int cmd_chunks(int argc, char **argv)
                 }
             }
         }
-        bedrock_inventory_free(&inv);
+        mcme_bedrock_inventory_free(&inv);
     } else {
         mcme_set_error("chunks: '%s' is not a world mcme recognises", path);
         mcme_world_info_free(&info);

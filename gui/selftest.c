@@ -74,6 +74,7 @@
 #include "packtask.h"
 #include "pick.h"
 #include "prunetask.h"
+#include "statstask.h"
 #include "viewport.h"
 #include "wire.h"
 #include "worldbar.h"
@@ -1664,6 +1665,234 @@ static void test_converttask(void)
     rm_rf(dir);
 }
 
+/* ===== statstask results ===== */
+static int g_stats_done_calls;
+static bool g_stats_done_ok;
+static char g_stats_done_text[512];
+static char g_stats_done_name[256];
+static McmeWorldKind g_stats_done_kind;
+static size_t g_stats_done_keys;
+static size_t g_stats_done_chunks;
+static size_t g_stats_done_regions;
+static size_t g_stats_done_dims;
+static McmeDimensionCount g_stats_done_rows[8];
+
+static void on_stats_done(void *userdata, McmeStatsResult *result)
+{
+    (void)userdata;
+    g_stats_done_calls++;
+    g_stats_done_ok = result->ok;
+    snprintf(g_stats_done_text, sizeof g_stats_done_text, "%s",
+             result->text ? result->text : "");
+    snprintf(g_stats_done_name, sizeof g_stats_done_name, "%s",
+             result->name ? result->name : "");
+    g_stats_done_kind = result->kind;
+    g_stats_done_keys = result->keys;
+    g_stats_done_chunks = result->chunks;
+    g_stats_done_regions = result->region_files;
+    g_stats_done_dims = result->dims;
+    for (size_t i = 0; i < result->dims && i < 8; ++i)
+        g_stats_done_rows[i] = result->by_dim[i];
+    mcme_statsresult_free(result);
+}
+
+/* The reader (G21): what the door counts, through the wire — the
+   probe's words for a directory that is not a world, cmd_info's own
+   line for one that probes but holds none, both goldens' fixed
+   inventory walked through mcme_bedrock_inventory (8 keys/3 chunks
+   overworld+nether for the store, 2 regions/5 chunks for java from
+   the probe), and the arc that ties the doors together: a fill
+   makes the input's own count grow (5→6 — the door sees what the
+   writers did), the convert carries the new cell (report 1 chunk),
+   and the count of its OUTPUT equals the report — the writer's
+   claim and the reader's count of the product, one number two
+   roads. */
+static void test_statstask(void)
+{
+    char dir[] = "/tmp/mcme_gui_stats_XXXXXX";
+    char out[600];
+    McmeWire *wire;
+    McmeConvertReport report;
+    bool bedrock = mcme_fs_exists("tests/golden/worlds/bedrock");
+    bool chunks_world =
+        mcme_fs_exists("tests/golden/worlds/bedrock-chunks");
+
+    printf("  statstask (the world counted, and two counts agreeing "
+           "across the border)\n");
+
+    CHECK(mkdtemp(dir) != NULL);
+
+    wire = mcme_wire_new();
+
+    /* the guards: nothing starts, nothing posts */
+    CHECK(!mcme_statstask_start(NULL, dir, on_stats_done, NULL));
+    CHECK(!mcme_statstask_start(wire, NULL, on_stats_done, NULL));
+    CHECK(!mcme_statstask_start(wire, dir, NULL, NULL));
+    mcme_statsresult_free(NULL);
+    CHECK(g_stats_done_calls == 0);
+
+    /* a directory that is not a world: the probe's own words, and
+       no counts counted */
+    g_stats_done_calls = 0;
+    g_stats_done_ok = true;
+    CHECK(mcme_statstask_start(wire, "/tmp/mcme_gui_no_world_dir",
+                               on_stats_done, NULL));
+    while (g_stats_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_stats_done_calls == 1);
+    CHECK(!g_stats_done_ok);
+    CHECK(g_stats_done_text[0] != '\0');
+    mcme_clear_error();
+
+    /* an empty directory probes but holds no world: cmd_info's own
+       line — the CLI's info is where this door's truth lives, so
+       the door speaks the verb's sentence */
+    {
+        char empty[] = "/tmp/mcme_gui_stats_empty_XXXXXX";
+
+        CHECK(mkdtemp(empty) != NULL);
+        g_stats_done_calls = 0;
+        g_stats_done_ok = true;
+        CHECK(mcme_statstask_start(wire, empty, on_stats_done, NULL));
+        while (g_stats_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_stats_done_calls == 1);
+        CHECK(!g_stats_done_ok);
+        CHECK(strstr(g_stats_done_text, "Not a Minecraft world")
+              != NULL);
+        CHECK(strstr(g_stats_done_text, "session.lock") != NULL);
+        rm_rf(empty);
+    }
+
+    if (!bedrock) {
+        printf("  SKIP golden world counts (tests/golden absent)\n");
+        mcme_wire_free(wire);
+        rm_rf(dir);
+        return;
+    }
+
+    /* the store's fixed inventory: 8 keys, 3 chunks, the two
+       dimensions the walk found — the numbers the CLI's `chunks`
+       prints from this same engine, walked here through the door */
+    if (chunks_world) {
+        char cdir[] = "/tmp/mcme_gui_stats_chunks_XXXXXX";
+
+        CHECK(mkdtemp(cdir) != NULL);
+        cp_rf("tests/golden/worlds/bedrock-chunks", cdir);
+        g_stats_done_calls = 0;
+        g_stats_done_ok = false;
+        CHECK(mcme_statstask_start(wire, cdir, on_stats_done, NULL));
+        while (g_stats_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_stats_done_calls == 1);
+        CHECK(g_stats_done_ok);
+        CHECK(g_stats_done_kind == MCME_WORLD_BEDROCK);
+        CHECK(g_stats_done_name[0] == '\0'); /* no level.dat, no name */
+        CHECK(g_stats_done_keys == 8);
+        CHECK(g_stats_done_chunks == 3);
+        CHECK(g_stats_done_dims == 2);
+        CHECK(g_stats_done_rows[0].dimension == 0);
+        CHECK(g_stats_done_rows[0].chunks == 2);
+        CHECK(g_stats_done_rows[1].dimension == 1);
+        CHECK(g_stats_done_rows[1].chunks == 1);
+        rm_rf(cdir);
+    }
+
+    /* java: the probe's own totals (region/, what `info` prints)
+       and the name the level.dat holds — no per-dimension rows,
+       the probe's scope showing in both shells alike */
+    if (mcme_fs_exists("tests/golden/worlds/java")) {
+        char jdir[] = "/tmp/mcme_gui_stats_java_XXXXXX";
+
+        CHECK(mkdtemp(jdir) != NULL);
+        cp_rf("tests/golden/worlds/java", jdir);
+        g_stats_done_calls = 0;
+        g_stats_done_ok = false;
+        CHECK(mcme_statstask_start(wire, jdir, on_stats_done, NULL));
+        while (g_stats_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_stats_done_calls == 1);
+        CHECK(g_stats_done_ok);
+        CHECK(g_stats_done_kind == MCME_WORLD_JAVA);
+        CHECK(strcmp(g_stats_done_name, "World Created By Amulet")
+              == 0);
+        CHECK(g_stats_done_regions == 2);
+        CHECK(g_stats_done_chunks == 5);
+        CHECK(g_stats_done_dims == 0);
+        rm_rf(jdir);
+    }
+
+    /* The arc (a copy whole, the golden never opened for writing —
+       the battery's own rule, kept): the door counts the pristine
+       input, sees the fill grow it, and counts the convert's
+       product against the convert's own report. */
+    cp_rf("tests/golden/worlds/bedrock", dir);
+    snprintf(out, sizeof out, "%s_java", dir);
+
+    g_stats_done_calls = 0;
+    g_stats_done_ok = false;
+    CHECK(mcme_statstask_start(wire, dir, on_stats_done, NULL));
+    while (g_stats_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_stats_done_calls == 1);
+    CHECK(g_stats_done_ok);
+    CHECK(g_stats_done_kind == MCME_WORLD_BEDROCK);
+    CHECK(g_stats_done_keys == 15);
+    CHECK(g_stats_done_chunks == 5);
+    CHECK(g_stats_done_dims == 1);
+    CHECK(g_stats_done_rows[0].dimension == 0);
+    CHECK(g_stats_done_rows[0].chunks == 5);
+
+    /* the fill through the wire (G15's own road): one cell, one
+       chunk the door did not see before — 6 now, and one more key */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = false;
+    CHECK(mcme_filltask_start(wire, dir, 0, 5000, 20, 5000,
+                              "minecraft:stone", on_fill_done, NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(g_fill_done_ok);
+
+    g_stats_done_calls = 0;
+    g_stats_done_ok = false;
+    CHECK(mcme_statstask_start(wire, dir, on_stats_done, NULL));
+    while (g_stats_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_stats_done_calls == 1);
+    CHECK(g_stats_done_ok);
+    CHECK(g_stats_done_keys == 16);
+    CHECK(g_stats_done_chunks == 6);
+    CHECK(g_stats_done_rows[0].chunks == 6);
+
+    /* the convert (the core's own call — its task road is
+       converttask's own test): the filled cell is the terrain this
+       input has, so the report counts it and the output holds it */
+    memset(&report, 0, sizeof report);
+    CHECK(mcme_convert_bedrock_java(dir, out, &report, NULL));
+    CHECK(report.chunks == 1);
+    CHECK(report.blocks == 4096);
+
+    /* THE cross-check (G21): the converter's claim and this door's
+       count of its product, one number — 1 and 1, counted by two
+       engines that never met */
+    g_stats_done_calls = 0;
+    g_stats_done_ok = false;
+    CHECK(mcme_statstask_start(wire, out, on_stats_done, NULL));
+    while (g_stats_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_stats_done_calls == 1);
+    CHECK(g_stats_done_ok);
+    CHECK(g_stats_done_kind == MCME_WORLD_JAVA);
+    CHECK(g_stats_done_regions == 1);
+    CHECK(g_stats_done_chunks == report.chunks);
+    CHECK(g_stats_done_chunks == 1);
+
+    mcme_wire_free(wire);
+    rm_rf(out);
+    rm_rf(dir);
+}
+
 static double *darray(size_t n)
 {
     double *p = calloc(n, sizeof *p);
@@ -2327,6 +2556,7 @@ int mcme_gui_selftest(void)
     test_filltask();
     test_prunetask();
     test_converttask();
+    test_statstask();
     test_stage();
     test_camera();
     test_worldbar();

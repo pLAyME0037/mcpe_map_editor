@@ -7,6 +7,10 @@
 #include "mcme/compress.h"
 #include "mcme/nbt.h"
 #include "mcme/region.h"
+#include "mcme/leveldb.h"
+#include "mcme/bedrock_keys.h"
+
+#include "stb_ds.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -529,4 +533,94 @@ bool mcme_java_dimension_dir(int32_t dimension, const char **out_dir)
                    "the end in DIM1; there is no directory for "
                    "dimension %d", (int)dimension);
     return false;
+}
+
+/* ========================================================================
+ * Bedrock chunk inventory
+ * ======================================================================== */
+
+/* See world.h. The walk moved here whole when its second client (the GUI's
+   stats door) arrived (G21): "how many chunks, in which dimensions" is a
+   number the store keeps in no single place, so both shells read the same
+   engine rather than drifting apart. Only the scratch coordinate list stays
+   behind — it serves the count, and dropping it keeps the peak footprint
+   proportional to the store rather than keeping it. */
+
+typedef struct {
+    int32_t dimension;
+    int32_t x, z;
+} ChunkCoord;
+
+typedef struct {
+    McmeBedrockInventory *out;
+    ChunkCoord *coords;      /* the walk's own scratch; never leaves it */
+} InventoryWalk;
+
+static int chunk_coord_cmp(const void *pa, const void *pb)
+{
+    const ChunkCoord *a = (const ChunkCoord *)pa;
+    const ChunkCoord *b = (const ChunkCoord *)pb;
+    if (a->dimension != b->dimension) return a->dimension < b->dimension ? -1 : 1;
+    if (a->x != b->x) return a->x < b->x ? -1 : 1;
+    if (a->z != b->z) return a->z < b->z ? -1 : 1;
+    return 0;
+}
+
+static bool on_bedrock_key(void *ud, const McmeLevelEntry *e)
+{
+    InventoryWalk *w = (InventoryWalk *)ud;
+    w->out->keys++;
+
+    McmeBedrockKey k;
+    if (!mcme_bedrock_key_parse(e->key, e->key_len, &k) || !k.is_chunk) {
+        /* Level metadata, actors, portallists, and chunk data whose tag does
+           not identify a chunk. All normal, all counted so the total adds up. */
+        return true;
+    }
+
+    w->out->chunk_keys++;
+    ChunkCoord c = { k.dimension, k.x, k.z };
+    arrput(w->coords, c);
+    return true;
+}
+
+bool mcme_bedrock_inventory(McmeBedrockInventory *inv, const char *db_path)
+{
+    memset(inv, 0, sizeof *inv);
+
+    McmeLevelDb *db = NULL;
+    if (!mcme_leveldb_open(&db, db_path)) return false;
+    inv->opened = true;
+
+    InventoryWalk w = { inv, NULL };
+    mcme_leveldb_iterate(db, on_bedrock_key, &w);
+    mcme_leveldb_close(db);
+
+    size_t n = (size_t)arrlen(w.coords);
+    if (n > 1) qsort(w.coords, n, sizeof *w.coords, chunk_coord_cmp);
+
+    for (size_t i = 0; i < n; ++i) {
+        if (i > 0 && chunk_coord_cmp(&w.coords[i - 1], &w.coords[i]) == 0) {
+            continue;   /* the same chunk under another tag */
+        }
+        inv->chunks++;
+
+        size_t rows = inv->dims;
+        if (rows > 0 && inv->by_dim[rows - 1].dimension == w.coords[i].dimension) {
+            inv->by_dim[rows - 1].chunks++;
+        } else {
+            McmeDimensionCount row = { w.coords[i].dimension, 1 };
+            arrput(inv->by_dim, row);
+            inv->dims = (size_t)arrlen(inv->by_dim);
+        }
+    }
+
+    arrfree(w.coords);
+    return true;
+}
+
+void mcme_bedrock_inventory_free(McmeBedrockInventory *inv)
+{
+    arrfree(inv->by_dim);
+    memset(inv, 0, sizeof *inv);
 }

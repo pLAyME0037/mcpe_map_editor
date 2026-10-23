@@ -97,6 +97,44 @@ bool mcme_dimension_parse(const char *text, int32_t *out);
 const char *mcme_dimension_name(int32_t dimension);
 
 /* ========================================================================
+ * Bedrock chunk inventory
+ * ======================================================================== */
+
+/* One row of a store's per-dimension counts. Spell the dimension with
+   mcme_dimension_name — a number the vocabulary doesn't know prints as the
+   number, which is the inventory's own display rule. */
+typedef struct {
+    int32_t dimension;
+    size_t  chunks;
+} McmeDimensionCount;
+
+/* What a Bedrock store holds, counted from its live keys — the engine behind
+   the CLI's `info` and `chunks`, and the GUI's stats door (its second client,
+   which is why the walk lives here rather than in either printer). The walk
+   touches the whole store: cheap on a few keys, seconds on a real world, so
+   callers run it off their loop thread. */
+typedef struct {
+    bool    opened;      /* the store was readable at all        */
+    size_t  keys;        /* every live key                       */
+    size_t  chunk_keys;  /* keys that marked a chunk             */
+    size_t  chunks;      /* distinct (dimension, x, z)           */
+    size_t  dims;        /* rows in by_dim                       */
+    McmeDimensionCount *by_dim; /* one row per dimension, in the store's own
+                                   order — owned, released by
+                                   mcme_bedrock_inventory_free            */
+} McmeBedrockInventory;
+
+/* Walk every live key of the store at db_path and count the chunks it holds.
+   An unreadable store returns false (mcme_last_error says why) with *inv
+   zeroed; a store with no chunk keys counts as opened with zero chunks —
+   that is a real store, not a failure. */
+bool mcme_bedrock_inventory(McmeBedrockInventory *inv, const char *db_path);
+
+/* Zero an inventory and release the rows it owns. Safe on a zeroed or failed
+   inventory. */
+void mcme_bedrock_inventory_free(McmeBedrockInventory *inv);
+
+/* ========================================================================
  * One block out of the store (G9)
  *
  * The block position's own answer — what `chunk get` prints and

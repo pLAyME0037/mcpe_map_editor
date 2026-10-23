@@ -4432,3 +4432,39 @@ the fix, not only the fact), or a second creating writer (a
 re-encoder, a merge) can no longer promise "finished or
 absent" (then creating is no longer safe by construction and
 owes the dialog after all).
+
+## D67 — A cell nobody gave is not a question
+
+An ask — the chunk question at coordinates — runs only for a
+cell that was GIVEN: the flags parsed it out of `--at`, the
+hand's Go parsed the bar through mcme_worldbar_ask, or a cell
+door (Fill, Prune) read it. The bar's default numbers are
+display, not intent, and nothing may ask them on the hand's
+behalf.
+
+G21 drew the line by crossing it: `--stats` is the first world
+run allowed without `--at` (it counts the world, not a place in
+it), and the gate's first pass showed what the old implicit
+rule had been hiding — the pack's landing auto-asks, so a
+stats-only smoke settled `world=ok
+spec=minecraft:redstone_wire{...}` with a cell answer nobody
+had asked for, and the label's last word would have been an
+invented question's answer standing under the door's own
+sentence. `queue_chunk_ask` now gates on `g_at_seen`; the
+flags' startup chain can no longer conjure a cell; the
+settle's `world=not-asked` says the truth (with the exit's
+world clause keyed to the ask having ever started, so nothing
+judges a run by an answer it never sought). Every hand road is
+unaffected because each marks the cell given before it queues:
+the `--at` parse, the bar's parsed Go, the cell doors — and the
+world dialog reaches the ask only through `world_go`, which
+parses the bar first.
+
+**Reverses if:** a future road legitimately wants "whatever
+cell the bar now shows" as its question with no hand step
+(then "given" must be redefined around displayed intent, not
+around this flag), or the flags grow a road that reads the bar
+itself (then the parse marks given by construction and the
+gate is dead weight), or the settle's `world=` grows a third
+state this pair cannot carry (then the ask's own "ever
+started" bit is the truth-source to retire, not grow).
