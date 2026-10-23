@@ -80,6 +80,24 @@
  *                the settle line names the door as
  *                ask=block|model|none beside mesh=. One question
  *                with the model positional: give one.
+ *   --prune      delete the chunk column the --at cell stands in
+ *                (G18) — the lane's second writer, and the
+ *                destructive one: mcme_prune behind one door for
+ *                both kinds (Bedrock tombstones the column's keys
+ *                under the store's LOCK, Java zeroes the chunk's
+ *                slot in its region file), and the report's words —
+ *                what that world lost, in its own unit — land in
+ *                the world's label before the re-ask replaces them
+ *                with the world's new answer: the refusal that
+ *                says the chunk is gone, the delete's own proof.
+ *                No argument: the cell is --at's, the same one
+ *                --fill writes, and the two are one question —
+ *                give one. The bar's Prune button asks before it
+ *                deletes (D65); this flag skips the dialog because
+ *                the typed verb is its own confirmation, the CLI's
+ *                `chunk prune` never asking either. The settle
+ *                line names the door as prune=ok|refused|none
+ *                beside fill=.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -87,7 +105,9 @@
  *
  * Smoke exit codes: 0 — the pack opened and (if asked) the model
  * or block meshed and a frame carried it, or the world answered
- * with faces to show; 1 — a refusal, or the mesh never reached a
+ * with faces to show — or, since G18, a landed prune answered
+ * with the refusal that says the chunk is gone, the delete's own
+ * proof; 1 — a refusal, or the mesh never reached a
  * frame (a world answer whose cull kept zero faces settles
  * without one — the world said nothing stands there); 2 — GL
  * trouble (context, shader, upload, draw).
@@ -106,6 +126,7 @@
 #include "meshtask.h"
 #include "packtask.h"
 #include "pick.h"
+#include "prunetask.h"
 #include "selftest.h"
 #include "viewport.h"
 #include "wire.h"
@@ -117,6 +138,8 @@ static const char *g_open_dir;    /* --open: the dialog without it    */
 static const char *g_fill_arg;    /* --fill: the block spec, borrowed */
 static const char *g_block_arg;   /* --block: the block row, borrowed
                                      (G16) */
+static gboolean g_prune_arg;      /* --prune: the cell's chunk column,
+                                     deleted (G18) */
 static char *g_pack_dir;          /* the session's directory, owned   */
 static char *g_mesh_ns;           /* the model split at ':', owned    */
 static char *g_mesh_path;
@@ -146,6 +169,9 @@ static long g_wx, g_wy, g_wz;      /* --at: where to stand            */
 static bool g_chunk_settled, g_chunk_ok;
 static bool g_fill_seen, g_fill_ok;  /* the writer's answer (G15):
                                         the settle line's fill=      */
+static bool g_prune_seen, g_prune_ok; /* the destructive writer's
+                                         answer (G18): the settle
+                                         line's prune=              */
 static char *g_spec_seen;          /* the world's answer, its words   */
 static size_t g_chunk_faces;       /* the cull's kept faces (G10)     */
 static size_t g_chunk_faces_total; /* the mesh's own, before it       */
@@ -155,6 +181,7 @@ static bool g_section;             /* --section: the whole sub-chunk  */
 static bool g_chunk_flight;        /* the lane: one ask or fill up   */
 static bool g_chunk_pending;       /* a Go pressed while one is up    */
 static bool g_fill_pending;        /* a Fill pressed while one is up  */
+static bool g_prune_pending;       /* a Prune pressed while one is up */
 static GtkWidget *g_world_label;   /* the world's answer, its words   */
 static GtkWidget *g_wx_entry;      /* the bar's own --at: X, Y, Z     */
 static GtkWidget *g_wy_entry;
@@ -214,9 +241,13 @@ static void maybe_smoke_quit(void)
         else if (!mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
     if (g_world_dir != NULL) {
-        if (!g_chunk_ok) g_exit_code = 1;
+        /* A landed prune's re-ask refusing is the world's own new
+           answer, not the smoke's failure: the chunk the cell
+           stood in is gone, and the refusal says so (G18). */
+        if (!g_chunk_ok && !(g_prune_seen && g_prune_ok))
+            g_exit_code = 1;
         else if (mcme_viewport_gl_failed(g_viewport)) g_exit_code = 2;
-        else if (g_chunk_faces > 0 &&
+        else if (g_chunk_ok && g_chunk_faces > 0 &&
                  !mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
     {
@@ -240,7 +271,7 @@ static void maybe_smoke_quit(void)
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
                 "ask=%s world=%s spec=%s faces=%zu/%zu cells=%zu "
                 "drew=%d tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f "
-                "pick=%s fill=%s\n",
+                "pick=%s fill=%s prune=%s\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -259,7 +290,9 @@ static void maybe_smoke_quit(void)
                 mcme_viewport_textured(g_viewport),
                 mcme_viewport_gl_failed(g_viewport),
                 cyaw, cpitch, cdist, picks,
-                g_fill_seen ? (g_fill_ok ? "ok" : "refused") : "none");
+                g_fill_seen ? (g_fill_ok ? "ok" : "refused") : "none",
+                g_prune_seen ? (g_prune_ok ? "ok" : "refused")
+                             : "none");
     }
     g_application_quit(G_APPLICATION(g_app));
 }
@@ -367,6 +400,7 @@ static void picker_mirror(GtkStringList *list, GtkWidget *dd,
 static void queue_chunk_ask(void);
 static void queue_fill(void);  /* the lane's writer (G15) */
 static void start_fill(void);
+static void start_prune(void);
 
 static void on_chunk_result(void *userdata, McmeChunkResult *result)
 {
@@ -418,6 +452,9 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
     if (g_fill_pending) {
         g_fill_pending = false;
         start_fill(); /* the writer's turn: its answer re-asks */
+    } else if (g_prune_pending) {
+        g_prune_pending = false;
+        start_prune(); /* the writers drain fill-first (G18) */
     } else if (g_chunk_pending) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed answer steps aside for the Go */
@@ -491,6 +528,9 @@ static void on_fill_result(void *userdata, McmeFillResult *result)
     if (g_fill_pending) {
         g_fill_pending = false;
         start_fill(); /* the latest cell wins the road */
+    } else if (g_prune_pending) {
+        g_prune_pending = false;
+        start_prune(); /* the writers drain before the ask (G18) */
     } else if (g_chunk_pending || ok) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed fill's own proof (G15) */
@@ -545,6 +585,158 @@ static void on_fill_clicked(GtkButton *btn, gpointer user_data)
     (void)btn;
     (void)user_data;
     queue_fill();
+}
+
+static void on_prune_result(void *userdata, McmePruneResult *result)
+{
+    int gen = GPOINTER_TO_INT(userdata);
+    bool stale = gen != g_mesh_gen;
+    bool ok = result->ok;
+
+    g_tasks--; /* a post is a post: the count follows workers */
+    g_chunk_flight = false;
+    g_prune_seen = true;
+    g_prune_ok = ok;
+    if (!ok && !stale) {
+        g_chunk_settled = true;
+        g_chunk_ok = false;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           result->text ? result->text : "(no memory)");
+    } else if (ok && !stale) {
+        char txt[160];
+
+        /* The report's own words, in the unit that world counts in
+           (prune.h): Bedrock tombstones keys, Java punches region
+           files, and an empty selection wrote nothing — its own
+           contract, said plain. The re-ask that follows replaces
+           the label with the world's new answer: the refusal that
+           says the chunk is gone — the delete proving itself the
+           way the fill's write did, by being read back (D62,
+           inverted: here the read that fails is the proof). */
+        if (result->chunks == 0)
+            snprintf(txt, sizeof txt,
+                     "nothing stored in that chunk — nothing pruned");
+        else if (result->keys > 0)
+            snprintf(txt, sizeof txt, "pruned %ld chunk%s (%ld keys)",
+                     (long)result->chunks,
+                     result->chunks == 1 ? "" : "s",
+                     (long)result->keys);
+        else
+            snprintf(txt, sizeof txt,
+                     "pruned %ld chunk%s (%ld region file%s)",
+                     (long)result->chunks,
+                     result->chunks == 1 ? "" : "s",
+                     (long)result->region_files,
+                     result->region_files == 1 ? "" : "s");
+        gtk_label_set_text(GTK_LABEL(g_world_label), txt);
+    }
+    mcme_pruneresult_free(result);
+    if (g_fill_pending) {
+        g_fill_pending = false;
+        start_fill(); /* the writers drain fill-first (G18) */
+    } else if (g_prune_pending) {
+        g_prune_pending = false;
+        start_prune(); /* the latest cell wins the road */
+    } else if (g_chunk_pending || ok) {
+        g_chunk_pending = false;
+        queue_chunk_ask(); /* the landed prune's own proof: the world
+                              says the chunk is gone */
+    }
+    maybe_smoke_quit();
+}
+
+/* The destructive writer takes the lane the fill holds (G18): one
+ * store user ever, the bar's cell's chunk column, the worker's own
+ * copy of them at post (G13's rule). Y never rides: a chunk is all
+ * of its Y (D13). */
+static void start_prune(void)
+{
+    g_chunk_settled = false;
+    g_chunk_ok = false;
+    if (mcme_prunetask_start(g_wire, g_world_dir, g_world_dim,
+                             g_wx, g_wz,
+                             on_prune_result,
+                             GINT_TO_POINTER(g_mesh_gen))) {
+        g_tasks++;
+        g_chunk_flight = true;
+    } else {
+        g_chunk_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "prune task: no memory");
+    }
+}
+
+/* The prune's door (G18): the bar's cell's chunk column, through
+ * the same lane the ask rides — one store user ever, so a prune
+ * pressed mid-ask waits its turn and a Go or Fill pressed mid-
+ * prune is not lost (the landed prune re-asks anyway). No world,
+ * nothing to delete: the refusal lands in the world's own label.
+ * The bar's button asks first — a pruned column is the game's own
+ * data gone, unfilled-back — while the --prune flag skips the
+ * dialog because the typed verb is its own confirmation, the CLI's
+ * `chunk prune` never asking either (D65). */
+static void queue_prune(void)
+{
+    if (g_world_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "no world open — nothing to prune");
+        return;
+    }
+    if (g_chunk_flight) {
+        g_prune_pending = true;
+        return;
+    }
+    start_prune();
+}
+
+/* G18: the hand's confirmation, which the smoke never presses. The
+ * response is the button's index — the docs' own contract for
+ * choose_finish (read at docs.gtk.org, not the guessed
+ * GTK_RESPONSE_* constants): Delete stands at index 0, Escape's
+ * cancel at index 1, and any other answer is no. */
+static void on_prune_alert_done(GObject *source, GAsyncResult *res,
+                                gpointer user_data)
+{
+    GError *err = NULL;
+    int response = gtk_alert_dialog_choose_finish(
+        GTK_ALERT_DIALOG(source), res, &err);
+
+    (void)user_data;
+    if (err != NULL) g_error_free(err);
+    if (response == 0) queue_prune();
+}
+
+static void on_prune_clicked(GtkButton *btn, gpointer user_data)
+{
+    GtkWindow *win = GTK_WINDOW(user_data);
+    GtkAlertDialog *alert;
+    const char *buttons[] = { "Delete", "Cancel", NULL };
+    char detail[320];
+
+    (void)btn;
+    if (g_world_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "no world open — nothing to prune");
+        return;
+    }
+    snprintf(detail, sizeof detail,
+             "Every block of the column's Y is deleted from the "
+             "world at %s — the chunk the game saves, gone. This "
+             "cannot be undone.", g_world_dir);
+    /* The column the tapped cell stands in, floor division by 16
+       the chunk verbs' own rule (D13) — the number the deletion
+       names, not the cell the bar holds. */
+    alert = gtk_alert_dialog_new("Delete the chunk at (%ld, %ld)?",
+                                 (long)(g_wx >> 4), (long)(g_wz >> 4));
+    gtk_alert_dialog_set_detail(alert, detail);
+    gtk_alert_dialog_set_buttons(alert, buttons);
+    gtk_alert_dialog_set_cancel_button(alert, 1);   /* Escape */
+    gtk_alert_dialog_set_default_button(alert, 1); /* Return is never
+                                                       the destructive
+                                                       one */
+    gtk_alert_dialog_choose(alert, win, NULL, on_prune_alert_done,
+                            NULL);
+    g_object_unref(alert);
 }
 
 static void on_pack_result(void *userdata, McmePackResult *result)
@@ -966,6 +1158,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     GtkWidget *prow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *go = gtk_button_new_with_label("Go");
     GtkWidget *fill = gtk_button_new_with_label("Fill");
+    GtkWidget *prune = gtk_button_new_with_label("Prune");
     char init[32];
 
     (void)user;
@@ -1006,6 +1199,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_box_append(GTK_BOX(wrow), go);
     gtk_box_append(GTK_BOX(wrow), g_block_entry);
     gtk_box_append(GTK_BOX(wrow), fill);
+    gtk_box_append(GTK_BOX(wrow), prune);
     g_models = gtk_string_list_new(NULL);
     g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
     g_blocks = gtk_string_list_new(NULL);
@@ -1037,6 +1231,10 @@ static void on_activate(GtkApplication *app, gpointer user)
     g_signal_connect(world, "clicked", G_CALLBACK(on_world_clicked), win);
     g_signal_connect(go, "clicked", G_CALLBACK(on_go_clicked), win);
     g_signal_connect(fill, "clicked", G_CALLBACK(on_fill_clicked), win);
+    /* The destructive button asks back (D65): the click opens the
+       alert, and only its Delete answer reaches queue_prune. */
+    g_signal_connect(prune, "clicked", G_CALLBACK(on_prune_clicked),
+                     win);
     gtk_window_set_titlebar(GTK_WINDOW(win), bar);
     gtk_window_set_default_size(GTK_WINDOW(win), 960, 640);
     gtk_widget_set_halign(g_pack_label, GTK_ALIGN_CENTER);
@@ -1081,6 +1279,12 @@ static void on_activate(GtkApplication *app, gpointer user)
        the fill's own proof, the world's new answer. */
     if (g_fill_arg != NULL)
         queue_fill();
+
+    /* G18's: --prune queues the destructive writer the same way —
+       the typed verb is its own confirmation (the dialog belongs to
+       the button alone), and the lane holds it like the fill. */
+    if (g_prune_arg)
+        queue_prune();
 
     if (g_smoke) {
         /* G8: the camera takes the hand — the smoke drives the same
@@ -1169,6 +1373,11 @@ int main(int argc, char **argv)
                 return 1;
             }
             g_fill_arg = argv[++i];
+        } else if (strcmp(argv[i], "--prune") == 0) {
+            /* G18: the bar's Prune without the bar — the cell's
+               whole chunk column, deleted. No argument: the cell
+               is --at's, the same one --fill writes. */
+            g_prune_arg = TRUE;
         } else if (strcmp(argv[i], "--block") == 0) {
             /* G16: the picker's other row without the bar — the
                block the chain meshes through the blockstate
@@ -1182,7 +1391,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
                             "[--open dir] [--world dir --at x y z "
                             "[--dimension n] [--section] "
-                            "[--fill block]] [--block ns:block] "
+                            "[--fill block] [--prune]] "
+                            "[--block ns:block] "
                             "[pack-dir [ns:model]]\n");
             return 1;
         } else if (npos < 2) {
@@ -1232,6 +1442,15 @@ int main(int argc, char **argv)
     }
     if (g_fill_arg != NULL && g_world_dir == NULL) {
         fprintf(stderr, "mcgui: --fill wants --world\n");
+        return 1;
+    }
+    if (g_prune_arg && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --prune wants --world\n");
+        return 1;
+    }
+    if (g_prune_arg && g_fill_arg != NULL) {
+        fprintf(stderr, "mcgui: --fill and --prune are one cell — "
+                        "give one\n");
         return 1;
     }
     if (g_world_dir != NULL && g_open_dir == NULL && npos == 0) {

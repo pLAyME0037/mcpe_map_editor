@@ -7,6 +7,120 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-22 — The second writer: the column that asks back
+
+### Built
+
+- G18 + D65: the window's destructive door. The bar grows a
+  Prune button beside Fill, and the lane grows its second
+  writer: the tapped cell's WHOLE chunk column — every block of
+  its Y, the unit the game saves — out of the world it stands
+  in. `gui/prunetask.c` is filltask's twin through gui/task.c:
+  the probe speaks for the directory before the store's LOCK
+  ever sees it, then one call — `mcme_prune` (core, already
+  there; no core file moved) — whichever half the probe named:
+  Bedrock tombstones the column's keys under the LOCK, Java
+  zeroes the chunk's slot in its region file, no LOCK — region
+  files, no single store to hold one on. The report crosses as
+  data in the unit that world counts in (prune.h's own fields:
+  Bedrock fills chunks+keys, Java fills chunks+region files,
+  the field the other does not have stays zero), and the
+  label's words are built from the report alone: "pruned N
+  chunk(s) (K keys)" / "(F region file[s])", and the empty
+  selection's own contract said plain — "nothing stored in
+  that chunk — nothing pruned".
+- D62 inverted, held whole: the landed prune RE-ASKS, and the
+  world's new answer — the refusal that says the chunk is
+  gone — is the delete's own proof, exactly as the fill's
+  changed spec is its write's. The report's words land in the
+  world's label first and the re-ask replaces them (the flash
+  is the hand's receipt); the settle line keeps
+  `prune=ok|refused|none` beside `fill=`, and a landed
+  prune's re-ask refusal is no smoke failure — the exit logic
+  says so.
+- The dialog (D65): the BUTTON asks back, the FLAG does not.
+  A pruned column is the game's own data gone — the fill's
+  cell can be filled back, a deleted chunk cannot — so the
+  hand's click opens a GtkAlertDialog ("Delete the chunk at
+  (cx, cz)?" — the COLUMN the cell stands in, floor division
+  by 16 the chunk verbs' own rule (D13), not the bar's cell;
+  Delete/Cancel; Escape's cancel; Return never lands on
+  Delete — the destructive button is never the default), and
+  only its Delete answer reaches queue_prune. `--prune` skips
+  the dialog because the typed verb is its own confirmation —
+  the CLI's `chunk prune` never asks either — and `--fill` +
+  `--prune` are one cell, one question: give one (G16's
+  grammar, third use).
+- The lane's drains extended: writers before asks, fill first
+  (a Fill pressed mid-prune and a Prune pressed mid-fill both
+  keep their turn; the landed writer re-asks anyway). One
+  writer ever stands.
+- Gates: GUI selftest **1558 → 1605** (+47): the guards; the
+  probe's own words for a non-world directory (nothing
+  created); the column's own range (1L<<40 refused before any
+  store opens); the write-then-prune-then-READ story on a
+  bedrock-golden COPY — fill (5000,20,5000) read back as
+  minecraft:stone, the column pruned (chunks=1, keys>0,
+  files=0), then `mcme_world_block_spec` at the same cell
+  answering NOT_FOUND: the delete proving itself the way the
+  write did, by being read back; the empty selection (the
+  same box twice — the second prune ok with every field zero,
+  prune.h's own contract); Java's half on a java-golden COPY:
+  the cell != NOT_FOUND before, chunks=1/keys=0/files=1,
+  == NOT_FOUND after. Smokes (wayland, nvidia-stubbed
+  llvmpipe): the new gates — bedrock prune on a fresh g12w
+  copy **`prune=ok world=refused`** rc=0, and `chunk get`
+  afterwards answering exit 2, "the subchunk of block
+  (0, 80, 0) is deleted in this world" (the CLI's own read
+  says the column is gone); java prune on a fresh golden copy
+  **`prune=ok world=refused`** rc=0; the empty selection
+  `prune=ok` rc=0; a non-world directory `prune=refused`
+  rc=1; `--prune` without `--world` rc=1; `--fill`+`--prune`
+  rc=1 ("one cell — give one"); an x11 prune rc=0 beside the
+  x11 slab gate. Every standing gate re-confirmed at its wiki
+  numbers — all-air block 0/6 cells 0, all-air section
+  0/24576 cells 0, slab 24576/24576 cells 4096 pick=0,80,1,
+  stone 1536/24576 cells 1352 pick=1,80,1, the three old
+  refusals rc=1, the bedrock fill `fill=ok` + `chunk get` =
+  minecraft:stone, the java fill `spec=minecraft:stone
+  faces=6/6 cells=1 fill=ok` + its not-stored refusal rc=1,
+  G16's block doors (unknown block → the missing cube
+  drew=1, model positional `ask=model`, pack-only
+  `ask=none`). Battery 107/107, 0 FAIL; core selftest 6
+  suites green (no core change; re-run by discipline).
+
+### Notes
+
+- The dialog's response IDs are the BUTTONS' INDEXES —
+  choose_finish's own contract, read at docs.gtk.org (GTK
+  4.24) rather than guessed GTK_RESPONSE_* constants, because
+  a wrong comparison is a hand bug no smoke can press. This
+  box's gtkalertdialog.h carries no response defines at all,
+  and -Werror makes GtkMessageDialog (deprecated since 4.10)
+  unbuildable — GtkAlertDialog is the only road.
+- The label never invents a unit: keys>0 speaks Bedrock, else
+  region files — the report names what that world lost in its
+  own words (prune.h's contract, read at the label). The
+  dialog names the COLUMN, not the cell ((g_wx>>4, g_wz>>4)):
+  the number the deletion takes is the one the hand should
+  read; the bar's entry keeps the cell because Fill's unit is
+  the cell, and the two verbs share the entry while differing
+  in the unit they take from it.
+- /tmp was wiped mid-session again: every fixture rebuilt
+  from the wiki's recipes — and this time the pack recipe
+  SURFACED: the "fixture pack that never persisted" is
+  `build/blockmesh_fixtures/pack`, regenerated by every build
+  (17 blockstates — the 14 mc: rot_/merge_/neither + grass_
+  block/melon_stem/redstone_wire — and 6 models, exactly
+  G7's recorded `models=6 blocks=17`); p12 = it + air.json →
+  mc:block/slab + the slab model ([0,0,0]-[16,8,16],
+  block/alpha), p12base = p12 minus air.json (models=7 for
+  both — the slab model rides along; G17's blocks=17/18
+  adjudicated again). glstub = the two empty nvidia-soname
+  stubs (G3's recipe). Every reconstructed number
+  re-adjudicated at the wiki's own.
+- Carried from G17: none.
+
 ## 2026-10-22 — The fill crosses the border: both kinds behind one button
 
 ### Built

@@ -71,6 +71,7 @@
 #include "meshtask.h"
 #include "packtask.h"
 #include "pick.h"
+#include "prunetask.h"
 #include "viewport.h"
 #include "wire.h"
 #include "worldbar.h"
@@ -1265,6 +1266,204 @@ static void test_filltask(void)
     rm_rf(dir);
 }
 
+/* the prune worker's answers through the wire (G18) */
+static int g_prune_done_calls;
+static bool g_prune_done_ok;
+static int64_t g_prune_done_chunks, g_prune_done_keys,
+    g_prune_done_files;
+static char g_prune_done_text[512];
+
+static void on_prune_done(void *userdata, McmePruneResult *result)
+{
+    (void)userdata;
+    g_prune_done_calls++;
+    g_prune_done_ok = result->ok;
+    g_prune_done_chunks = result->chunks;
+    g_prune_done_keys = result->keys;
+    g_prune_done_files = result->region_files;
+    snprintf(g_prune_done_text, sizeof g_prune_done_text, "%s",
+             result->text ? result->text : "");
+    mcme_pruneresult_free(result);
+}
+
+/* The lane's second writer (G18), and the destructive one: the
+   tapped cell's whole chunk column out of the store, through the
+   wire — the probe's own words when the directory is not a world,
+   the column's own range, the empty selection's silent success
+   (prune.h's contract: ok, all fields zero, nothing written), and
+   the delete itself proven by the read that fails after it — the
+   re-read rule inverted: the world's own answer says the chunk is
+   gone. Both halves prune (G18): Bedrock tombstones the column's
+   keys, Java zeroes the slot and counts in the region files it
+   punched. */
+static void test_prunetask(void)
+{
+    char dir[] = "/tmp/mcme_gui_prune_XXXXXX";
+    McmeWire *wire;
+    McmeWorldInfo info;
+    McmeBuffer spec;
+    bool bedrock = mcme_fs_exists("tests/golden/worlds/bedrock");
+
+    printf("  prunetask (one chunk column out of a store, gone by "
+           "the read)\n");
+
+    CHECK(mkdtemp(dir) != NULL);
+
+    wire = mcme_wire_new();
+
+    /* the guards: nothing starts, nothing posts */
+    CHECK(!mcme_prunetask_start(NULL, dir, 0, 0, 0, on_prune_done,
+                                NULL));
+    CHECK(!mcme_prunetask_start(wire, NULL, 0, 0, 0, on_prune_done,
+                                NULL));
+    CHECK(!mcme_prunetask_start(wire, dir, 0, 0, 0, NULL, NULL));
+    mcme_pruneresult_free(NULL);
+    CHECK(g_prune_done_calls == 0);
+
+    /* a directory that is not a world: refused in the probe's own
+       words, and nothing is created in its place */
+    g_prune_done_calls = 0;
+    g_prune_done_ok = true;
+    CHECK(mcme_prunetask_start(wire, "/tmp/mcme_gui_no_world_dir",
+                               0, 0, 0, on_prune_done, NULL));
+    while (g_prune_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_prune_done_calls == 1);
+    CHECK(!g_prune_done_ok);
+    CHECK(g_prune_done_text[0] != '\0');
+    CHECK(!mcme_fs_exists("/tmp/mcme_gui_no_world_dir/db"));
+    mcme_clear_error();
+
+    /* coordinates a column cannot name: refused before any store
+       opens */
+    g_prune_done_calls = 0;
+    g_prune_done_ok = true;
+    CHECK(mcme_prunetask_start(wire, dir, 0, 1L << 40, 0,
+                               on_prune_done, NULL));
+    while (g_prune_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_prune_done_calls == 1);
+    CHECK(!g_prune_done_ok);
+    CHECK(strstr(g_prune_done_text, "outside the range") != NULL);
+    mcme_clear_error();
+
+    if (!bedrock) {
+        printf("  SKIP golden world probes (tests/golden absent)\n");
+        mcme_wire_free(wire);
+        rm_rf(dir);
+        return;
+    }
+
+    /* The store comes from the golden, copied whole — the delete
+       lands on the copy; the fixture itself is never opened for
+       writing (the battery's own rule, kept). */
+    cp_rf("tests/golden/worlds/bedrock", dir);
+
+    /* the write-then-prune-then-read story: the cell's chunk
+       written (the fill road's own proof, G15) and read back,
+       then the column pruned — and the store's own read now says
+       the cell is not there. The delete proves itself the way the
+       write did: by being read back, the world's own answer. */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = false;
+    CHECK(mcme_filltask_start(wire, dir, 0, 5000, 20, 5000,
+                              "minecraft:stone", on_fill_done,
+                              NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(g_fill_done_ok);
+    CHECK(mcme_world_probe(&info, dir));
+    CHECK(info.kind == MCME_WORLD_BEDROCK);
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 5000, 20, 5000, &spec)
+          == MCME_WORLDBLOCK_OK);
+    CHECK(spec.len == strlen("minecraft:stone"));
+    mcme_buffer_free(&spec);
+    mcme_world_info_free(&info);
+
+    g_prune_done_calls = 0;
+    g_prune_done_ok = false;
+    CHECK(mcme_prunetask_start(wire, dir, 0, 5000, 5000,
+                               on_prune_done, NULL));
+    while (g_prune_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_prune_done_calls == 1);
+    CHECK(g_prune_done_ok);
+    CHECK(g_prune_done_chunks == 1);
+    CHECK(g_prune_done_keys > 0);   /* Bedrock tombstones keys */
+    CHECK(g_prune_done_files == 0); /* a field it does not have */
+
+    CHECK(mcme_world_probe(&info, dir));
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 5000, 20, 5000, &spec)
+          == MCME_WORLDBLOCK_NOT_FOUND);
+    mcme_buffer_free(&spec);
+    mcme_world_info_free(&info);
+    mcme_clear_error();
+
+    /* the empty selection: the same box run twice — the second
+       prune finds nothing left to delete and writes nothing, ok
+       with every field zero (prune.h's own contract, said
+       plain) */
+    g_prune_done_calls = 0;
+    g_prune_done_ok = false;
+    g_prune_done_chunks = -1;
+    CHECK(mcme_prunetask_start(wire, dir, 0, 5000, 5000,
+                               on_prune_done, NULL));
+    while (g_prune_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_prune_done_calls == 1);
+    CHECK(g_prune_done_ok);
+    CHECK(g_prune_done_chunks == 0);
+    CHECK(g_prune_done_keys == 0);
+    CHECK(g_prune_done_files == 0);
+
+    /* the other half (G18): Java's chunk column, counted in the
+       region files it punched — and the cell's read says the
+       chunk is gone the same way. */
+    if (mcme_fs_exists("tests/golden/worlds/java")) {
+        char jdir[] = "/tmp/mcme_gui_jprune_XXXXXX";
+
+        CHECK(mkdtemp(jdir) != NULL);
+        cp_rf("tests/golden/worlds/java", jdir);
+
+        CHECK(mcme_world_probe(&info, jdir));
+        CHECK(info.kind == MCME_WORLD_JAVA);
+        mcme_buffer_init(&spec);
+        CHECK(mcme_world_block_spec(&info, 0, 5, 5, 5, &spec)
+              != MCME_WORLDBLOCK_NOT_FOUND); /* the chunk is there */
+        mcme_buffer_free(&spec);
+        mcme_world_info_free(&info);
+        mcme_clear_error();
+
+        g_prune_done_calls = 0;
+        g_prune_done_ok = false;
+        CHECK(mcme_prunetask_start(wire, jdir, 0, 5, 5,
+                                   on_prune_done, NULL));
+        while (g_prune_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_prune_done_calls == 1);
+        CHECK(g_prune_done_ok);
+        CHECK(g_prune_done_chunks == 1);
+        CHECK(g_prune_done_keys == 0);  /* a field it does not
+                                           have */
+        CHECK(g_prune_done_files == 1);
+
+        CHECK(mcme_world_probe(&info, jdir));
+        mcme_buffer_init(&spec);
+        CHECK(mcme_world_block_spec(&info, 0, 5, 5, 5, &spec)
+              == MCME_WORLDBLOCK_NOT_FOUND);
+        mcme_buffer_free(&spec);
+        mcme_world_info_free(&info);
+        mcme_clear_error();
+        rm_rf(jdir);
+    }
+
+    mcme_wire_free(wire);
+    rm_rf(dir);
+}
+
 static double *darray(size_t n)
 {
     double *p = calloc(n, sizeof *p);
@@ -1901,6 +2100,7 @@ int mcme_gui_selftest(void)
     test_meshtask();
     test_chunktask();
     test_filltask();
+    test_prunetask();
     test_stage();
     test_camera();
     test_worldbar();

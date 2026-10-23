@@ -4371,3 +4371,32 @@ wrapper is no longer the whole of what a verb owns), or Java
 gains a third kind of world layout worth its own directory
 rules (then the dimension gate inside the core functions wants
 a second look).
+
+## D65 — The button that destroys asks back; the word that destroys IS the ask
+
+The GUI's destructive verb (G18's Prune — a whole chunk
+column, the game's own data, unfilled-back) splits its
+confirmation by ROAD: the bar's button opens a GtkAlertDialog
+("Delete the chunk at (cx, cz)?" — the COLUMN's coordinates,
+D13's floor division, not the bar's cell; Delete/Cancel;
+Escape's cancel; the default is Cancel — Return never lands on
+the destructive one), and only its Delete answer reaches the
+worker; `--prune` skips the dialog because typing the verb is
+its own confirmation, the CLI's `chunk prune` never asking
+either. The dialog's response is the BUTTONS' INDEXES —
+choose_finish's documented contract (read at docs.gtk.org, not
+the guessed GTK_RESPONSE_* constants): a guessed comparison is
+a hand bug no smoke can press. The lane treats the prune as
+the fill's twin — writers before asks, fill first, one writer
+ever — and the landed prune re-asks, so the world's refusal
+(the chunk is gone) IS the delete's proof: D62 inverted, the
+read that fails standing where the changed spec stood, with
+the settle's `prune=ok|refused|none` beside `fill=` and a
+landed prune's re-ask refusal no smoke failure.
+
+**Reverses if:** the fill ever grows an equally unrecoverable
+unit (then its button owes the same dialog), or GTK retires
+GtkAlertDialog's index contract (then the response mapping
+re-reads the docs, not the constants), or the CLI's own
+`chunk prune` grows a confirmation (then "the typed verb is
+its own confirmation" is no longer both roads' truth).
