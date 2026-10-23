@@ -62,11 +62,13 @@
 #include <glib.h>
 #include <sanitizer/lsan_interface.h>
 
+#include "mcme/convert.h"
 #include "mcme/core.h"
 #include "mcme/resource.h"
 #include "mcme/world.h"
 #include "camera.h"
 #include "chunktask.h"
+#include "converttask.h"
 #include "filltask.h"
 #include "meshtask.h"
 #include "packtask.h"
@@ -1464,6 +1466,204 @@ static void test_prunetask(void)
     rm_rf(dir);
 }
 
+/* the convert worker's answers through the wire (G19) */
+static int g_convert_done_calls;
+static bool g_convert_done_ok;
+static char g_convert_done_text[512];
+static char g_convert_done_out[512];
+static McmeConvertReport g_convert_done_report;
+
+static void on_convert_done(void *userdata, McmeConvertResult *result)
+{
+    (void)userdata;
+    g_convert_done_calls++;
+    g_convert_done_ok = result->ok;
+    snprintf(g_convert_done_text, sizeof g_convert_done_text, "%s",
+             result->text ? result->text : "");
+    snprintf(g_convert_done_out, sizeof g_convert_done_out, "%s",
+             result->out_dir ? result->out_dir : "");
+    g_convert_done_report = result->report; /* the whole report, copied */
+    mcme_convertresult_free(result);
+}
+
+/* The creating writer (G19): a whole world beside itself, through
+   the wire — the probe's words for a directory that is not a world,
+   cmd_convert's own verdict sentence for Java input (nothing
+   written beside it), the derived output name, and the conversion
+   proven the fill's way: the cell written before the run reads
+   back as exactly its block from the OUTPUT world through
+   mcme_world_block_spec — the write carried through the translate
+   map, D62 across the border — the drops sentence matching the
+   report's own fields, and the second run refusing whole with the
+   first output standing (an output world is finished or absent,
+   convert.h, D12). */
+static void test_converttask(void)
+{
+    char dir[] = "/tmp/mcme_gui_convert_XXXXXX";
+    char out[600];
+    McmeWire *wire;
+    McmeWorldInfo info;
+    McmeBuffer spec;
+    char drops[600];
+    bool any_drop;
+    bool bedrock = mcme_fs_exists("tests/golden/worlds/bedrock");
+
+    printf("  converttask (a world beside itself, read back from "
+           "the output)\n");
+
+    CHECK(mkdtemp(dir) != NULL);
+
+    wire = mcme_wire_new();
+
+    /* the guards: nothing starts, nothing posts */
+    CHECK(!mcme_converttask_start(NULL, dir, on_convert_done, NULL));
+    CHECK(!mcme_converttask_start(wire, NULL, on_convert_done, NULL));
+    CHECK(!mcme_converttask_start(wire, dir, NULL, NULL));
+    mcme_convertresult_free(NULL);
+    CHECK(g_convert_done_calls == 0);
+
+    /* a directory that is not a world: the probe's own words, and
+       no <dir>_java appears beside it */
+    g_convert_done_calls = 0;
+    g_convert_done_ok = true;
+    CHECK(mcme_converttask_start(wire, "/tmp/mcme_gui_no_world_dir",
+                                 on_convert_done, NULL));
+    while (g_convert_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_convert_done_calls == 1);
+    CHECK(!g_convert_done_ok);
+    CHECK(g_convert_done_text[0] != '\0');
+    CHECK(!mcme_fs_exists("/tmp/mcme_gui_no_world_dir_java"));
+    mcme_clear_error();
+
+    /* the drops sentence's truth rule: an all-zero report says
+       nothing (the CLI prints no line either — one function now,
+       one behavior) */
+    {
+        McmeConvertReport zero;
+
+        memset(&zero, 0, sizeof zero);
+        drops[0] = 'x';
+        CHECK(mcme_convert_drops_text(&zero, drops, sizeof drops)
+              == 0);
+        CHECK(drops[0] == '\0');
+        CHECK(mcme_convert_drops_text(&zero, NULL, 0) == 0);
+    }
+
+    if (!bedrock) {
+        printf("  SKIP golden world probes (tests/golden absent)\n");
+        mcme_wire_free(wire);
+        rm_rf(dir);
+        return;
+    }
+
+    /* a Java input: cmd_convert's verdict in cmd_convert's words,
+       and nothing written beside it */
+    if (mcme_fs_exists("tests/golden/worlds/java")) {
+        char jdir[] = "/tmp/mcme_gui_jconvert_XXXXXX";
+        char jout[600];
+
+        CHECK(mkdtemp(jdir) != NULL);
+        cp_rf("tests/golden/worlds/java", jdir);
+        snprintf(jout, sizeof jout, "%s_java", jdir);
+
+        g_convert_done_calls = 0;
+        g_convert_done_ok = true;
+        CHECK(mcme_converttask_start(wire, jdir, on_convert_done,
+                                     NULL));
+        while (g_convert_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_convert_done_calls == 1);
+        CHECK(!g_convert_done_ok);
+        CHECK(strstr(g_convert_done_text, "is a java world") != NULL);
+        CHECK(strstr(g_convert_done_text,
+                     "only Bedrock input converts today") != NULL);
+        CHECK(!mcme_fs_exists(jout));
+        mcme_clear_error();
+        rm_rf(jdir);
+    }
+
+    /* The store comes from the golden, copied whole — the
+       conversion lands on the copy; the fixture itself is never
+       opened for writing (the battery's own rule, kept). */
+    cp_rf("tests/golden/worlds/bedrock", dir);
+    snprintf(out, sizeof out, "%s_java", dir);
+
+    /* the write before the border: the cell lands the G15 road's
+       way, so the conversion has something to carry */
+    g_fill_done_calls = 0;
+    g_fill_done_ok = false;
+    CHECK(mcme_filltask_start(wire, dir, 0, 5000, 20, 5000,
+                              "minecraft:stone", on_fill_done, NULL));
+    while (g_fill_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_fill_done_calls == 1);
+    CHECK(g_fill_done_ok);
+
+    g_convert_done_calls = 0;
+    g_convert_done_ok = false;
+    CHECK(mcme_converttask_start(wire, dir, on_convert_done, NULL));
+    while (g_convert_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_convert_done_calls == 1);
+    CHECK(g_convert_done_ok);
+    CHECK(strcmp(g_convert_done_out, out) == 0); /* the derived name */
+    CHECK(g_convert_done_report.chunks > 0);
+    CHECK(g_convert_done_report.blocks > 0);
+
+    /* the drops sentence matches the report's own fields: some
+       count nonzero exactly when the sentence speaks */
+    any_drop = g_convert_done_report.legacy_subchunks > 0 ||
+               g_convert_done_report.water_positions > 0 ||
+               g_convert_done_report.biomes > 0 ||
+               g_convert_done_report.heightmaps > 0 ||
+               g_convert_done_report.block_entities > 0 ||
+               g_convert_done_report.items > 0 ||
+               g_convert_done_report.ticks > 0 ||
+               g_convert_done_report.entities > 0 ||
+               g_convert_done_report.actors > 0 ||
+               g_convert_done_report.chunk_data > 0 ||
+               g_convert_done_report.other > 0;
+    drops[0] = 'x';
+    CHECK((mcme_convert_drops_text(&g_convert_done_report, drops,
+                                   sizeof drops) > 0) == any_drop);
+    if (any_drop)
+        CHECK(strncmp(drops, "dropped: ", 9) == 0);
+
+    /* the output is a world of the other kind, and it holds the
+       cell — read through the store's own spec road, not the
+       converter's claim */
+    CHECK(mcme_world_probe(&info, out));
+    CHECK(info.kind == MCME_WORLD_JAVA);
+    mcme_buffer_init(&spec);
+    CHECK(mcme_world_block_spec(&info, 0, 5000, 20, 5000, &spec)
+          == MCME_WORLDBLOCK_OK);
+    CHECK(spec.len == strlen("minecraft:stone"));
+    CHECK(spec.data != NULL &&
+          memcmp(spec.data, "minecraft:stone", spec.len) == 0);
+    mcme_buffer_free(&spec);
+    mcme_world_info_free(&info);
+
+    /* the second run: refused whole — the output exists — and the
+       first output stands, untouched */
+    g_convert_done_calls = 0;
+    g_convert_done_ok = true;
+    CHECK(mcme_converttask_start(wire, dir, on_convert_done, NULL));
+    while (g_convert_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_convert_done_calls == 1);
+    CHECK(!g_convert_done_ok);
+    CHECK(g_convert_done_text[0] != '\0');
+    CHECK(mcme_world_probe(&info, out));
+    CHECK(info.kind == MCME_WORLD_JAVA);
+    mcme_world_info_free(&info);
+    mcme_clear_error();
+
+    mcme_wire_free(wire);
+    rm_rf(out);
+    rm_rf(dir);
+}
+
 static double *darray(size_t n)
 {
     double *p = calloc(n, sizeof *p);
@@ -2101,6 +2301,7 @@ int mcme_gui_selftest(void)
     test_chunktask();
     test_filltask();
     test_prunetask();
+    test_converttask();
     test_stage();
     test_camera();
     test_worldbar();

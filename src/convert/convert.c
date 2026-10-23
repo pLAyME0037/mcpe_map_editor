@@ -2880,3 +2880,50 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
     if (!ok) rm_rf(out);
     return ok;
 }
+
+/* See convert.h. The table is the shell's printer's own, moved whole
+ * (G11's rule): the window's label and the CLI's line read the same
+ * words, so the sentence cannot drift between the two roads. */
+size_t mcme_convert_drops_text(const McmeConvertReport *r, char *buf,
+                               size_t len)
+{
+    const struct { size_t n; const char *one; const char *many; } d[] = {
+        { r->legacy_subchunks, "subchunk mcme cannot read",
+                               "subchunks mcme cannot read" },
+        { r->water_positions,  "water position",
+                               "water positions" },
+        { r->biomes,           "biome cell",     "biome cells" },
+        { r->heightmaps,       "heightmap",      "heightmaps" },
+        { r->block_entities,   "block entity",   "block entities" },
+        { r->items,            "item stack",     "item stacks" },
+        { r->ticks,            "tick entry",     "tick entries" },
+        { r->entities,         "entity document",
+                               "entity documents" },
+        { r->actors,           "actor record",   "actor records" },
+        { r->chunk_data,       "other chunk key", "other chunk keys" },
+        { r->other,            "other key",      "other keys" },
+    };
+    size_t at = 0;
+    bool any = false;
+
+    if (buf == NULL || len == 0) return 0;
+    buf[0] = '\0';
+    for (size_t i = 0; i < sizeof d / sizeof d[0]; ++i) {
+        char num[32];
+        const char *word;
+        int w;
+
+        if (d[i].n == 0) continue;
+        snprintf(num, sizeof num, "%zu", d[i].n);
+        word = d[i].n == 1 ? d[i].one : d[i].many;
+        w = snprintf(buf + at, len - at, "%s%s %s",
+                     any ? ", " : "dropped: ", num, word);
+        if (w < 0 || (size_t)w >= len - at) {
+            buf[0] = '\0'; /* whole sentence or none, never half */
+            return 0;
+        }
+        at += (size_t)w;
+        any = true;
+    }
+    return any ? at : 0;
+}

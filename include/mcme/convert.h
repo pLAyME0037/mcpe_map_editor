@@ -120,4 +120,19 @@ bool mcme_convert_bedrock_java(const char *in, const char *out,
                                McmeConvertReport *report,
                                McmeWriteRefusal *refusal);
 
+/*
+ * The drops sentence — one spelling for every client (G19): "dropped:
+ * 3 entity documents, 1 other key", the report's own table walked in
+ * the order the shell's printer walked it, each count in the words it
+ * takes (singular for one). Writes the sentence and returns its
+ * length; writes nothing (an empty buffer) and returns 0 when the
+ * report holds no drops or the sentence does not fit in `len` — a
+ * whole sentence or none, never half. The sentence is bounded below
+ * 600 bytes (eleven entries, each at size_t's maximum); a 1024-byte
+ * buffer always takes it. No newline is written: the caller prints
+ * the line its own way.
+ */
+size_t mcme_convert_drops_text(const McmeConvertReport *report,
+                               char *buf, size_t len);
+
 #endif /* MCME_CONVERT_H */

@@ -7,6 +7,124 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-23 — The writer that creates: a world beside itself
+
+### Built
+
+- G19 + D66: the window's convert door. The bar grows a Convert
+  button beside Prune, and the lane grows its fourth writer —
+  the one that CREATES instead of changing: the open world read
+  whole and written BESIDE itself as Java 1.20.
+  `gui/converttask.c/h` is filltask's shape through gui/task.c
+  with the kind verdict at the door: the probe speaks for the
+  directory first, a Java input refused in cmd_convert's own
+  sentence ("'%s' is a %s world; only Bedrock input converts
+  today" — the kind name `mcme_world_kind_name` spells, because
+  the verdict lives in the verb, so the door speaks the verb's
+  truth rather than a guess of its own), then one call —
+  `mcme_convert_bedrock_java` (core, already there) — with the
+  output DERIVED: the input trimmed of its trailing slashes
+  with "_java" appended, a sibling by construction, so the
+  CLI's "an output world is written outside its input" rule
+  cannot be broken by any path (the rule baked into the
+  derivation, not checked after it). `<out>` must not exist
+  and a failed run removes it whole — an output world is
+  finished or absent (convert.h's contract, D12) — and the
+  second run refuses whole with the first output standing.
+- The whole `McmeConvertReport` rides the answer as data (G2
+  kept: no core call off the worker), and the drops sentence
+  crosses the CLI/GUI border by PROMOTION (G11's rule, second
+  use — a debt named at a border is paid at a border, D64):
+  print_convert_drops's table moved whole into
+  src/convert/convert.c as `mcme_convert_drops_text` — one
+  spelling of "dropped: 3 entity documents, 1 other key" for
+  the shell's line and the window's label, bounded below 600
+  bytes, whole sentence or none (never half), no newline (the
+  caller prints the line its own way). The CLI's printer is
+  now the thin wrapper; the battery's pins adjudicate the
+  refactor — 107/107.
+- D62's boundary, held: the label STANDS on this writer.
+  Convert never touches the open world, so the re-ask has
+  nothing new to say and the report's words are the answer (a
+  pressed Go still gets its turn in the drain); the settle
+  grows `convert=ok|refused|none` beside prune=, and a refused
+  convert fails the smoke whatever the world's ask then
+  answers — the flag road's one honest race (the startup ask's
+  cell answer lands after the door's refusal, the world's own
+  contract) is carried by the settle, not the label.
+- The writers compose where the targets differ: `--fill`/
+  `--prune` and `--convert` on one line run fill, prune,
+  convert — the drains' order, the biggest copy reading what
+  the smaller ones did — while fill+prune stays one cell, one
+  question. The button asks nothing back (D66): the tooltip
+  names the pattern, the answer names the exact directory, and
+  a chosen name waits for the dialog's flag road (--open's
+  pattern) until a hand wants one.
+- One settle line per run: maybe_smoke_quit prints once and a
+  posted quit stands — a late result landing in the same
+  iteration had printed a SECOND line with newer state (seen
+  when a bad pack arg quit early), and two settles is no
+  settle.
+- Gates: GUI selftest **1605 → 1647** (+42): the guards; the
+  non-world directory (the probe's own words, no `<dir>_java`
+  appears); the zero-report drops sentence (empty — the shell
+  prints no line either: one function now, one behavior); the
+  Java verdict's two clauses with nothing created; the story
+  itself on a bedrock-golden COPY — the G15 fill at
+  (5000,20,5000) landing first, then the conversion, and the
+  cell read back from the OUTPUT world through
+  `mcme_world_block_spec` as exactly minecraft:stone — D62
+  across the border, the write carried through the translate
+  map — with the derived name, chunks>0, blocks>0 and the
+  drops sentence speaking exactly when some drop field is
+  nonzero; the second run refusing whole with the output
+  standing. Smokes (wayland, nvidia-stubbed llvmpipe): the
+  carry gate — fill+convert in ONE run on a golden copy
+  **`fill=ok convert=ok world=ok spec=minecraft:stone`** rc=0
+  and `chunk get` of the OUTPUT reading minecraft:stone (x11
+  the same); a chunks-only world refused **`convert=refused`**
+  rc=1 with the core's own words ("has no level.dat to carry
+  the seed from"); a java-golden copy `convert=refused` rc=1
+  (the verdict sentence pinned at the wire); the
+  output-exists rerun `convert=refused` rc=1 with the first
+  output intact (`chunk get` still minecraft:stone); `--convert`
+  without `--world` rc=1. Every standing gate re-confirmed at
+  its wiki numbers — all-air block 0/6 cells 0, all-air
+  section 0/24576 cells 0, slab (the section form)
+  24576/24576 cells 4096 pick=0,80,1 — and the single-cell
+  form 6/6 cells=1, the two forms agreeing the air→slab
+  mapping — stone 1536/24576 cells 1352 pick=1,80,1, the
+  three old refusals rc=1, G16's block doors (unknown block →
+  the missing cube drew=1, model positional ask=model,
+  pack-only ask=none), the G18 prune gates (bedrock/java/empty
+  ok with world=refused, non-world refused, --prune w/o
+  --world, --fill --prune "one cell — give one"), the bedrock
+  fill `fill=ok` + `chunk get` = minecraft:stone, the java
+  fill `spec=minecraft:stone faces=6/6 cells=1 fill=ok` + its
+  not-stored refusal rc=1, the x11 slab section. Battery
+  **107/107, 0 FAIL** (the core changed: the drops function
+  and the CLI's wrapper); core selftest 6 suites green.
+
+### Notes
+
+- The convert refusals reach the label two ways: the STORE
+  road in mcme_last_error's own words (no level.dat, the
+  output exists) and the KIND road in cmd_convert's sentence —
+  copied at the border because the CLI's java-input verdict
+  (rc 5) lives in the verb, not the core; one truth, named
+  here so a rewording in one place is a decision, not a
+  drift. The kind name inside it is `mcme_world_kind_name`'s
+  own spelling ("java").
+- The smoke's out-read is the CLI's own `chunk get` on the
+  derived directory — the proof road outside the GUI, the
+  fill smoke's pattern: the GUI says what it did, the CLI's
+  read says what is there.
+- The golden `bedrock-chunks` fixture cannot convert (chunks
+  only, no level.dat) — the gates that need a conversion use
+  a copy of the fuller `tests/golden/worlds/bedrock`, which
+  has one; the selftest's convert test always did.
+- Carried from G18: none.
+
 ## 2026-10-22 — The second writer: the column that asks back
 
 ### Built

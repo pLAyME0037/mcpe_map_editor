@@ -98,6 +98,29 @@
  *                `chunk prune` never asking either. The settle
  *                line names the door as prune=ok|refused|none
  *                beside fill=.
+ *   --convert    turn the open world into the other format (G19):
+ *                Bedrock in, Java 1.20 out, written BESIDE the
+ *                input as <dir trimmed of trailing slashes>_java —
+ *                a sibling by construction, never inside, and
+ *                never over anything: mcme_convert_bedrock_java
+ *                refuses an output that exists and removes a
+ *                failed one whole, so an output world is finished
+ *                or absent (convert.h, D12). The whole report
+ *                rides the answer — the label spells the headline
+ *                and the drops through mcme_convert_drops_text,
+ *                the sentence the CLI's line prints — and unlike
+ *                the two cell writers it stands: convert never
+ *                touches the open world, so there is nothing for
+ *                D62's re-ask to prove and the label keeps the
+ *                report (a pressed Go still gets its turn). Only
+ *                Bedrock input converts today; a Java input is
+ *                refused in cmd_convert's own words. No argument,
+ *                no dialog (D66): this writer creates, so nothing
+ *                asks back — the tooltip names the pattern, the
+ *                answer names the directory. Composes with
+ *                --fill/--prune in the drains' order (fill,
+ *                prune, convert). The settle line names the door
+ *                as convert=ok|refused|none.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -107,10 +130,11 @@
  * or block meshed and a frame carried it, or the world answered
  * with faces to show — or, since G18, a landed prune answered
  * with the refusal that says the chunk is gone, the delete's own
- * proof; 1 — a refusal, or the mesh never reached a
- * frame (a world answer whose cull kept zero faces settles
- * without one — the world said nothing stands there); 2 — GL
- * trouble (context, shader, upload, draw).
+ * proof; 1 — a refusal, or a refused --convert (its own verdict,
+ * whatever the world's ask then answers), or the mesh never
+ * reached a frame (a world answer whose cull kept zero faces
+ * settles without one — the world said nothing stands there);
+ * 2 — GL trouble (context, shader, upload, draw).
  */
 
 #include <math.h>
@@ -122,6 +146,7 @@
 
 #include "camera.h"
 #include "chunktask.h"
+#include "converttask.h"
 #include "filltask.h"
 #include "meshtask.h"
 #include "packtask.h"
@@ -140,6 +165,8 @@ static const char *g_block_arg;   /* --block: the block row, borrowed
                                      (G16) */
 static gboolean g_prune_arg;      /* --prune: the cell's chunk column,
                                      deleted (G18) */
+static gboolean g_convert_arg;    /* --convert: the world to Java
+                                     beside itself (G19)            */
 static char *g_pack_dir;          /* the session's directory, owned   */
 static char *g_mesh_ns;           /* the model split at ':', owned    */
 static char *g_mesh_path;
@@ -172,6 +199,9 @@ static bool g_fill_seen, g_fill_ok;  /* the writer's answer (G15):
 static bool g_prune_seen, g_prune_ok; /* the destructive writer's
                                          answer (G18): the settle
                                          line's prune=              */
+static bool g_convert_seen, g_convert_ok; /* the creating writer's
+                                             answer (G19): the settle
+                                             line's convert=        */
 static char *g_spec_seen;          /* the world's answer, its words   */
 static size_t g_chunk_faces;       /* the cull's kept faces (G10)     */
 static size_t g_chunk_faces_total; /* the mesh's own, before it       */
@@ -182,6 +212,7 @@ static bool g_chunk_flight;        /* the lane: one ask or fill up   */
 static bool g_chunk_pending;       /* a Go pressed while one is up    */
 static bool g_fill_pending;        /* a Fill pressed while one is up  */
 static bool g_prune_pending;       /* a Prune pressed while one is up */
+static bool g_convert_pending;     /* a Convert pressed while up      */
 static GtkWidget *g_world_label;   /* the world's answer, its words   */
 static GtkWidget *g_wx_entry;      /* the bar's own --at: X, Y, Z     */
 static GtkWidget *g_wy_entry;
@@ -231,6 +262,17 @@ static void maybe_smoke_quit(void)
             !mcme_viewport_gl_failed(g_viewport))
             return; /* a built mesh awaits its frame; the poll asks */
     }
+    {
+        /* One settle line per run (G19's guard): once this decides
+           to quit, the line is printed and the exit code fixed —
+           results still landing in this iteration would otherwise
+           print a second line with newer state, and a gate reading
+           two settles is a gate reading nothing. */
+        static gboolean settled;
+
+        if (settled) return;
+        settled = TRUE;
+    }
 
     g_exit_code = 0;
     if (!g_pack_ok) {
@@ -250,6 +292,9 @@ static void maybe_smoke_quit(void)
         else if (g_chunk_ok && g_chunk_faces > 0 &&
                  !mcme_viewport_drew(g_viewport)) g_exit_code = 1;
     }
+    /* The creating writer's own verdict (G19): a refused convert
+       fails the smoke whatever the world's ask then answers. */
+    if (g_convert_seen && !g_convert_ok) g_exit_code = 1;
     {
         float cyaw = 0, cpitch = 0, cdist = 0;
         long pick[3];
@@ -271,7 +316,7 @@ static void maybe_smoke_quit(void)
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
                 "ask=%s world=%s spec=%s faces=%zu/%zu cells=%zu "
                 "drew=%d tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f "
-                "pick=%s fill=%s prune=%s\n",
+                "pick=%s fill=%s prune=%s convert=%s\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -292,7 +337,9 @@ static void maybe_smoke_quit(void)
                 cyaw, cpitch, cdist, picks,
                 g_fill_seen ? (g_fill_ok ? "ok" : "refused") : "none",
                 g_prune_seen ? (g_prune_ok ? "ok" : "refused")
-                             : "none");
+                             : "none",
+                g_convert_seen ? (g_convert_ok ? "ok" : "refused")
+                               : "none");
     }
     g_application_quit(G_APPLICATION(g_app));
 }
@@ -401,6 +448,7 @@ static void queue_chunk_ask(void);
 static void queue_fill(void);  /* the lane's writer (G15) */
 static void start_fill(void);
 static void start_prune(void);
+static void start_convert(void);
 
 static void on_chunk_result(void *userdata, McmeChunkResult *result)
 {
@@ -455,6 +503,9 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
     } else if (g_prune_pending) {
         g_prune_pending = false;
         start_prune(); /* the writers drain fill-first (G18) */
+    } else if (g_convert_pending) {
+        g_convert_pending = false;
+        start_convert(); /* last writer: it reads what they did (G19) */
     } else if (g_chunk_pending) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed answer steps aside for the Go */
@@ -531,6 +582,9 @@ static void on_fill_result(void *userdata, McmeFillResult *result)
     } else if (g_prune_pending) {
         g_prune_pending = false;
         start_prune(); /* the writers drain before the ask (G18) */
+    } else if (g_convert_pending) {
+        g_convert_pending = false;
+        start_convert(); /* last writer: it reads what they did (G19) */
     } else if (g_chunk_pending || ok) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed fill's own proof (G15) */
@@ -637,6 +691,9 @@ static void on_prune_result(void *userdata, McmePruneResult *result)
     } else if (g_prune_pending) {
         g_prune_pending = false;
         start_prune(); /* the latest cell wins the road */
+    } else if (g_convert_pending) {
+        g_convert_pending = false;
+        start_convert(); /* last writer: it reads what they did (G19) */
     } else if (g_chunk_pending || ok) {
         g_chunk_pending = false;
         queue_chunk_ask(); /* the landed prune's own proof: the world
@@ -737,6 +794,114 @@ static void on_prune_clicked(GtkButton *btn, gpointer user_data)
     gtk_alert_dialog_choose(alert, win, NULL, on_prune_alert_done,
                             NULL);
     g_object_unref(alert);
+}
+
+static void on_convert_result(void *userdata, McmeConvertResult *result)
+{
+    int gen = GPOINTER_TO_INT(userdata);
+    bool stale = gen != g_mesh_gen;
+    bool ok = result->ok;
+
+    g_tasks--; /* a post is a post: the count follows workers */
+    g_chunk_flight = false;
+    g_convert_seen = true;
+    g_convert_ok = ok;
+    if (!ok && !stale) {
+        g_chunk_settled = true;
+        g_chunk_ok = false;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           result->text ? result->text : "(no memory)");
+    } else if (ok && !stale) {
+        char drops[600];
+        char txt[900];
+
+        /* The report's words in the shell's own spelling: the
+           headline, then mcme_convert_drops_text — the sentence
+           both clients print (G19), so the window cannot drift from
+           the CLI's line. This writer's answer STANDS: convert
+           writes a new directory beside the world and never
+           touches it, so the open world's answer at the cell is
+           unchanged and D62's re-ask has nothing new to say (a Go
+           pressed meanwhile still gets its turn in the drain). */
+        snprintf(txt, sizeof txt, "converted to %s: %zu chunk%s, "
+                 "%zu block%s", result->out_dir,
+                 result->report.chunks,
+                 result->report.chunks == 1 ? "" : "s",
+                 result->report.blocks,
+                 result->report.blocks == 1 ? "" : "s");
+        if (mcme_convert_drops_text(&result->report, drops,
+                                    sizeof drops) > 0) {
+            size_t at = strlen(txt);
+
+            snprintf(txt + at, sizeof txt - at, "; %s", drops);
+        }
+        gtk_label_set_text(GTK_LABEL(g_world_label), txt);
+    }
+    mcme_convertresult_free(result);
+    if (g_fill_pending) {
+        g_fill_pending = false;
+        start_fill(); /* the writers drain fill-first (G19) */
+    } else if (g_prune_pending) {
+        g_prune_pending = false;
+        start_prune();
+    } else if (g_convert_pending) {
+        g_convert_pending = false;
+        start_convert(); /* the latest world wins the road */
+    } else if (g_chunk_pending) {
+        g_chunk_pending = false;
+        /* Only a pressed Go re-asks after this writer: it changed
+           nothing in the open world, so the label keeps the
+           report's own words. */
+        queue_chunk_ask();
+    }
+    maybe_smoke_quit();
+}
+
+/* The creating writer takes the lane the others hold (G19): one
+ * world user ever — convert READS the input whole, so it rides the
+ * same exclusivity as the writes — the worker's own copy of the
+ * directory at post (G13's rule). */
+static void start_convert(void)
+{
+    g_chunk_settled = false;
+    g_chunk_ok = false;
+    if (mcme_converttask_start(g_wire, g_world_dir,
+                               on_convert_result,
+                               GINT_TO_POINTER(g_mesh_gen))) {
+        g_tasks++;
+        g_chunk_flight = true;
+    } else {
+        g_chunk_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "convert task: no memory");
+    }
+}
+
+/* The convert's door (G19): the open world to Java beside itself,
+ * through the same lane. No dialog (D66): this writer never
+ * touches its input and refuses to overwrite anything, so nothing
+ * asks back — and the name it writes is spoken in the answer, not
+ * chosen. No world, nothing to convert: the refusal lands in the
+ * world's own label. */
+static void queue_convert(void)
+{
+    if (g_world_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "no world open — nothing to convert");
+        return;
+    }
+    if (g_chunk_flight) {
+        g_convert_pending = true;
+        return;
+    }
+    start_convert();
+}
+
+static void on_convert_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    (void)user_data;
+    queue_convert(); /* creates, never destroys: no asking back */
 }
 
 static void on_pack_result(void *userdata, McmePackResult *result)
@@ -1159,6 +1324,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     GtkWidget *go = gtk_button_new_with_label("Go");
     GtkWidget *fill = gtk_button_new_with_label("Fill");
     GtkWidget *prune = gtk_button_new_with_label("Prune");
+    GtkWidget *convert = gtk_button_new_with_label("Convert");
     char init[32];
 
     (void)user;
@@ -1200,6 +1366,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_box_append(GTK_BOX(wrow), g_block_entry);
     gtk_box_append(GTK_BOX(wrow), fill);
     gtk_box_append(GTK_BOX(wrow), prune);
+    gtk_box_append(GTK_BOX(wrow), convert);
     g_models = gtk_string_list_new(NULL);
     g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
     g_blocks = gtk_string_list_new(NULL);
@@ -1235,6 +1402,12 @@ static void on_activate(GtkApplication *app, gpointer user)
        alert, and only its Delete answer reaches queue_prune. */
     g_signal_connect(prune, "clicked", G_CALLBACK(on_prune_clicked),
                      win);
+    /* The creating writer names its pattern before the press and its
+       exact directory in the answer (D66): no dialog, no picker. */
+    gtk_widget_set_tooltip_text(
+        convert, "write this world as Java in <name>_java beside it");
+    g_signal_connect(convert, "clicked",
+                     G_CALLBACK(on_convert_clicked), win);
     gtk_window_set_titlebar(GTK_WINDOW(win), bar);
     gtk_window_set_default_size(GTK_WINDOW(win), 960, 640);
     gtk_widget_set_halign(g_pack_label, GTK_ALIGN_CENTER);
@@ -1285,6 +1458,12 @@ static void on_activate(GtkApplication *app, gpointer user)
        the button alone), and the lane holds it like the fill. */
     if (g_prune_arg)
         queue_prune();
+
+    /* G19's: --convert queues last of the writers — it reads the
+       world whole, so behind any fill or prune the same line asked
+       for. */
+    if (g_convert_arg)
+        queue_convert();
 
     if (g_smoke) {
         /* G8: the camera takes the hand — the smoke drives the same
@@ -1378,6 +1557,12 @@ int main(int argc, char **argv)
                whole chunk column, deleted. No argument: the cell
                is --at's, the same one --fill writes. */
             g_prune_arg = TRUE;
+        } else if (strcmp(argv[i], "--convert") == 0) {
+            /* G19: the bar's Convert without the bar — the open
+               world to Java, written beside itself as <dir>_java.
+               No argument: the input is --world's, the output is
+               the derived name the answer spells. */
+            g_convert_arg = TRUE;
         } else if (strcmp(argv[i], "--block") == 0) {
             /* G16: the picker's other row without the bar — the
                block the chain meshes through the blockstate
@@ -1391,7 +1576,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "usage: mcgui [--selftest|--smoke] "
                             "[--open dir] [--world dir --at x y z "
                             "[--dimension n] [--section] "
-                            "[--fill block] [--prune]] "
+                            "[--fill block] [--prune] [--convert]] "
                             "[--block ns:block] "
                             "[pack-dir [ns:model]]\n");
             return 1;
@@ -1453,6 +1638,14 @@ int main(int argc, char **argv)
                         "give one\n");
         return 1;
     }
+    if (g_convert_arg && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --convert wants --world\n");
+        return 1;
+    }
+    /* --fill/--prune and --convert compose deliberately (G19): the
+       writers drain fill, prune, then convert — the biggest copy
+       reads what the smaller ones did — so "fill this cell, then
+       convert" is one run, not two questions. */
     if (g_world_dir != NULL && g_open_dir == NULL && npos == 0) {
         fprintf(stderr, "mcgui: a world block needs a pack to mesh "
                         "it\n");

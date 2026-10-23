@@ -4400,3 +4400,35 @@ GtkAlertDialog's index contract (then the response mapping
 re-reads the docs, not the constants), or the CLI's own
 `chunk prune` grows a confirmation (then "the typed verb is
 its own confirmation" is no longer both roads' truth).
+
+## D66 — A writer that creates asks nothing; its name is spoken, not chosen
+
+D65's rule is about UNRECOVERABLE LOSS — a delete the hand
+cannot fill back owes the ask. A CONVERTER owes none: it
+never touches its input (the input is read whole, the output
+is a new directory beside it) and mcme_convert_bedrock_java
+refuses an output that exists and removes a failed one whole,
+so nothing an output could overwrite was ever at risk —
+G19's button opens no dialog, and `--convert` needs no
+confirmation beyond the verb itself, exactly as `--prune`'s
+typed verb stood in for its dialog. The OUTPUT'S NAME is
+derived, not picked: the input trimmed of its trailing slashes
+with `_java` appended — a SIBLING BY CONSTRUCTION, so the
+CLI's "an output world is written outside its input" rule
+cannot be broken by any path a hand could give (the rule baked
+into the derivation, not checked after it), and the answer
+speaks the exact directory it wrote while the tooltip names
+the pattern before the press. One road serves both doors —
+the hand's button and the smoke's flag write the same name —
+until a hand wants a chosen name; then the dialog's flag road
+arrives (--open's pattern: the flag is the dialog's answer
+without the dialog) and this decision grows its exception.
+
+**Reverses if:** a converter ever gains a mode that writes
+into its input's directory (then the ask-back returns with
+D65), or the derived name can collide with a directory the
+hand did not intend to replace (then the refusal must name
+the fix, not only the fact), or a second creating writer (a
+re-encoder, a merge) can no longer promise "finished or
+absent" (then creating is no longer safe by construction and
+owes the dialog after all).

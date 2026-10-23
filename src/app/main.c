@@ -4144,30 +4144,14 @@ static int convert_target(const char *to)
    printed when there is something to say. */
 static void print_convert_drops(const McmeConvertReport *r)
 {
-    const struct { size_t n; const char *one; const char *many; } d[] = {
-        { r->legacy_subchunks, "subchunk mcme cannot read",
-                               "subchunks mcme cannot read" },
-        { r->water_positions,  "water position",
-                               "water positions" },
-        { r->biomes,           "biome cell",     "biome cells" },
-        { r->heightmaps,       "heightmap",      "heightmaps" },
-        { r->block_entities,   "block entity",   "block entities" },
-        { r->items,            "item stack",     "item stacks" },
-        { r->ticks,            "tick entry",     "tick entries" },
-        { r->entities,         "entity document",
-                                "entity documents" },
-        { r->actors,           "actor record",   "actor records" },
-        { r->chunk_data,       "other chunk key", "other chunk keys" },
-        { r->other,            "other key",      "other keys" },
-    };
-    bool any = false;
-    for (size_t i = 0; i < sizeof d / sizeof d[0]; ++i) {
-        if (d[i].n == 0) continue;
-        printf("%s%zu %s", any ? ", " : "dropped: ", d[i].n,
-               d[i].n == 1 ? d[i].one : d[i].many);
-        any = true;
-    }
-    if (any) putchar('\n');
+    /* The sentence itself lives in core now (G19): one spelling for
+       this line and the window's label, byte-identical to what this
+       printer wrote — the table moved whole, this keeps only the
+       line (and its newline). */
+    char buf[1024];
+
+    if (mcme_convert_drops_text(r, buf, sizeof buf) > 0)
+        puts(buf);
 }
 
 static int cmd_convert(int argc, char **argv)
