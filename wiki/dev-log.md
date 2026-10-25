@@ -7,6 +7,115 @@ Status vocabulary:
 **works** = runs, may lack tests · **done** = runs and covered by tests ·
 **blocked** = needs something first
 
+## 2026-10-25 — The cell counted: chunk stats through the window's door
+
+### Built
+
+- G23: the bar's Census button and the `--census` flag — the
+  CLI's `chunk stats` read through a door. The engine is core's
+  `mcme_bedrock_count_box` (bedrock_write, selftested long
+  before this door), so no promotion was owed: this drop is the
+  engine's second client, and what it adds is the wire, the
+  result and the sentence's data. The cell is the bar's own —
+  `(b>>4)*16 .. +15` on all three axes, the ask's floor and the
+  fill's position in one box.
+- `gui/censusstask.c/h`, statstask's shape over gui/task.c. The
+  probe speaks first; a directory that probes but holds no world
+  takes cmd_info's borrowed line; a Java world (or a Bedrock
+  one with no store beside it) is refused in `chunk stats`'
+  OWN sentence — "chunk: '%s' is not a Bedrock world" — one
+  truth both shells (G19's door rule), because java has no
+  census engine anywhere. Then the store opens, the box is
+  tallied, and the strings cross: the tally roots in the
+  worker's arena, which dies with it, so every block spec is
+  copied into the result before the arena goes — data crosses,
+  the loop thread spells the sentence.
+- The sentence, on the loop thread: how many blocks stand in
+  the cell, in how many kinds, the top kinds named in the
+  engine's order (most frequent first, ties by spec), the rest
+  counted as `(+N more kinds)`, and the holes confessed —
+  subchunks the store does not hold are counted as air by the
+  engine and named here, because a count that hides its holes
+  lies about what it counted.
+- The lane holds it like everything that touches a store: it
+  OPENS the store, so `g_chunk_flight` carries it and every
+  drain site grew the census branch last — writers → ask →
+  stats → census. A reader's answer settles itself (G21's rule,
+  held): nothing re-asks after it, `g_chunk_ok` (the ask's
+  verdict) is left standing, and `census=ok|refused|none`
+  appends after `stats=` on the settle line; a refused census
+  fails the smoke through its own clause beside the others.
+- The grammar: a CELL door, so `--census` demands `--at` like
+  the writers (the standing F refusal carries it — "world
+  wants --at x y z"), and `--census wants --world` is the new
+  refusal in the flag's own words. No dialog: this door reads,
+  so nothing asks back (D66's family).
+
+### Gates
+
+- GUI selftest **1741 → 1780** (+39): test_censusstask through
+  the wire — the guards; the probe's words for a missing
+  directory; cmd_info's line for one that probes but holds no
+  world; the sealed cell (stored air, 4096, missing 0) and the
+  plain golden's hole (air 4096, missing 1 — measured through
+  the CLI first: `chunk stats` answered "1 subchunk not
+  stored"), then THE ARC — a fill through the wire and the
+  same cell counted after it: air 4095, stone 1, missing 0
+  (the door SEES the write; the fill writes ONE position —
+  `mcme_bedrock_set_block` at the named coordinate, measured,
+  never guessed); a Java world refused with the verb's exact
+  sentence (pinned as a string), and `mcme_censusresult_free`
+  NULL's guard.
+- Fresh C gates, wayland AND x11: C1 the sealed cell →
+  `census=ok` rc=0; C2 java → `census=refused` rc=1 (the door's
+  own clause); C3 `--census wants --world` rc=1; C4 the F
+  refusal still exact; C5 `--stats --census` composed →
+  `stats=ok census=ok` rc=0; C6 fill then census →
+  `fill=ok … census=ok` rc=0 (the write read by a reader that
+  never met it).
+- The standing sweep A–S + G1–G6 + T1–T5, both backends, one
+  run at a time: **22 settles**, only the expected refusals
+  non-zero, every number at the wiki's (all-air 0/6 and
+  0/24576, slab 24576/24576 cells 4096 pick=0,80,1, stone
+  1536/24576 cells 1352 pick=1,80,1, the name gate, the
+  convert carry with its out-get). G21's S1–S6 + F and G22's
+  C1–C4 + J1–J2 re-ran on both backends too — the settle line
+  and every drain grew a branch, so those doors are this
+  drop's blast radius.
+- `mcme selftest` **PASS (6 suites, 0 failures)** and
+  `./rebuild.sh test` PASS (5 suites) — both green, no core
+  file moved. No battery: this drop is gui-only;
+  `src/app/main.c` and the core stand at HEAD.
+
+### Notes
+
+- **/tmp wiped twice around this drop, and opencode's own store
+  saved the gates.** Every fixture and all four gate scripts
+  (g19/g20 sweeps, g21/g22 gates) evaporated mid-flow; the
+  scripts came back from `opencode.db` — the write tool calls
+  that created them are in `session_message` — and the fixture
+  recipe came back whole from a session's shell command:
+  glstub's two empty nvidia-soname stubs, p12 = the build's
+  fixture pack + air.json (→ minecraft:block/slab) + the slab
+  model beside it, p12base = p12 minus air.json, g12w =
+  bedrock-chunks with the margin air seal (`-1 64 -1 16 111
+  16`), g12w2 = g12w plus the target's stone, g17jw = the java
+  golden's copy, notaworld = a bare mkdir. The gates then
+  re-ran green on the rebuilt fixtures — the wiki's numbers
+  adjudicate, and they did.
+- The census C-gates started on the plain golden and came back
+  rc=1: its cell at (0,80,0) is unstored, so the world ask
+  refuses before the door can speak. The gates moved to g12w —
+  the sealed fixture the standing world gates have always
+  used — and both doors answer there. A door's gate should
+  read its own verdict, not the ask's under it.
+- D67 and D68 stand; no new decision this drop. The door is
+  D66's family (reads, asks nothing), its borrowed sentences
+  are G19's rule, its settle growth and drain order are G21's
+  precedent — nothing asked for a number of its own.
+- Carried from G19/D66: the chosen-name convert dialog, still
+  waiting for a hand that wants one.
+
 ## 2026-10-23 — The wider count: java's trees join the inventory
 
 ### Built

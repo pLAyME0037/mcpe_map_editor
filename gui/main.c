@@ -147,6 +147,24 @@
  *                behind every world traffic (writers, the ask,
  *                then the count). The settle line names the
  *                door as stats=ok|refused|none.
+ *   --census count the bar cell's blocks (G23): the CLI's
+ *                `chunk stats` engine — core's
+ *                mcme_bedrock_count_box, the box's positions
+ *                tallied by spec with holes counted as air and
+ *                their subchunks named in `missing` — read
+ *                through the door; the label spelling the
+ *                sentence (how many blocks in how many kinds,
+ *                the top kinds in the engine's order, the
+ *                missing subchunks confessed). A CELL door: it
+ *                wants --at like the writers, it takes the
+ *                lane the store traffic holds (writers, the
+ *                ask, the world's count, then this) and its
+ *                answer stands. Bedrock only — refused in
+ *                `chunk stats`' own words, because java has no
+ *                census engine anywhere. No dialog: it reads,
+ *                so nothing asks back (D66's family). The
+ *                settle line names the door as
+ *                census=ok|refused|none.
  *   <pack-dir>   the first client call: summarise this pack into the
  *                window
  *   <model>      ns:path of the model to mesh into the viewport (the
@@ -156,8 +174,9 @@
  * or block meshed and a frame carried it, or the world answered
  * with faces to show — or, since G18, a landed prune answered
  * with the refusal that says the chunk is gone, the delete's own
- * proof; 1 — a refusal, or a refused --convert or --stats (each
- * its own verdict, whatever the world's ask then answers), or the
+ * proof; 1 — a refusal, or a refused --convert, --stats or
+ * --census (each its own verdict, whatever the world's ask then
+ * answers), or the
  * mesh never reached a frame (a world answer whose cull kept zero
  * faces settles without one — the world said nothing stands
  * there);
@@ -182,6 +201,7 @@
 #include "packtask.h"
 #include "pick.h"
 #include "prunetask.h"
+#include "censusstask.h"
 #include "statstask.h"
 #include "selftest.h"
 #include "viewport.h"
@@ -260,6 +280,13 @@ static bool g_fill_pending;        /* a Fill pressed while one is up  */
 static bool g_prune_pending;       /* a Prune pressed while one is up */
 static bool g_convert_pending;     /* a Convert pressed while up      */
 static bool g_stats_pending;       /* a Stats pressed while up (G21)  */
+static gboolean g_census_arg;      /* --census: count the cell's
+                                      blocks (G23) — the CLI's
+                                      `chunk stats` engine through the
+                                      door                                     */
+static bool g_census_pending;      /* a Census pressed while up (G23) */
+static bool g_census_seen, g_census_ok; /* the reader's answer (G23):
+                                           the settle line's census= */
 static GtkWidget *g_world_label;   /* the world's answer, its words   */
 static GtkWidget *g_wx_entry;      /* the bar's own --at: X, Y, Z     */
 static GtkWidget *g_wy_entry;
@@ -350,6 +377,9 @@ static void maybe_smoke_quit(void)
     /* The reader's own verdict (G21): a refused count fails the
        smoke on its words — every door owns its settle clause. */
     if (g_stats_seen && !g_stats_ok) g_exit_code = 1;
+    /* The cell's count, its own verdict (G23): a refused census
+       fails the smoke whatever the world's ask then answers. */
+    if (g_census_seen && !g_census_ok) g_exit_code = 1;
     {
         float cyaw = 0, cpitch = 0, cdist = 0;
         long pick[3];
@@ -371,7 +401,8 @@ static void maybe_smoke_quit(void)
                 "mcgui: smoke: pack=%s models=%zu blocks=%zu mesh=%s "
                 "ask=%s world=%s spec=%s faces=%zu/%zu cells=%zu "
                 "drew=%d tex=%d gl_failed=%d cam=%.2f,%.2f,%.2f "
-                "pick=%s fill=%s prune=%s convert=%s stats=%s\n",
+                "pick=%s fill=%s prune=%s convert=%s stats=%s "
+                "census=%s\n",
                 g_pack_ok ? "ok" : "refused",
                 g_models_seen,
                 g_blocks_seen,
@@ -396,7 +427,9 @@ static void maybe_smoke_quit(void)
                 g_convert_seen ? (g_convert_ok ? "ok" : "refused")
                                : "none",
                 g_stats_seen ? (g_stats_ok ? "ok" : "refused")
-                             : "none");
+                             : "none",
+                g_census_seen ? (g_census_ok ? "ok" : "refused")
+                              : "none");
     }
     g_application_quit(G_APPLICATION(g_app));
 }
@@ -507,6 +540,7 @@ static void start_fill(void);
 static void start_prune(void);
 static void start_convert(void);
 static void start_stats(void);    /* the reader behind them (G21)   */
+static void start_census(void);   /* the cell's own reader (G23)    */
 
 static void on_chunk_result(void *userdata, McmeChunkResult *result)
 {
@@ -570,6 +604,9 @@ static void on_chunk_result(void *userdata, McmeChunkResult *result)
     } else if (g_stats_pending) {
         g_stats_pending = false;
         start_stats(); /* the reader waits behind the traffic (G21) */
+    } else if (g_census_pending) {
+        g_census_pending = false;
+        start_census(); /* the cell's count waits behind the world's */
     }
     maybe_smoke_quit();
 }
@@ -662,6 +699,9 @@ static void on_fill_result(void *userdata, McmeFillResult *result)
     } else if (g_stats_pending) {
         g_stats_pending = false;
         start_stats(); /* the reader waits behind the traffic (G21) */
+    } else if (g_census_pending) {
+        g_census_pending = false;
+        start_census(); /* the cell's count waits behind the world's */
     }
     maybe_smoke_quit();
 }
@@ -776,6 +816,9 @@ static void on_prune_result(void *userdata, McmePruneResult *result)
     } else if (g_stats_pending) {
         g_stats_pending = false;
         start_stats(); /* the reader waits behind the traffic (G21) */
+    } else if (g_census_pending) {
+        g_census_pending = false;
+        start_census(); /* the cell's count waits behind the world's */
     }
     maybe_smoke_quit();
 }
@@ -935,6 +978,9 @@ static void on_convert_result(void *userdata, McmeConvertResult *result)
     } else if (g_stats_pending) {
         g_stats_pending = false;
         start_stats(); /* the reader waits behind the traffic (G21) */
+    } else if (g_census_pending) {
+        g_census_pending = false;
+        start_census(); /* the cell's count waits behind the world's */
     }
     maybe_smoke_quit();
 }
@@ -1083,6 +1129,9 @@ static void on_stats_result(void *userdata, McmeStatsResult *result)
     } else if (g_stats_pending) {
         g_stats_pending = false;
         start_stats(); /* the latest count wins the road */
+    } else if (g_census_pending) {
+        g_census_pending = false;
+        start_census(); /* the cell's count waits behind the world's */
     }
     maybe_smoke_quit();
 }
@@ -1132,6 +1181,134 @@ static void on_stats_clicked(GtkButton *btn, gpointer user_data)
     (void)btn;
     (void)user_data;
     queue_stats(); /* reads, never writes: no asking back */
+}
+
+/* The cell's own count (G23): the tally's sentence — how many
+ * blocks stand in the cell, the top kinds named in the engine's
+ * order (most frequent first, ties by spec), the rest counted as
+ * kinds, and the holes confessed: subchunks the store does not
+ * hold counted as air by the engine, named here because a count
+ * that hides its holes lies about what it counted. */
+static void on_census_result(void *userdata, McmeCensusResult *result)
+{
+    int gen = GPOINTER_TO_INT(userdata);
+    bool stale = gen != g_mesh_gen;
+    bool ok = result->ok;
+
+    g_tasks--; /* a post is a post: the count follows workers */
+    g_chunk_flight = false;
+    g_census_seen = true;
+    g_census_ok = ok;
+    /* The reader's answer is final (the stats door's rule): it
+       changed nothing, so it settles the wait itself — the cell's
+       count is the label's last word. */
+    g_chunk_settled = true;
+    if (!ok && !stale) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           result->text ? result->text : "(no memory)");
+    } else if (ok && !stale) {
+        char txt[600];
+        size_t at;
+        size_t shown;
+        int64_t total = 0;
+
+        for (size_t i = 0; i < result->rows; ++i)
+            total += result->tally[i].count;
+        at = (size_t)snprintf(txt, sizeof txt,
+                              "%lld block%s in %zu kind%s",
+                              (long long)total, total == 1 ? "" : "s",
+                              result->rows,
+                              result->rows == 1 ? "" : "s");
+        shown = result->rows < 3 ? result->rows : 3;
+        for (size_t i = 0; i < shown && at + 40 < sizeof txt; ++i) {
+            snprintf(txt + at, sizeof txt - at, "%s%s %lld",
+                     i == 0 ? " — " : ", ",
+                     result->tally[i].block,
+                     (long long)result->tally[i].count);
+            at = strlen(txt);
+        }
+        if (result->rows > shown && at + 30 < sizeof txt)
+            at += (size_t)snprintf(txt + at, sizeof txt - at,
+                                   " (+%zu more kinds)",
+                                   result->rows - shown);
+        if (result->missing > 0 && at + 45 < sizeof txt)
+            snprintf(txt + at, sizeof txt - at,
+                     "; %lld subchunk%s not stored (air)",
+                     (long long)result->missing,
+                     result->missing == 1 ? "" : "s");
+        gtk_label_set_text(GTK_LABEL(g_world_label), txt);
+    }
+    mcme_censusresult_free(result);
+    if (g_fill_pending) {
+        g_fill_pending = false;
+        start_fill();
+    } else if (g_prune_pending) {
+        g_prune_pending = false;
+        start_prune();
+    } else if (g_convert_pending) {
+        g_convert_pending = false;
+        start_convert();
+    } else if (g_chunk_pending) {
+        g_chunk_pending = false;
+        /* Only a pressed Go re-asks after this reader: nothing
+           changed in the open world, so the label keeps the
+           census's own sentence. */
+        queue_chunk_ask();
+    } else if (g_stats_pending) {
+        g_stats_pending = false;
+        start_stats();
+    } else if (g_census_pending) {
+        g_census_pending = false;
+        start_census(); /* the latest count wins the road */
+    }
+    maybe_smoke_quit();
+}
+
+/* The cell's count takes the lane the store traffic holds (G23):
+ * it OPENS the store like the writes, the ask and the world's
+ * count, so one world user ever — side by side otherwise (the pool
+ * runs workers concurrently). g_chunk_ok is left standing: the
+ * ask's verdict, not this door's — census= carries this door's
+ * own. */
+static void start_census(void)
+{
+    g_chunk_settled = false;
+    if (mcme_censusstask_start(g_wire, g_world_dir,
+                               g_wx, g_wy, g_wz, g_world_dim,
+                               on_census_result,
+                               GINT_TO_POINTER(g_mesh_gen))) {
+        g_tasks++;
+        g_chunk_flight = true;
+    } else {
+        g_chunk_settled = true;
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "census task: no memory");
+    }
+}
+
+/* The cell's door (G23): the bar's cell, counted. It reads, so no
+ * dialog (the readers' family under D66); it counts a place, so
+ * the flag's grammar wants --at like the writers; and no world,
+ * nothing to count: the refusal lands in the world's own label. */
+static void queue_census(void)
+{
+    if (g_world_dir == NULL) {
+        gtk_label_set_text(GTK_LABEL(g_world_label),
+                           "no world open — nothing to census");
+        return;
+    }
+    if (g_chunk_flight) {
+        g_census_pending = true;
+        return;
+    }
+    start_census();
+}
+
+static void on_census_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    (void)user_data;
+    queue_census(); /* reads, never writes: no asking back */
 }
 
 static void on_pack_result(void *userdata, McmePackResult *result)
@@ -1558,6 +1735,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     GtkWidget *prune = gtk_button_new_with_label("Prune");
     GtkWidget *convert = gtk_button_new_with_label("Convert");
     GtkWidget *stats = gtk_button_new_with_label("Stats");
+    GtkWidget *census = gtk_button_new_with_label("Census");
     char init[32];
 
     (void)user;
@@ -1601,6 +1779,7 @@ static void on_activate(GtkApplication *app, gpointer user)
     gtk_box_append(GTK_BOX(wrow), prune);
     gtk_box_append(GTK_BOX(wrow), convert);
     gtk_box_append(GTK_BOX(wrow), stats);
+    gtk_box_append(GTK_BOX(wrow), census);
     g_models = gtk_string_list_new(NULL);
     g_picker = gtk_drop_down_new(G_LIST_MODEL(g_models), NULL);
     g_blocks = gtk_string_list_new(NULL);
@@ -1648,6 +1827,8 @@ static void on_activate(GtkApplication *app, gpointer user)
         stats, "count this world's chunks, keys and dimensions");
     g_signal_connect(stats, "clicked",
                      G_CALLBACK(on_stats_clicked), win);
+    g_signal_connect(census, "clicked",
+                     G_CALLBACK(on_census_clicked), win);
     gtk_window_set_titlebar(GTK_WINDOW(win), bar);
     gtk_window_set_default_size(GTK_WINDOW(win), 960, 640);
     gtk_widget_set_halign(g_pack_label, GTK_ALIGN_CENTER);
@@ -1711,6 +1892,13 @@ static void on_activate(GtkApplication *app, gpointer user)
        traffic answered last. */
     if (g_stats_arg)
         queue_stats();
+
+    /* G23's: --census queues the cell's count behind every reader
+       — it opens the store like the writes and the ask, so the
+       lane holds it last, and its sentence lands under whatever
+       the traffic answered. */
+    if (g_census_arg)
+        queue_census();
 
     if (g_smoke) {
         /* G8: the camera takes the hand — the smoke drives the same
@@ -1825,6 +2013,13 @@ int main(int argc, char **argv)
                world's own; no cell either — this door reads the
                world, not a place in it. */
             g_stats_arg = TRUE;
+        } else if (strcmp(argv[i], "--census") == 0) {
+            /* G23: the bar's Census without the bar — count the
+               cell's blocks, the CLI's `chunk stats` engine read
+               through the door. No argument: the tally is the
+               cell's own; it counts a place, so the grammar asks
+               for --at like the writers do. */
+            g_census_arg = TRUE;
         } else if (strcmp(argv[i], "--block") == 0) {
             /* G16: the picker's other row without the bar — the
                block the chain meshes through the blockstate
@@ -1881,7 +2076,7 @@ int main(int argc, char **argv)
     }
     if (g_world_dir != NULL && !at_seen &&
         (g_fill_arg != NULL || g_prune_arg || g_convert_arg ||
-         !g_stats_arg)) {
+         g_census_arg || !g_stats_arg)) {
         fprintf(stderr, "mcgui: --world wants --at x y z\n");
         return 1;
     }
@@ -1912,6 +2107,10 @@ int main(int argc, char **argv)
     }
     if (g_stats_arg && g_world_dir == NULL) {
         fprintf(stderr, "mcgui: --stats wants --world\n");
+        return 1;
+    }
+    if (g_census_arg && g_world_dir == NULL) {
+        fprintf(stderr, "mcgui: --census wants --world\n");
         return 1;
     }
     /* --fill/--prune, --convert and --stats compose deliberately

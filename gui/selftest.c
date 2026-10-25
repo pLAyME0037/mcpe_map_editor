@@ -67,6 +67,7 @@
 #include "mcme/resource.h"
 #include "mcme/world.h"
 #include "camera.h"
+#include "censusstask.h"
 #include "chunktask.h"
 #include "converttask.h"
 #include "filltask.h"
@@ -1942,6 +1943,185 @@ static void test_statstask(void)
     rm_rf(dir);
 }
 
+static int g_census_done_calls;
+static bool g_census_done_ok;
+static char g_census_done_text[600];
+static size_t g_census_done_rows;
+static char g_census_done_block0[128];
+static int64_t g_census_done_count0;
+static char g_census_done_block1[128];
+static int64_t g_census_done_count1;
+static int64_t g_census_done_missing;
+
+static void on_census_done(void *userdata, McmeCensusResult *result)
+{
+    (void)userdata;
+    g_census_done_calls++;
+    g_census_done_ok = result->ok;
+    snprintf(g_census_done_text, sizeof g_census_done_text, "%s",
+             result->text ? result->text : "");
+    g_census_done_rows = result->rows;
+    snprintf(g_census_done_block0, sizeof g_census_done_block0, "%s",
+             result->rows > 0 && result->tally[0].block != NULL
+                 ? result->tally[0].block
+                 : "");
+    g_census_done_count0 =
+        result->rows > 0 ? result->tally[0].count : 0;
+    snprintf(g_census_done_block1, sizeof g_census_done_block1, "%s",
+             result->rows > 1 && result->tally[1].block != NULL
+                 ? result->tally[1].block
+                 : "");
+    g_census_done_count1 =
+        result->rows > 1 ? result->tally[1].count : 0;
+    g_census_done_missing = result->missing;
+    mcme_censusresult_free(result);
+}
+
+/* The cell's count (G23): what `chunk stats`' engine answers for
+ * the bar's cell, through the wire — the empty cell (its one
+ * subchunk unstored: air counted, the missing named), the fill's
+ * own position seen through a reader that never met the writer
+ * (the census says air 4095, stone 1 right after the fill said
+ * ok — the door SEES the write), a java world refused in the
+ * verb's own words, and a directory that probes but holds no
+ * world taking cmd_info's line. */
+static void test_censusstask(void)
+{
+    char dir[] = "/tmp/mcme_gui_census_XXXXXX";
+    char want[600];
+    McmeWire *wire;
+    bool chunks_world =
+        mcme_fs_exists("tests/golden/worlds/bedrock-chunks");
+
+    printf("  censusstask (the cell counted, and the write seen "
+           "by a reader)\n");
+
+    CHECK(mkdtemp(dir) != NULL);
+
+    wire = mcme_wire_new();
+
+    /* the guards: nothing starts, nothing posts */
+    CHECK(!mcme_censusstask_start(NULL, dir, 0, 80, 0, 0,
+                                  on_census_done, NULL));
+    CHECK(!mcme_censusstask_start(wire, NULL, 0, 80, 0, 0,
+                                  on_census_done, NULL));
+    CHECK(!mcme_censusstask_start(wire, dir, 0, 80, 0, 0, NULL, NULL));
+    mcme_censusresult_free(NULL);
+    CHECK(g_census_done_calls == 0);
+
+    /* a directory that is not a world: the probe's own words */
+    g_census_done_calls = 0;
+    g_census_done_ok = true;
+    CHECK(mcme_censusstask_start(wire, "/tmp/mcme_gui_no_world_dir",
+                                 0, 80, 0, 0, on_census_done, NULL));
+    while (g_census_done_calls == 0)
+        g_main_context_iteration(NULL, TRUE);
+    CHECK(g_census_done_calls == 1);
+    CHECK(!g_census_done_ok);
+    CHECK(g_census_done_text[0] != '\0');
+    mcme_clear_error();
+
+    /* an empty directory probes but holds no world: cmd_info's own
+       line, borrowed the way the stats door borrows it */
+    {
+        char empty[] = "/tmp/mcme_gui_census_empty_XXXXXX";
+
+        CHECK(mkdtemp(empty) != NULL);
+        g_census_done_calls = 0;
+        g_census_done_ok = true;
+        CHECK(mcme_censusstask_start(wire, empty, 0, 80, 0, 0,
+                                     on_census_done, NULL));
+        while (g_census_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_census_done_calls == 1);
+        CHECK(!g_census_done_ok);
+        CHECK(strcmp(g_census_done_text,
+                     "Not a Minecraft world: no db/ (Bedrock) "
+                     "and no region/ or session.lock (Java)") == 0);
+        rm_rf(empty);
+    }
+
+    /* the cell (0,80,0) of the chunk golden: its one subchunk is
+       not stored, so the engine counts the box's 4096 positions
+       as air and names the hole — measured through the CLI before
+       these pins were written */
+    if (chunks_world) {
+        char wdir[] = "/tmp/mcme_gui_census_bed_XXXXXX";
+
+        CHECK(mkdtemp(wdir) != NULL);
+        cp_rf("tests/golden/worlds/bedrock-chunks", wdir);
+
+        g_census_done_calls = 0;
+        g_census_done_ok = false;
+        CHECK(mcme_censusstask_start(wire, wdir, 0, 80, 0, 0,
+                                     on_census_done, NULL));
+        while (g_census_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_census_done_calls == 1);
+        CHECK(g_census_done_ok);
+        CHECK(g_census_done_rows == 1);
+        CHECK(strcmp(g_census_done_block0, "minecraft:air") == 0);
+        CHECK(g_census_done_count0 == 4096);
+        CHECK(g_census_done_missing == 1);
+
+        /* the door sees the writer (G23's arc): the fill writes
+           the bar's one block — the GUI's fill sets a position,
+           not a box — and the same cell counted after it shows
+           the write: air 4095 and stone 1, the subchunk the write
+           created (missing 1 → 0). Measured through the wire. */
+        g_fill_done_calls = 0;
+        g_fill_done_ok = false;
+        CHECK(mcme_filltask_start(wire, wdir, 0, 0, 80, 0,
+                                  "minecraft:stone",
+                                  on_fill_done, NULL));
+        while (g_fill_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_fill_done_calls == 1);
+        CHECK(g_fill_done_ok);
+
+        g_census_done_calls = 0;
+        g_census_done_ok = false;
+        CHECK(mcme_censusstask_start(wire, wdir, 0, 80, 0, 0,
+                                     on_census_done, NULL));
+        while (g_census_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_census_done_calls == 1);
+        CHECK(g_census_done_ok);
+        CHECK(g_census_done_rows == 2);
+        CHECK(strcmp(g_census_done_block0, "minecraft:air") == 0);
+        CHECK(g_census_done_count0 == 4095);
+        CHECK(strcmp(g_census_done_block1, "minecraft:stone") == 0);
+        CHECK(g_census_done_count1 == 1);
+        CHECK(g_census_done_missing == 0);
+        rm_rf(wdir);
+    }
+
+    /* java: refused in `chunk stats`' own words — the verb needs a
+       Bedrock store and so does the door (no census engine exists
+       for java anywhere) */
+    if (mcme_fs_exists("tests/golden/worlds/java")) {
+        char jdir[] = "/tmp/mcme_gui_census_java_XXXXXX";
+
+        CHECK(mkdtemp(jdir) != NULL);
+        cp_rf("tests/golden/worlds/java", jdir);
+        snprintf(want, sizeof want,
+                 "chunk: '%s' is not a Bedrock world", jdir);
+        g_census_done_calls = 0;
+        g_census_done_ok = true;
+        CHECK(mcme_censusstask_start(wire, jdir, 0, 80, 0, 0,
+                                     on_census_done, NULL));
+        while (g_census_done_calls == 0)
+            g_main_context_iteration(NULL, TRUE);
+        CHECK(g_census_done_calls == 1);
+        CHECK(!g_census_done_ok);
+        CHECK(strcmp(g_census_done_text, want) == 0);
+        rm_rf(jdir);
+    }
+
+    mcme_wire_free(wire);
+    rm_rf(dir);
+}
+
 static double *darray(size_t n)
 {
     double *p = calloc(n, sizeof *p);
@@ -2606,6 +2786,7 @@ int mcme_gui_selftest(void)
     test_prunetask();
     test_converttask();
     test_statstask();
+    test_censusstask();
     test_stage();
     test_camera();
     test_worldbar();
